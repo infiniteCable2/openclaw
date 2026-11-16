@@ -17,7 +17,7 @@ import type {
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 
 export const CONVERSATION_KNOWLEDGE_CHECKPOINT = "openclaw.conversation-knowledge-checkpoint.v1";
-/** Derived view; original references and histories remain authoritative and are never deleted. */
+/** Committed audience artifact; covered originals remain stored but no longer gate its context. */
 export type ConversationKnowledgeCheckpoint = {
   version: 1;
   checkpointId: string;
@@ -357,9 +357,6 @@ export function selectConversationKnowledgeCheckpointBootstrap(params: {
   audienceKey: string;
   progress: ReadonlyMap<string, ConversationKnowledgePacketProgress>;
   hasCheckpointReceipt?: boolean;
-  availableReferences: readonly ConversationKnowledgeReference[];
-  /** Preselection cannot authorize disclosure; every covered original still needs native custody. */
-  isAudienceCandidate?: (reference: ConversationKnowledgeReference) => boolean;
 }): ConversationKnowledgeCheckpoint | undefined {
   if (params.progress.size !== 0 || params.hasCheckpointReceipt) {
     return undefined;
@@ -375,30 +372,7 @@ export function selectConversationKnowledgeCheckpointBootstrap(params: {
     return undefined;
   }
   params.coverage.assertCheckpoint(checkpoint);
-  const available = new Map<string, ConversationKnowledgeReference>();
-  for (const raw of params.availableReferences) {
-    const reference = canonicalReference(raw);
-    if (reference) {
-      available.set(conversationKnowledgeContributionId(reference), reference);
-    }
-  }
-  for (const id of params.coverage.contributionIds()) {
-    const reference = available.get(id);
-    if (
-      !reference ||
-      reference.retirement ||
-      !reference.privateAudience ||
-      reference.source.agentId !== params.branch.agentId ||
-      (reference.source.sessionId === params.branch.sessionId &&
-        reference.source.sessionKey === params.branch.sessionKey &&
-        reference.source.lifecycleRevision === params.branch.lifecycleRevision) ||
-      !params.coverage.matchesReference(reference) ||
-      (conversationKnowledgeParticipantIdentity(reference.privateAudience?.participant) !==
-        params.audienceKey &&
-        !params.isAudienceCandidate?.(reference))
-    ) {
-      return undefined;
-    }
-  }
+  // The root artifact owns summarized context after publication. Coverage is exact
+  // immutable metadata, not a requirement to reacquire any covered donor.
   return checkpoint;
 }

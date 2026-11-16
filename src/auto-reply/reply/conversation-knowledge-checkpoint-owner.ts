@@ -361,47 +361,25 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         const { planConversationKnowledgeCheckpointSummary } =
           await import("./conversation-knowledge-checkpoint-summary.js");
         check();
-        const byId = new Map(
-          sources.references.map((reference) => [
-            conversationKnowledgeContributionId(reference),
-            reference,
-          ]),
+        // The committed summary belongs to this root and audience. Its covered
+        // originals are provenance, not live dependencies of future preparation.
+        if (previous && previousCoverage) {
+          publish({ checkpoint: previous, coverage: previousCoverage });
+        }
+        const remaining = sources.references.filter(
+          (reference) => !previousCoverage?.has(conversationKnowledgeContributionId(reference)),
         );
-        sourceSessionKeys = new Set(
-          sources.references.map((reference) => reference.source.sessionKey),
+        const byId = new Map(
+          remaining.map((reference) => [conversationKnowledgeContributionId(reference), reference]),
         );
         const referenceOrder = new Map(
-          sources.references.map((reference, index) => [
+          remaining.map((reference, index) => [
             conversationKnowledgeContributionId(reference),
             index,
           ]),
         );
-        // A checkpoint is not authority for retired or unproven historical incarnations.
-        const previousContinuityAvailable = !(
-          previousCoverage &&
-          [...previousCoverage.contributionIds()].some(
-            (id) => !byId.has(id) || !previousCoverage.matchesReference(byId.get(id)!),
-          )
-        );
-        if (!previousContinuityAvailable) {
-          if (latest) {
-            tail.changed();
-          }
-          latest = undefined;
-          log.debug("Related-history checkpoint deferred", {
-            reason: "source-continuity-unavailable",
-          });
-        }
-        if (previous && previousCoverage && previousContinuityAvailable) {
-          publish({ checkpoint: previous, coverage: previousCoverage });
-        }
-        // A missing prior source prevents summary-chain reuse, not preparation
-        // of independently authorized current originals. Never rewrite coverage.
-        const reusableCoverage = previousContinuityAvailable ? previousCoverage : undefined;
-        const remaining = sources.references.filter(
-          (reference) => !reusableCoverage?.has(conversationKnowledgeContributionId(reference)),
-        );
-        tail.reconcile(sources.references, reusableCoverage);
+        sourceSessionKeys = new Set(remaining.map((reference) => reference.source.sessionKey));
+        tail.reconcile(remaining, previousCoverage);
         if (!remaining.length) {
           // Frame preparation still owns source custody across its awaited reads.
           return await retainFrame([]);
@@ -489,7 +467,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         if (!planning || !configSnapshotsMatch(planning.config, config)) {
           await acquireModel();
         }
-        if (!previousContinuityAvailable || !planning!.value.settings.enabled) {
+        if (!planning!.value.settings.enabled) {
           return false;
         }
         // Hydrate the complete available tail once, then run the native planner
@@ -511,21 +489,6 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           tail.assertRange(current);
           if (!(await sources.validate(current.reference, current.packet))) {
             tail.evict(contribution.contributionId);
-            return false;
-          }
-        }
-        // Prior summary disclosure needs every original source's current grant as well.
-        // Those exact IDs stay outside model input and never become a second summary ledger.
-        if (previousCoverage) {
-          const verified = await sources.verifyAll(
-            [...previousCoverage.contributionIds()].map((id) => byId.get(id)!),
-            (reference, range) => {
-              if (!previousCoverage.matchesReference(reference, range)) {
-                throw new Error("Checkpoint previous source range changed");
-              }
-            },
-          );
-          if (!verified) {
             return false;
           }
         }

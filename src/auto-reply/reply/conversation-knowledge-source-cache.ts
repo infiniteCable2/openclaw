@@ -110,15 +110,6 @@ export function createConversationKnowledgeSourceCache<
   let consumptionRevision = 0;
   let invalidationRevision = 0;
   let preparedCheckpoint: PreparedRecipientConversationCheckpoint | undefined;
-  const retireCheckpoint = () => {
-    const old = preparedCheckpoint;
-    preparedCheckpoint = undefined;
-    if (old) {
-      for (const group of old.groups) {
-        retiringCleanups.add(() => group.admission.release());
-      }
-    }
-  };
   const checkpointCoverage = new Map<string, PreparedConversationKnowledgeCheckpointCoverage>();
   let clearEpoch = 0;
   let preparedRoot: PreparedKnowledgeRootCandidates | undefined;
@@ -251,16 +242,8 @@ export function createConversationKnowledgeSourceCache<
       return preparedCheckpoint;
     },
     stageCheckpoint(value: PreparedRecipientConversationCheckpoint) {
-      if (
-        value.manifest.ownedByteLength +
-          Buffer.byteLength(value.checkpoint.summary) +
-          value.groups.reduce((sum, group) => sum + group.admission.ownedByteLength, 0) >
-        maxBytes
-      ) {
+      if (Buffer.byteLength(JSON.stringify(value.checkpoint)) > maxBytes) {
         return false;
-      }
-      if (preparedCheckpoint !== value) {
-        retireCheckpoint();
       }
       preparedCheckpoint = value;
       revision++;
@@ -273,12 +256,12 @@ export function createConversationKnowledgeSourceCache<
         return;
       }
       invalidationRevision += preparedCheckpoint ? 1 : 0;
-      retireCheckpoint();
+      preparedCheckpoint = undefined;
       retryCleanup();
     },
     consumeCheckpoint(value: PreparedRecipientConversationCheckpoint) {
       if (preparedCheckpoint === value) {
-        retireCheckpoint();
+        preparedCheckpoint = undefined;
       }
       checkpointCoverage.set(value.checkpoint.checkpointId, value.coverage);
       // Visit bounded prepared packets once, not the potentially year-long coverage set.
@@ -620,7 +603,7 @@ export function createConversationKnowledgeSourceCache<
       releaseUnusedAdmissions();
     },
     clear() {
-      retireCheckpoint();
+      preparedCheckpoint = undefined;
       checkpointCoverage.clear();
       const retired = [...admissions.values()].map((entry) => entry.value);
       admissions.clear();

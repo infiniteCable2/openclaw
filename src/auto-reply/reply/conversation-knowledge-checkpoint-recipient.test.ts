@@ -31,11 +31,9 @@ import type { ReplyConversationKnowledgeParams } from "./conversation-knowledge.
 const native = vi.hoisted(() => ({
   target: vi.fn(),
   rebind: vi.fn(),
-  evidence: vi.fn(),
   seal: vi.fn(),
   validate: vi.fn(),
   select: vi.fn(),
-  take: vi.fn(),
   retain: vi.fn(),
   releaseTarget: vi.fn(),
   releaseSource: vi.fn(),
@@ -71,7 +69,6 @@ vi.mock("../../config/sessions/conversation-knowledge-checkpoint-admission.js", 
 // mock-isolation: Check that the live boundary uses only prepared root evidence, never source hydration.
 vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   readPreparedConversationKnowledgeRoot: native.rebind,
-  readPreparedConversationKnowledgeRootEvidence: native.evidence,
   readConversationKnowledgeRoot: native.scan,
   issuePreparedKnowledgeRootCandidates: native.issue,
   prepareConversationKnowledgeRootSubset: native.subset,
@@ -135,15 +132,8 @@ function fixture(references = [reference]) {
   const candidate = {
     checkpoint,
     coverage,
-    manifest: { synthetic: true, byteLength: 10, ownedByteLength: 10 },
     bootstrap: { synthetic: true },
     selection: { checkpoint, validate: native.validate },
-    groups: [
-      {
-        source: { agentId: source.agentId, sessionKey: source.sessionKey },
-        admission: { release: native.releaseGroup, byteLength: 100, ownedByteLength: 100 },
-      },
-    ],
   };
   const cache = {
     preparedCheckpoint: candidate,
@@ -223,7 +213,6 @@ beforeEach(() => {
       { evidence: preparedRootEvidence },
     ),
   );
-  native.take.mockResolvedValue(true);
   native.retain.mockImplementation(async ({ source: check }) => {
     check();
     return { accepted: true, appended: true };
@@ -259,7 +248,6 @@ beforeEach(() => {
       scopeKey: JSON.stringify(input.branch),
     };
   });
-  native.evidence.mockResolvedValue({ syntheticEvidence: true });
   native.seal.mockImplementation(({ checkpoint }) => ({ checkpoint, validate: native.validate }));
   native.select.mockImplementation((selected: ConversationKnowledgeReference) => ({
     through: selected.readRange?.through ?? selected.through,
@@ -377,11 +365,9 @@ describe("ready checkpoint recipient", () => {
     try {
       await entered.promise;
       expect(cache.preparedCheckpoint).toBe(candidate);
-      expect(native.releaseGroup).not.toHaveBeenCalled();
       resume.resolve();
       await pending;
       expect(cache.preparedCheckpoint).toBe(candidate);
-      expect(native.releaseGroup).not.toHaveBeenCalled();
       expect(native.releaseTarget).toHaveBeenCalledOnce();
       expect(native.group).not.toHaveBeenCalled();
       expect(native.groupRead).not.toHaveBeenCalled();
@@ -395,29 +381,19 @@ describe("ready checkpoint recipient", () => {
       }
     }
     expect(cache.preparedCheckpoint).toBeUndefined();
-    expect(native.releaseGroup).toHaveBeenCalledOnce();
   });
-  it("keeps a newer background candidate when an older awaited foreground rebind fails", async () => {
+  it("keeps a newer background candidate when an older awaited foreground commit fails", async () => {
     const f = fixture();
     const cache = createConversationKnowledgeSourceCache();
     const old = f.candidate as unknown as Parameters<typeof cache.stageCheckpoint>[0];
-    const releaseNew = vi.fn();
-    const replacement = {
-      ...old,
-      groups: [
-        {
-          source: { agentId: source.agentId, sessionKey: source.sessionKey },
-          admission: { ...f.candidate.groups[0]!.admission, release: releaseNew },
-        },
-      ],
-    } as unknown as typeof old;
+    const replacement = { ...old };
     expect(cache.stageCheckpoint(old)).toBe(true);
     const entered = createDeferredCore();
     const resume = createDeferredCore();
-    native.evidence.mockImplementation(async () => {
+    native.retain.mockImplementation(async () => {
       entered.resolve();
       await resume.promise;
-      throw new SessionTranscriptReadFenceError("Old source no longer current");
+      throw new SessionTranscriptReadFenceError("Old checkpoint no longer current");
     });
     const pending = admitRecipientConversationCheckpoint({ ...f.params, sourceCache: cache });
     await entered.promise;
@@ -425,12 +401,8 @@ describe("ready checkpoint recipient", () => {
     resume.resolve();
     expect(await pending).toBeUndefined();
     expect(cache.preparedCheckpoint).toBe(replacement);
-    expect(releaseNew).not.toHaveBeenCalled();
-    cache.retryCleanup();
-    expect(native.releaseGroup).toHaveBeenCalledOnce();
-    expect(releaseNew).not.toHaveBeenCalled();
     cache.clearCheckpoint(replacement);
-    expect(releaseNew).toHaveBeenCalledOnce();
+    expect(cache.preparedCheckpoint).toBeUndefined();
   });
   it("rechecks only bounded cold initialization after native SDK metadata advanced the proof", async () => {
     const f = fixture();
@@ -451,7 +423,7 @@ describe("ready checkpoint recipient", () => {
     expect(native.bootstrap).not.toHaveBeenCalled();
     result!.release();
   });
-  it("rebinds one source group for many exact summary contributions", async () => {
+  it("ignores covered donors and prepares only late uncovered history beside the checkpoint", async () => {
     const references = Array.from({ length: 40 }, (_, index) => {
       const through = {
         ...anchor,
@@ -465,121 +437,156 @@ describe("ready checkpoint recipient", () => {
         privateAudience: { participant: person, admission: through },
       };
     });
-    const f = fixture(references);
-    native.rebind.mockResolvedValue(
-      references.map((details) => ({
-        type: "custom_message",
-        customType: "openclaw.conversation-utterance.v1",
-        details,
-      })),
-    );
-    const result = await admitRecipientConversationCheckpoint(f.params);
-    expect(result).toBeDefined();
-    expect(native.groupRead).toHaveBeenCalledOnce();
-    expect(native.take).not.toHaveBeenCalled();
-    expect(native.select).not.toHaveBeenCalled();
+    const f = fixture(references),
+      cache = createConversationKnowledgeSourceCache();
+    onTestFinished(() => cache.clear());
+    const params = preparedParams(f, cache);
+    native.bootstrap.mockResolvedValue(f.candidate.bootstrap);
+    await prepareRecipientConversationCheckpoint(params, f.candidate);
+    expect(cache.preparedCheckpoint).toBeDefined();
+    expect(native.scan).not.toHaveBeenCalled();
     expect(native.rebind).not.toHaveBeenCalled();
-    expect(native.validate).toHaveBeenCalledOnce();
-    result!.release();
-    expect(native.releaseSource).toHaveBeenCalledOnce();
-  });
-  it.each(
-    ["projection", "checkpoint"].flatMap((kind) =>
-      ["transfer", "capacity", "abort"].map((outcome) => [kind, outcome]),
-    ),
-  )("keeps active %s custody out of shared cleanup until %s", async (kind, outcome) => {
-    const f = fixture();
-    const cache = createConversationKnowledgeSourceCache(outcome === "capacity" ? 128 : undefined);
-    const entered = createDeferredCore(),
-      resume = createDeferredCore();
-    const controller = new AbortController();
-    native.groupRead.mockImplementationOnce(async () => {
-      entered.resolve();
-      await resume.promise;
-      return {
-        assertCurrent: native.checkSource,
-        release: native.releaseSource,
-        selectContribution: native.select,
-      };
-    });
-    const params = {
-      ...f.params,
-      sourceCache: cache,
-      expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
-      signal: controller.signal,
+    expect(native.group).not.toHaveBeenCalled();
+    expect(native.groupRead).not.toHaveBeenCalled();
+    const lateSource = { ...source, sessionKey: "agent:example:late", sessionId: "late" };
+    const through = { ...anchor, ...lateSource, entryId: "late", rawSeq: 2 };
+    const late = {
+      ...reference,
+      source: lateSource,
+      through,
+      origin: conversationKnowledgeOrigin(lateSource, "utterance-observation"),
+      privateAudience: { participant: person, admission: through },
     };
-    const pending =
-      kind === "projection"
-        ? prepareRecipientConversationProjection(params, [
-            { reference, packet: rawPacket(reference) },
-          ])
-        : prepareRecipientConversationCheckpoint(
-            params,
-            f.candidate,
-            f.candidate.bootstrap as unknown as Parameters<
-              typeof prepareRecipientConversationCheckpoint
-            >[2],
-          );
-    const joined = pending.then(
-      () => false,
-      (error: unknown) => {
-        expect(error).toMatchObject({ name: "AbortError" });
-        return true;
-      },
+    native.rebind.mockResolvedValue(
+      Object.assign(
+        [...references, late].map((details) => ({
+          type: "custom_message",
+          customType: "openclaw.conversation-utterance.v1",
+          details,
+        })),
+        { evidence: preparedRootEvidence },
+      ),
     );
-    try {
-      await entered.promise;
-      cache.retryCleanup(); // Another background quantum must not own this live group.
-      expect(native.releaseGroup).not.toHaveBeenCalled();
-      if (outcome === "abort") {
-        controller.abort();
+    native.group.mockImplementation(async ({ personal }) => {
+      expect(personal.contributions).toEqual([late]);
+      return { release: native.releaseGroup, byteLength: 100, ownedByteLength: 100 };
+    });
+    expect(
+      await prepareRecipientConversationProjection(params, [
+        { reference: late, packet: rawPacket(late) },
+      ]),
+    ).toBe(true);
+    expect(native.group).toHaveBeenCalledOnce();
+    expect(cache.preparedRoot?.references).toEqual([late]);
+    expect(native.select).toHaveBeenCalledWith(late);
+    expect(cache.peek(conversationKnowledgeContributionId(reference), 0)).toBeUndefined();
+    const admitted = await admitRecipientConversationCheckpoint(params);
+    expect(admitted).toBeDefined();
+    expect(native.groupRead).toHaveBeenCalledOnce();
+    expect(cache.peek(conversationKnowledgeContributionId(late), 0)).toBeDefined();
+    admitted!.release();
+  });
+  it.each(["capacity", "abort", "target-revoked"])(
+    "does not stage a checkpoint after %s",
+    async (reason) => {
+      const f = fixture(),
+        cache = createConversationKnowledgeSourceCache(reason === "capacity" ? 1 : undefined);
+      onTestFinished(() => cache.clear());
+      const controller = new AbortController();
+      native.bootstrap.mockResolvedValue(f.candidate.bootstrap);
+      native.seal.mockImplementationOnce(async ({ checkpoint }) => {
+        if (reason === "abort") {
+          controller.abort();
+        }
+        if (reason === "target-revoked") {
+          native.checkTarget.mockImplementation(() => {
+            throw new Error("Target revoked");
+          });
+        }
+        return { checkpoint, validate: native.validate };
+      });
+      const pending = prepareRecipientConversationCheckpoint(
+        { ...preparedParams(f, cache), signal: controller.signal },
+        f.candidate,
+      );
+      if (reason === "capacity") {
+        await pending;
+      } else {
+        await expect(pending).rejects.toThrow();
       }
-      resume.resolve();
-      expect(await joined).toBe(outcome === "abort");
-      cache.retryCleanup();
-      expect(native.releaseGroup).toHaveBeenCalledTimes(outcome === "transfer" ? 0 : 1);
-      expect(
-        kind === "projection"
-          ? cache.preparedPackets(1).length
-          : Number(Boolean(cache.preparedCheckpoint)),
-      ).toBe(outcome === "transfer" ? 1 : 0);
-      for (const prepare of [native.group, native.groupRead]) {
-        const issuedEvidence =
-          kind === "projection"
-            ? native.subset.mock.results
-                .filter((result) => result.type === "return")
-                .map((result) => result.value.evidence)
-            : [preparedRootEvidence];
-        expect(prepare).toHaveBeenCalled();
-        for (const [request] of prepare.mock.calls) {
-          expect(issuedEvidence).toContain(request.personal.rootEvidence);
+      expect(cache.preparedCheckpoint).toBeUndefined();
+      expect(native.releaseTarget).toHaveBeenCalledOnce();
+      expect(native.groupRead).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["transfer", "capacity", "abort"])(
+    "keeps active projection custody out of shared cleanup until %s",
+    async (outcome) => {
+      const f = fixture();
+      const cache = createConversationKnowledgeSourceCache(
+        outcome === "capacity" ? 128 : undefined,
+      );
+      const entered = createDeferredCore(),
+        resume = createDeferredCore();
+      const controller = new AbortController();
+      native.groupRead.mockImplementationOnce(async () => {
+        entered.resolve();
+        await resume.promise;
+        return {
+          assertCurrent: native.checkSource,
+          release: native.releaseSource,
+          selectContribution: native.select,
+        };
+      });
+      const params = {
+        ...f.params,
+        sourceCache: cache,
+        expectedAudienceIdentity: conversationKnowledgeParticipantIdentity(person),
+        signal: controller.signal,
+      };
+      const pending = prepareRecipientConversationProjection(params, [
+        { reference, packet: rawPacket(reference) },
+      ]);
+      const joined = pending.then(
+        () => false,
+        (error: unknown) => {
+          expect(error).toMatchObject({ name: "AbortError" });
+          return true;
+        },
+      );
+      try {
+        await entered.promise;
+        cache.retryCleanup(); // Another background quantum must not own this live group.
+        expect(native.releaseGroup).not.toHaveBeenCalled();
+        if (outcome === "abort") {
+          controller.abort();
+        }
+        resume.resolve();
+        expect(await joined).toBe(outcome === "abort");
+        cache.retryCleanup();
+        expect(native.releaseGroup).toHaveBeenCalledTimes(outcome === "transfer" ? 0 : 1);
+        expect(cache.preparedPackets(1).length).toBe(outcome === "transfer" ? 1 : 0);
+        for (const prepare of [native.group, native.groupRead]) {
+          const issuedEvidence = native.subset.mock.results
+            .filter((result) => result.type === "return")
+            .map((result) => result.value.evidence);
+          expect(prepare).toHaveBeenCalled();
+          for (const [request] of prepare.mock.calls) {
+            expect(issuedEvidence).toContain(request.personal.rootEvidence);
+          }
+        }
+        expect(native.releaseSource).toHaveBeenCalledOnce();
+      } finally {
+        resume.resolve();
+        try {
+          await joined;
+        } finally {
+          cache.clear();
         }
       }
-      if (kind === "checkpoint" && outcome === "transfer") {
-        expect(cache.preparedCheckpoint?.groups.map((group) => group.source)).toEqual([
-          { agentId: source.agentId, sessionKey: source.sessionKey },
-        ]);
-      }
-      expect(native.releaseSource).toHaveBeenCalledOnce();
-    } finally {
-      resume.resolve();
-      try {
-        await joined;
-      } finally {
-        cache.clear();
-      }
-    }
-    expect(native.releaseGroup).toHaveBeenCalledOnce();
-  });
-  it("refuses a range removed or changed after summary preparation", async () => {
-    const f = fixture();
-    native.groupRead.mockRejectedValue(
-      new SessionTranscriptReadFenceError("Native prepared prefix changed"),
-    );
-    expect(await admitRecipientConversationCheckpoint(f.params)).toBeUndefined();
-    expect(native.retain).not.toHaveBeenCalled();
-    expect(native.releaseTarget).toHaveBeenCalledOnce();
-  });
+      expect(native.releaseGroup).toHaveBeenCalledOnce();
+    },
+  );
   it.each([
     [false, true],
     [true, true],
@@ -605,7 +612,6 @@ describe("ready checkpoint recipient", () => {
       expect(cache.peek(conversationKnowledgeContributionId(reference), 0)).toEqual(packet);
       expect(native.group).toHaveBeenCalledOnce();
       expect(native.groupRead).toHaveBeenCalledOnce();
-      expect(native.take).not.toHaveBeenCalled();
       expect(native.releaseSource).toHaveBeenCalledOnce();
       expect(native.retain).not.toHaveBeenCalled();
     },
@@ -917,12 +923,11 @@ describe("ready checkpoint recipient", () => {
     expect(cache.preparedPackets(1)).toHaveLength(0);
     expect(native.releaseGroup).toHaveBeenCalledOnce();
   });
-  it("retains a summary only with fresh donor grants and native prospective capacity", async () => {
+  it("retains a summary with current checkpoint authority and native prospective capacity", async () => {
     const f = fixture();
     const result = await admitRecipientConversationCheckpoint(f.params);
     expect(result).toBeDefined();
-    expect(native.groupRead).toHaveBeenCalledOnce();
-    expect(native.take).not.toHaveBeenCalled();
+    expect(native.groupRead).not.toHaveBeenCalled();
     expect(f.canAdmitPacket).toHaveBeenCalledOnce();
     expect(native.retain).toHaveBeenCalledWith(
       expect.objectContaining({ bootstrap: f.candidate.bootstrap }),
@@ -933,29 +938,26 @@ describe("ready checkpoint recipient", () => {
       throw new SessionTranscriptReadFenceError("Donor authority changed after the copy");
     });
     expect(() => result!.assertCurrent()).not.toThrow();
-    expect(native.releaseSource).toHaveBeenCalledOnce();
+    expect(native.releaseSource).not.toHaveBeenCalled();
     expect(native.releaseTarget).not.toHaveBeenCalled();
     native.checkTarget.mockImplementation(() => {
       throw new Error("Recipient authority revoked");
     });
     expect(() => result!.assertCurrent()).toThrow("Recipient authority revoked");
     result!.release();
-    expect(native.releaseSource).toHaveBeenCalledOnce();
+    expect(native.releaseSource).not.toHaveBeenCalled();
     expect(native.releaseTarget).toHaveBeenCalledOnce();
     expect(native.scan).not.toHaveBeenCalled();
     expect(native.bootstrap).not.toHaveBeenCalled();
   });
-  it.each(["missing-grant", "capacity", "missing-reference"])(
+  it.each(["capacity", "missing-checkpoint"])(
     "does not acknowledge or publish %s",
     async (reason) => {
       const f = fixture();
-      if (reason === "missing-grant") {
-        native.groupRead.mockRejectedValue(new SessionTranscriptReadFenceError("changed source"));
-      }
       if (reason === "capacity") {
         f.canAdmitPacket.mockReturnValue(false);
       }
-      if (reason === "missing-reference") {
+      if (reason === "missing-checkpoint") {
         native.validate.mockImplementation(() => {
           throw new SessionTranscriptReadFenceError("Native selection changed");
         });
@@ -973,16 +975,16 @@ describe("ready checkpoint recipient", () => {
     expect(await admitRecipientConversationCheckpoint(f.params)).toBeUndefined();
     expect(f.cache.clearCheckpoint).toHaveBeenCalledOnce();
     expect(f.cache.consumeCheckpoint).not.toHaveBeenCalled();
-    expect(native.releaseSource).toHaveBeenCalledOnce();
+    expect(native.releaseSource).not.toHaveBeenCalled();
   });
-  it("retains failed cleanup handles, still releases the target, and retries only unfinished cleanup", async () => {
+  it("retains failed recipient cleanup for retry without any covered donor handles", async () => {
     const f = fixture();
-    native.releaseSource.mockImplementation(() => {
+    native.releaseTarget.mockImplementationOnce(() => {
       throw new Error("temporary cleanup failure");
     });
-    await expect(admitRecipientConversationCheckpoint(f.params)).rejects.toThrow(
-      "cleanup remains pending",
-    );
+    const result = await admitRecipientConversationCheckpoint(f.params);
+    expect(result).toBeDefined();
+    expect(() => result!.release()).toThrow("cleanup remains pending");
     expect(f.cache.consumeCheckpoint).toHaveBeenCalledWith(f.candidate);
     expect(f.onPacket).toHaveBeenCalledOnce();
     expect(native.releaseTarget).toHaveBeenCalledOnce();
@@ -990,11 +992,9 @@ describe("ready checkpoint recipient", () => {
     if (typeof cleanup !== "function") {
       throw new Error("Expected retained native cleanup retry");
     }
-    expect(native.releaseSource).toHaveBeenCalledTimes(2);
-    native.releaseSource.mockImplementation(() => {});
+    expect(native.releaseSource).not.toHaveBeenCalled();
     cleanup();
-    expect(native.releaseSource).toHaveBeenCalledTimes(3);
-    expect(native.releaseTarget).toHaveBeenCalledOnce();
+    expect(native.releaseTarget).toHaveBeenCalledTimes(2);
     expect(f.cache.forgetCleanup).toHaveBeenCalledWith(cleanup);
   });
 });

@@ -50,17 +50,12 @@ export function selectCheckpointSourceReferences(params: {
         (params.participant.type === "profile" &&
           reference.privateAudience?.participant.type === "remote")),
   );
-  const byId = new Map(
-    references.map((reference) => [conversationKnowledgeContributionId(reference), reference]),
-  );
   return {
     references,
     currentOwn: (reference: ConversationKnowledgeReference) =>
       reference.source.sessionKey === params.branch.sessionKey &&
       reference.source.sessionId === params.branch.sessionId &&
       reference.source.lifecycleRevision === params.branch.lifecycleRevision,
-    isAudienceCandidate: (reference: ConversationKnowledgeReference) =>
-      isDeepStrictEqual(byId.get(conversationKnowledgeContributionId(reference)), reference),
   };
 }
 
@@ -109,7 +104,7 @@ export function prepareCheckpointGroupCache(params: {
   workCheck: () => void;
 }) {
   params.workCheck();
-  if (!params.cache || !params.evidence) {
+  if (!params.references.length || !params.cache || !params.evidence) {
     return undefined;
   }
   try {

@@ -190,11 +190,14 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   };
   params.retainCleanup(release);
   try {
-    const rootSnapshot = params.authority
-      ? await (
-          await import("./conversation-knowledge-checkpoint-frame-source.js")
-        ).readCheckpointInitialRootSnapshot(params.reader, branch, check)
+    const frames = params.authority
+      ? await import("./conversation-knowledge-checkpoint-frame-source.js")
       : undefined;
+    const rootSnapshot = await frames?.readCheckpointInitialRootSnapshot(
+      params.reader,
+      branch,
+      check,
+    );
     workCheck();
     const events = await readConversationKnowledgeRoot({
       branch,
@@ -212,14 +215,6 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       audienceIdentity: audienceKey,
     });
     const rootReferences = selection.references;
-    const groupManifest = prepareCheckpointGroupCache({
-      cache: params.sourceCache,
-      evidence: events.evidence,
-      branch,
-      references: rootReferences,
-      audienceIdentity: audienceKey,
-      workCheck,
-    });
     const sourceReader = createConversationKnowledgeSourceReader({
       branch,
       originalParticipant: params.participant,
@@ -473,7 +468,6 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
     const result = {
       audienceKey,
       references: rootReferences,
-      isAudienceCandidate: selection.isAudienceCandidate,
       read: (reference: ConversationKnowledgeReference, retainText = true) =>
         readAvailableSource(reference, () => read(reference, retainText)),
       validate: (
@@ -493,6 +487,16 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         retainProof?: (source: SessionSourceAssertion) => void,
         invalidCached?: InvalidCheckpointCachedPacket,
       ) {
+        // Callers select the uncovered tail first. Covered provenance must not
+        // acquire source groups merely because it is still present in the root.
+        const groupManifest = prepareCheckpointGroupCache({
+          cache: params.sourceCache,
+          evidence: events.evidence,
+          branch,
+          references,
+          audienceIdentity: audienceKey,
+          workCheck,
+        });
         let complete = true;
         const ownCount = references.filter(selection.currentOwn).length;
         const verifyOwn = async (reference: ConversationKnowledgeReference) => {
@@ -672,16 +676,16 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       ) {
         workCheck();
         const evidence = events.evidence;
-        if (!evidence) {
+        if (!frames || !evidence) {
           return undefined;
         }
-        const { prepareCheckpointInitialFrame } =
-          await import("./conversation-knowledge-checkpoint-frame-source.js");
-        const frame = await prepareCheckpointInitialFrame({
+        const frame = await frames.prepareCheckpointInitialFrame({
           ...input,
           branch,
           participant: params.participant,
           audience: params.audience,
+          reader: params.reader,
+          signal: params.signal,
           rootSnapshot,
           evidence,
           sources: result,

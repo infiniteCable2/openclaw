@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
+import { prepareConversationKnowledgeCheckpointSelection } from "../../config/sessions/conversation-knowledge-checkpoint-admission.js";
 import type {
   ConversationKnowledgeCheckpoint,
   PreparedConversationKnowledgeCheckpointCoverage,
@@ -82,6 +84,8 @@ export async function prepareCheckpointInitialFrame(
     branch: ConversationKnowledgeBranch;
     participant: SessionParticipantIdentity;
     audience: ConversationPrivateAudience;
+    reader: SessionEntryCohortReader;
+    signal: AbortSignal;
     rootSnapshot: Awaited<ReturnType<typeof readCheckpointInitialRootSnapshot>> | undefined;
     evidence: NativeKnowledgeRootEvidence;
     sources: FrameSources;
@@ -91,34 +95,27 @@ export async function prepareCheckpointInitialFrame(
   },
 ) {
   params.workCheck();
-  const { sources, checkpoint, coverage } = params;
+  const { sources, coverage } = params;
+  let { checkpoint } = params;
   if (
     !params.rootSnapshot ||
-    !sources.references.length ||
+    (!sources.references.length && !checkpoint) ||
     Boolean(checkpoint) !== Boolean(coverage)
   ) {
     return undefined;
   }
   coverage?.assertCheckpoint(checkpoint!);
-  const originals = new Map(
-    sources.references.map((reference) => [
-      conversationKnowledgeContributionId(reference),
-      reference,
-    ]),
+  const references = sources.references.filter(
+    (reference) => !coverage?.has(conversationKnowledgeContributionId(reference)),
   );
-  if (coverage && [...coverage.contributionIds()].some((id) => !originals.has(id))) {
-    return undefined;
-  }
   const tail = new Map(
     params.tail.map((value) => [conversationKnowledgeContributionId(value.reference), value]),
   );
   if (
     tail.size !== params.tail.length ||
-    sources.references.some((reference) => {
+    references.some((reference) => {
       const id = conversationKnowledgeContributionId(reference);
-      return coverage?.has(id)
-        ? !coverage.matchesReference(reference)
-        : !isDeepStrictEqual(tail.get(id)?.reference, reference);
+      return !isDeepStrictEqual(tail.get(id)?.reference, reference);
     })
   ) {
     return undefined;
@@ -136,7 +133,7 @@ export async function prepareCheckpointInitialFrame(
     { reference: ConversationKnowledgeReference; packet: PreparedConversationKnowledgePacket }
   >();
   const complete = await sources.verifyAll(
-    sources.references,
+    references,
     (reference, range) => {
       verified.set(conversationKnowledgeContributionId(reference), range);
     },
@@ -149,41 +146,59 @@ export async function prepareCheckpointInitialFrame(
   for (const { reference, packet } of invalid.values()) {
     params.invalidCached?.(reference, packet);
   }
-  if (!complete || verified.size !== sources.references.length) {
+  if (!complete || verified.size !== references.length) {
     return undefined;
   }
   const claims: PreparedInitialSessionContextSourceClaim[] = [];
   const ranges: PersonalConversationContributionRange[] = [];
   const packets: PreparedProjectedInitialSessionContext["projection"]["packets"][number][] = [];
-  for (const reference of sources.references) {
+  for (const reference of references) {
     const id = conversationKnowledgeContributionId(reference);
     const selected = verified.get(id)!;
     const native = params.nativeRanges.get(id);
-    if (
-      !native ||
-      !isDeepStrictEqual(native.claim, selected.claim) ||
-      (coverage?.has(id) && !coverage.matchesReference(reference, selected))
-    ) {
+    if (!native || !isDeepStrictEqual(native.claim, selected.claim)) {
       return undefined;
     }
     const sourceClaim = claims.push(selected.claim) - 1;
     ranges.push(native.range);
-    if (!coverage?.has(id)) {
-      const value = tail.get(id)!;
-      if (!value.packet.part.complete) {
-        return undefined;
-      }
-      packets.push({
-        receipt: reference,
-        text: value.packet.part.text,
-        offset: 0,
-        nextOffset: value.packet.part.nextOffset ?? 0,
-        complete: true,
-        sourceClaim,
-      });
+    const value = tail.get(id)!;
+    if (!value.packet.part.complete) {
+      return undefined;
     }
+    packets.push({
+      receipt: reference,
+      text: value.packet.part.text,
+      offset: 0,
+      nextOffset: value.packet.part.nextOffset ?? 0,
+      complete: true,
+      sourceClaim,
+    });
   }
   const original = sources.source([...frameProofs]);
+  const checkpointSelection =
+    checkpoint && coverage
+      ? await prepareConversationKnowledgeCheckpointSelection({
+          branch: params.branch,
+          checkpoint,
+          coverage,
+          audienceKey: conversationKnowledgeParticipantIdentity(params.participant)!,
+          reader: params.reader,
+          source: original,
+          signal: params.signal,
+        })
+      : undefined;
+  if (checkpoint && !checkpointSelection) {
+    return undefined;
+  }
+  checkpoint = checkpointSelection?.checkpoint;
+  const rootSource = checkpointSelection
+    ? checkpointSelection.source({
+        branch: params.branch,
+        checkpoint: checkpoint!,
+        audienceKey: conversationKnowledgeParticipantIdentity(params.participant)!,
+        source: original,
+      })
+    : original;
   const root = params.rootSnapshot;
   params.workCheck();
   if (
@@ -200,9 +215,9 @@ export async function prepareCheckpointInitialFrame(
     expected: root.entry,
     transcript: { sessionId: root.entry.sessionId, version: root.version, consistency: "prefix" },
   };
-  const prefix = Object.assign(() => original(), {
+  const prefix = Object.assign(() => rootSource(), {
     prepareSessionSource: async () => {
-      const prepared = await prepareSessionSourceAuthority(original);
+      const prepared = await prepareSessionSourceAuthority(rootSource);
       return {
         ...prepared,
         checks: [
@@ -229,6 +244,7 @@ export async function prepareCheckpointInitialFrame(
       projection: { branch: params.branch, packets, claims, ...(checkpoint ? { checkpoint } : {}) },
     },
     evidence: params.evidence,
+    checkpointSelection,
     ranges,
     participant: params.participant,
     audience: params.audience,

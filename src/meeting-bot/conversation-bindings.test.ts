@@ -176,9 +176,18 @@ describe("original speech binding to native reply", () => {
       });
       try {
         await started.promise;
+        let ready = false;
+        const readiness = bindings.connectionPreparation!.ready().then(() => {
+          ready = true;
+        });
+        await Promise.resolve();
+        expect(ready).toBe(false);
         expect(f.params.inputSource.admitInput).not.toHaveBeenCalled();
         expect(mocks.getReplyFromConfig).not.toHaveBeenCalled();
         expect(mocks.prepareGreeting).not.toHaveBeenCalled();
+        created.resolve();
+        await readiness;
+        expect(ready).toBe(true);
       } finally {
         created.resolve();
         await reply;
@@ -259,23 +268,37 @@ describe("original speech binding to native reply", () => {
     expect(closeConnection).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps preparation failure content-free and does not disable the original input source", async () => {
+  it("reports preparation failure without admitting input and still joins source cleanup", async () => {
     const f = fixture();
     const { promise, resolve } = Promise.withResolvers<void>();
     f.params.logger.warn = vi.fn(() => resolve());
+    const closeConnection = vi.fn(async () => {});
     f.params.inputSource = {
       ...f.params.inputSource,
+      closeConnection,
       prepareConnection: vi.fn(async () => {
         throw new Error("sensitive source failure");
       }),
     };
-    createMeetingRealtimeEngineBindingsV2(f.params);
+    const bindings = createMeetingRealtimeEngineBindingsV2(f.params);
     await promise;
     expect(f.params.logger.warn).toHaveBeenCalledExactlyOnceWith(
-      "Related conversation preparation deferred at connection opening",
+      "Related conversation preparation failed at connection opening",
     );
+    await expect(bindings.connectionPreparation!.ready()).rejects.toThrow(
+      "sensitive source failure",
+    );
+    await expect(
+      bindings.consultAgent({
+        meetingSessionId: "example-call",
+        args: { question: "A question" },
+        transcript: [],
+      }),
+    ).rejects.toThrow("sensitive source failure");
     expect(f.params.inputSource.admitInput).not.toHaveBeenCalled();
     expect(mocks.getReplyFromConfig).not.toHaveBeenCalled();
+    await bindings.connectionPreparation!.close();
+    expect(closeConnection).toHaveBeenCalledOnce();
   });
 
   it("uses the original host input and native queue with no task-subagent dispatch", async () => {

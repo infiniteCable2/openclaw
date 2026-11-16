@@ -1,5 +1,5 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { conversationKnowledgeParticipantIdentity } from "./conversation-audience.js";
@@ -24,6 +24,7 @@ import {
 import {
   createConversationKnowledgeCheckpoint,
   prepareConversationKnowledgeCheckpointCoverage,
+  PreparedConversationKnowledgeCheckpointCoverage,
 } from "./conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "./conversation-knowledge-identity.js";
 import {
@@ -35,7 +36,6 @@ import { selectConversationKnowledgeReceipts } from "./conversation-knowledge-se
 import {
   issuePreparedKnowledgeRootCandidates,
   readConversationKnowledgeRoot,
-  readPreparedConversationKnowledgeRoot,
   readPreparedConversationKnowledgeRootEvidence,
   recordConversationUtteranceObservation,
   type ConversationKnowledgeBranch,
@@ -200,7 +200,6 @@ describe("native conversation checkpoint storage and admission", () => {
               checkpoint,
               coverage,
               audienceKey,
-              availableReferences: [reference],
               writeTarget: target,
               reader: targetHeld.databaseClaim.reader,
               bootstrap,
@@ -327,7 +326,6 @@ describe("native conversation checkpoint storage and admission", () => {
               checkpoint,
               coverage,
               audienceKey,
-              availableReferences: [reference],
               bootstrap: staleBootstrap!,
               writeTarget: branch,
               reader: held.databaseClaim.reader,
@@ -359,7 +357,6 @@ describe("native conversation checkpoint storage and admission", () => {
                 checkpoint,
                 coverage,
                 audienceKey,
-                availableReferences: [reference],
                 bootstrap: advanced!,
                 writeTarget: branch,
                 reader: held.databaseClaim.reader,
@@ -676,29 +673,60 @@ describe("native conversation checkpoint storage and admission", () => {
               maxBytes: 4 * 1024 * 1024,
               sharedMetadata: true,
             });
-            const selected = await readPreparedConversationKnowledgeRoot({
-              branch: sealed,
-              reader,
-              manifest,
-              assertCurrent: sealedAuthority,
-            });
-            const selection = prepareConversationKnowledgeCheckpointSelection({
+            // Publication ends historical donor custody. Replacing that covered
+            // source cannot invalidate the independently stored root summary.
+            await upsertSessionEntryCore(donor, { lifecycleRevision: "covered-source-replaced" });
+            const selectionInput = {
               branch: sealed,
               checkpoint,
               coverage,
               audienceKey,
-              manifest,
-              rootEvidence: selected.evidence!,
-              availableReferences: exact,
-              source: sealedAuthority,
-            });
-            expect(selection).toBeDefined();
-            const rootEvidence = await readPreparedConversationKnowledgeRootEvidence({
-              branch: sealed,
               reader,
-              manifest,
-              assertCurrent: sealedAuthority,
+              source: sealedAuthority,
+            };
+            const forged = createConversationKnowledgeCheckpoint({
+              branch: sealed,
+              audienceKey,
+              covered: [reference],
+              summary: "Invented stored summary.",
             });
+            await expect(
+              prepareConversationKnowledgeCheckpointSelection({
+                ...selectionInput,
+                checkpoint: forged,
+                coverage: prepareConversationKnowledgeCheckpointCoverage({
+                  checkpoint: forged,
+                  records: [forged],
+                  assertCurrent() {},
+                }),
+              }),
+            ).rejects.toThrow("unavailable in its original root");
+            const selection = await prepareConversationKnowledgeCheckpointSelection(selectionInput);
+            expect(selection).toBeDefined();
+            const enumerate = vi.spyOn(
+              PreparedConversationKnowledgeCheckpointCoverage.prototype,
+              "contributionIds",
+            );
+            const rehash = vi.spyOn(
+              PreparedConversationKnowledgeCheckpointCoverage.prototype,
+              "matchesReference",
+            );
+            try {
+              expect(
+                selection!.validate({
+                  branch: sealed,
+                  checkpoint: selection!.checkpoint,
+                  coverage,
+                  audienceKey,
+                  source: sealedAuthority,
+                }),
+              ).toBe(selection!.checkpoint);
+              expect(enumerate).not.toHaveBeenCalled();
+              expect(rehash).not.toHaveBeenCalled();
+            } finally {
+              enumerate.mockRestore();
+              rehash.mockRestore();
+            }
             const bootstrap = await prepareConversationKnowledgeBootstrap({
               branch: sealed,
               env: state.env,
@@ -710,8 +738,6 @@ describe("native conversation checkpoint storage and admission", () => {
               checkpoint: selection!.checkpoint,
               coverage,
               audienceKey,
-              manifest,
-              rootEvidence,
               selection: selection!,
               bootstrap: bootstrap!,
               writeTarget: sealed,

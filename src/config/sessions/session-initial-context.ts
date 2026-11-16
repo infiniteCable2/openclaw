@@ -142,7 +142,7 @@ export function assertInitialSessionContextReadSource(
       bySession.set(source.sessionKey, candidates);
     }
     if (
-      !context.projection.claims.length ||
+      (!context.projection.claims.length && !context.projection.checkpoint) ||
       context.projection.claims.some(
         (claim) =>
           !bySession

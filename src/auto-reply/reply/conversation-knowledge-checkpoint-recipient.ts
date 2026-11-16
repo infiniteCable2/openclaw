@@ -9,15 +9,11 @@ import {
 } from "../../config/sessions/conversation-knowledge-checkpoint-admission.js";
 import type { PreparedConversationKnowledgeBootstrap } from "../../config/sessions/conversation-knowledge-checkpoint-admission.js";
 import { createConversationKnowledgeCheckpointContext } from "../../config/sessions/conversation-knowledge-checkpoint-context.js";
-import { selectConversationKnowledgeCheckpointBootstrap } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import { selectConversationKnowledgeReceipts } from "../../config/sessions/conversation-knowledge-selection.js";
 import {
-  issuePreparedKnowledgeRootCandidates,
   prepareConversationKnowledgeRootSubset,
-  readConversationKnowledgeRoot,
   readPreparedConversationKnowledgeRoot,
-  readPreparedConversationKnowledgeRootEvidence,
   type PreparedKnowledgeRootCandidates,
 } from "../../config/sessions/conversation-knowledge-store.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
@@ -29,7 +25,6 @@ import { preparePersonalConversationContributionGroup } from "../../gateway/sess
 import { prepareTranscriptReadAuthority } from "../../gateway/session-transcript-read-authority.js";
 import type { PreparedConversationKnowledgeRootCheckpoint } from "./conversation-knowledge-checkpoint-owner.js";
 import type { PreparedConversationKnowledgePacket } from "./conversation-knowledge-source-cache.js";
-import type { PreparedRecipientConversationCheckpoint } from "./conversation-knowledge-source-cache.types.js";
 import { checkpointReadCustody } from "./conversation-knowledge-source-custody.js";
 import {
   readConversationKnowledgeInputs,
@@ -96,6 +91,9 @@ export async function prepareRecipientConversationProjection(
       branch.sessionKey,
       "branches",
       branch.lifecycleRevision,
+    ).filter(
+      (reference) =>
+        !cache.preparedCheckpoint?.coverage.has(conversationKnowledgeContributionId(reference)),
     );
     if (cache.consumptionRevision !== epoch) {
       return false;
@@ -389,7 +387,7 @@ export async function prepareRecipientConversationProjection(
   }
 }
 
-/** Prepare a bootstrap without hydrating source text. Every summary donor still needs native custody. */
+/** The persisted root checkpoint owns covered history; only uncovered tail needs donor custody. */
 export async function prepareRecipientConversationCheckpoint(
   params: ReplyConversationKnowledgeParams,
   latest: PreparedConversationKnowledgeRootCheckpoint,
@@ -407,7 +405,7 @@ export async function prepareRecipientConversationCheckpoint(
     return;
   }
   const { branch, targetFacts } = target;
-  const { reads, drop, release } = checkpointReadCustody(() => targetFacts.release(), cache);
+  const { release } = checkpointReadCustody(() => targetFacts.release(), cache);
   const check = composeSessionSourceAssertion([params.assertCurrent, targetFacts.assertCurrent]);
   try {
     const bootstrap =
@@ -421,139 +419,28 @@ export async function prepareRecipientConversationCheckpoint(
     if (!bootstrap) {
       return;
     }
-    const events = await readConversationKnowledgeRoot({ ...params, branch, assertCurrent: check });
-    const references = selectConversationKnowledgeReceipts(
-      events,
-      branch.sessionId,
-      branch.sessionKey,
-      "branches",
-      branch.lifecycleRevision,
-    ).filter((reference) => latest.coverage.has(conversationKnowledgeContributionId(reference)));
-    // This is only preselection. Every selected alias below must obtain its
-    // exact account-scoped native personal grant before a summary can be staged.
-    const isAudienceCandidate = (reference: ConversationKnowledgeReference) =>
-      params.originalParticipant?.type === "profile" &&
-      reference.privateAudience?.participant.type === "remote";
-    if (
-      !selectConversationKnowledgeCheckpointBootstrap({
-        ...latest,
-        branch,
-        audienceKey: params.expectedAudienceIdentity,
-        progress: new Map(),
-        availableReferences: references,
-        isAudienceCandidate,
-      })
-    ) {
-      return;
-    }
-    const manifest = issuePreparedKnowledgeRootCandidates(events.evidence, references, {
-      maxBytes: cache.maxPreparedRootBytes,
-      sharedMetadata: true,
-    });
-    // Prepare against the exact selected manifest scope that the model boundary
-    // will rebind, not the larger root read's independently issued membership.
-    const selectedEvents = await readPreparedConversationKnowledgeRoot({
-      ...params,
+    const selection = await prepareConversationKnowledgeCheckpointSelection({
+      ...latest,
       branch,
-      manifest,
-      assertCurrent: check,
+      audienceKey: params.expectedAudienceIdentity,
+      reader: params.reader,
+      source: check,
+      signal: params.signal,
     });
-    if (!selectedEvents.evidence) {
+    check();
+    params.signal?.throwIfAborted();
+    if (!selection) {
       return;
     }
-    const bySource = new Map<string, ConversationKnowledgeReference[]>();
-    for (const reference of references) {
-      const key = JSON.stringify([reference.source, reference.through.storePath]);
-      const group = bySource.get(key) ?? [];
-      group.push(reference);
-      bySource.set(key, group);
-    }
-    const groups: PreparedRecipientConversationCheckpoint["groups"][number][] = [];
-    const retirements: (() => void)[] = [];
-    try {
-      for (const selected of bySource.values()) {
-        const request = {
-          purpose: "conversation-differences",
-          personal: {
-            originalParticipant: params.originalParticipant,
-            assertCurrent: check,
-            target: branch,
-            targetAudience: params.destinationAudience,
-            rootEvidence: selectedEvents.evidence,
-          },
-          getRuntimeConfig: params.getRuntimeConfig,
-          sources: [selected[0]!.source],
-        } as const;
-        const admission = await preparePersonalConversationContributionGroup({
-          ...request,
-          personal: { ...request.personal, contributions: selected },
-        });
-        const retire = () => admission.release();
-        retirements.push(retire);
-        const grant = await prepareTranscriptReadAuthority({
-          ...request,
-          personal: { ...request.personal, contributionGroup: admission },
-        });
-        const read = { grant };
-        reads.push(read);
-        for (const reference of selected) {
-          const range = grant.selectContribution(reference);
-          if (!range || !latest.coverage.matchesReference(reference, range)) {
-            return;
-          }
-        }
-        drop(read);
-        groups.push(
-          Object.freeze({
-            source: Object.freeze({
-              agentId: selected[0]!.source.agentId,
-              sessionKey: selected[0]!.source.sessionKey,
-            }),
-            admission,
-          }),
-        );
-      }
-      check();
-      params.signal?.throwIfAborted();
-      const selection = prepareConversationKnowledgeCheckpointSelection({
-        ...latest,
-        branch,
-        audienceKey: params.expectedAudienceIdentity,
-        manifest,
-        rootEvidence: selectedEvents.evidence,
-        availableReferences: references,
-        source: check,
-        isAudienceCandidate,
-      });
-      if (!selection) {
-        return;
-      }
-      if (
-        cache.stageCheckpoint(
-          Object.freeze({
-            ...latest,
-            checkpoint: selection.checkpoint,
-            manifest,
-            bootstrap,
-            selection,
-            groups: Object.freeze(groups),
-          }),
-        )
-      ) {
-        retirements.length = 0;
-      }
-    } finally {
-      for (const retire of retirements) {
-        cache.retainCleanup(retire);
-      }
-      cache.retryCleanup();
-    }
+    cache.stageCheckpoint(
+      Object.freeze({ ...latest, checkpoint: selection.checkpoint, bootstrap, selection }),
+    );
   } finally {
     release();
   }
 }
 
-/** Model boundary: prepared proof + fresh grants + native budget/atomic append, never source hydration. */
+/** Model boundary: current root/recipient proof + native budget/atomic append, never covered donors. */
 export async function admitRecipientConversationCheckpoint(
   params: ReplyConversationKnowledgeParams,
 ): Promise<PreparedReplyConversationKnowledge | undefined> {
@@ -577,38 +464,10 @@ export async function admitRecipientConversationCheckpoint(
   }
   const { branch, targetFacts } = target;
   const custody = checkpointReadCustody(() => targetFacts.release(), cache);
-  const { reads, release } = custody;
+  const { release } = custody;
   const check = composeSessionSourceAssertion([params.assertCurrent, targetFacts.assertCurrent]);
   let retained = false;
   try {
-    const rootEvidence = await readPreparedConversationKnowledgeRootEvidence({
-      ...params,
-      branch,
-      manifest: candidate.manifest,
-      assertCurrent: check,
-    });
-    candidate.selection.validate({
-      ...candidate,
-      branch,
-      audienceKey: candidate.checkpoint.audienceKey,
-      rootEvidence,
-    });
-    for (const group of candidate.groups) {
-      const grant = await prepareTranscriptReadAuthority({
-        purpose: "conversation-differences",
-        personal: {
-          originalParticipant: params.originalParticipant,
-          assertCurrent: check,
-          target: branch,
-          targetAudience: params.destinationAudience,
-          rootEvidence,
-          contributionGroup: group.admission,
-        },
-        getRuntimeConfig: params.getRuntimeConfig,
-        sources: [group.source],
-      });
-      reads.push({ grant });
-    }
     const recipientAuthority = composeSessionSourceAssertion([check], (assert) => {
       if (!custody.active) {
         throw new Error("Checkpoint recipient grant was released");
@@ -616,10 +475,14 @@ export async function admitRecipientConversationCheckpoint(
       (params.retainedSignal ?? params.signal)?.throwIfAborted();
       assert();
     });
-    const authority = composeSessionSourceAssertion([
-      recipientAuthority,
-      ...reads.map((read) => read.grant.assertCurrent),
-    ]);
+    candidate.selection.validate({
+      ...candidate,
+      branch,
+      audienceKey: candidate.checkpoint.audienceKey,
+      source: recipientAuthority,
+      signal: params.signal,
+    });
+    recipientAuthority();
     const report = createConversationKnowledgeCheckpointContext({
       checkpoint: candidate.checkpoint,
       branch,
@@ -630,7 +493,7 @@ export async function admitRecipientConversationCheckpoint(
           branch,
           bootstrap: candidate.bootstrap,
           admission: params.bootstrapInput,
-          source: authority,
+          source: recipientAuthority,
           signal: params.signal,
           env: params.reader.database.env,
         })
@@ -643,7 +506,7 @@ export async function admitRecipientConversationCheckpoint(
         branch,
         admission: params.bootstrapInput,
         initialization: params.bootstrapInitialization,
-        source: authority,
+        source: recipientAuthority,
         signal: params.signal,
         env: params.reader.database.env,
       });
@@ -660,10 +523,9 @@ export async function admitRecipientConversationCheckpoint(
       bootstrap,
       branch,
       audienceKey: candidate.checkpoint.audienceKey,
-      rootEvidence,
       writeTarget: params.retainInHistory.writeTarget,
       reader: params.reader,
-      source: authority,
+      source: recipientAuthority,
       signal: params.signal,
       contextLimits: params.retainInHistory.contextLimits,
     });
@@ -679,11 +541,6 @@ export async function admitRecipientConversationCheckpoint(
     });
     cache.consumeCheckpoint(candidate);
     params.onPacket?.(message);
-    // The committed summary is now recipient history; donor custody ends at
-    // this copy boundary without shortening the recipient's live authority.
-    for (const read of reads.toReversed()) {
-      custody.drop(read);
-    }
     retained = true;
     return {
       fragments: [],

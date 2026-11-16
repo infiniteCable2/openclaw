@@ -4,7 +4,10 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
 import { assertModelSelectionUnlocked } from "../../sessions/model-overrides.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
-import { conversationKnowledgeCheckpointRangeDigest } from "./conversation-knowledge-checkpoint.js";
+import {
+  CONVERSATION_KNOWLEDGE_CHECKPOINT,
+  readConversationKnowledgeCheckpoint,
+} from "./conversation-knowledge-checkpoint.js";
 import {
   conversationKnowledgeContributionId,
   conversationKnowledgePacketId,
@@ -12,6 +15,7 @@ import {
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import { validateSessionTranscriptContextInDatabase } from "./session-accessor.sqlite-model-context.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
+import { observeTranscriptReportReceipts } from "./session-accessor.sqlite-transcript-reports.worker.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { assertCapturedSessionEntryReadSource } from "./session-entry-read-source.js";
@@ -59,7 +63,7 @@ function assertInitialRootProjection(
     entry.forkSource ||
     typeof header?.timestamp !== "string" ||
     typeof header.cwd !== "string" ||
-    !projection.claims.length
+    (!projection.claims.length && !projection.checkpoint)
   ) {
     throw new Error("Initial root projection does not match its admitted root and target.");
   }
@@ -144,23 +148,39 @@ function assertInitialRootProjection(
     packetIds.add(packetId);
   }
   if (projection.checkpoint) {
-    const covered = new Map(
-      projection.claims.map((claim) => [
-        conversationKnowledgeContributionId(claim.reference),
-        claim,
-      ]),
-    );
-    for (const [index, id] of projection.checkpoint.coveredContributionIds.entries()) {
-      const claim = covered.get(id);
-      if (
-        !claim?.through ||
-        conversationKnowledgeCheckpointRangeDigest(claim.reference, {
-          through: claim.through,
-          from: claim.from,
-        }) !== projection.checkpoint.coveredRangeDigests[index]
-      ) {
-        throw new Error("Initial root checkpoint lost its exact prepared donor coverage.");
-      }
+    // The native root publication is the artifact's source after summarization.
+    // A self-consistent hash or caller-created checkpoint does not prove publication.
+    const checkpoint = readConversationKnowledgeCheckpoint(projection.checkpoint);
+    const observed =
+      checkpoint &&
+      observeTranscriptReportReceipts(
+        database,
+        {
+          agentId: database.agentId,
+          path: database.path,
+          sessionKey: context.sourceSessionKey,
+          sessionId: context.sourceEntry.sessionId,
+        },
+        [
+          {
+            customType: CONVERSATION_KNOWLEDGE_CHECKPOINT,
+            receipt: { field: "checkpointId", value: checkpoint.checkpointId },
+          },
+        ],
+      )[0];
+    const persisted =
+      observed && observed.status !== "missing"
+        ? readConversationKnowledgeCheckpoint(observed.report.details)
+        : undefined;
+    if (
+      !checkpoint ||
+      !persisted ||
+      !isDeepStrictEqual(checkpoint, persisted) ||
+      checkpoint.root.agentId !== branch.agentId ||
+      checkpoint.root.sessionId !== branch.root.sessionId ||
+      checkpoint.root.lifecycleRevision !== branch.root.lifecycleRevision
+    ) {
+      throw new Error("Initial root checkpoint differs from its persisted root artifact.");
     }
   }
 }

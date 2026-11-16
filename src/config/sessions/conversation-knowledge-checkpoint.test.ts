@@ -109,17 +109,12 @@ it("keeps linked channel checkpoint candidates distinct from native disclosure a
     coverage,
     audienceKey,
     progress: new Map(),
-    availableReferences: [saved],
   };
-  expect(selectConversationKnowledgeCheckpointBootstrap(selection)).toBeUndefined();
-  expect(
-    selectConversationKnowledgeCheckpointBootstrap({ ...selection, isAudienceCandidate }),
-  ).toEqual(checkpoint);
+  expect(selectConversationKnowledgeCheckpointBootstrap(selection)).toEqual(checkpoint);
   expect(
     selectConversationKnowledgeCheckpointBootstrap({
       ...selection,
       audienceKey: "another-person",
-      isAudienceCandidate,
     }),
   ).toBeUndefined();
   const unconfirmed = { ...saved, privateAudience: undefined };
@@ -286,9 +281,8 @@ describe("conversation checkpoint coverage", () => {
         branch,
         audienceKey,
         progress: new Map(),
-        availableReferences: [rewritten],
       }),
-    ).toBeUndefined();
+    ).toEqual(checkpoint);
     expect(
       readConversationKnowledgeCheckpoint({ ...checkpoint, coveredRangeDigests: [] }),
     ).toBeUndefined();
@@ -302,7 +296,6 @@ describe("conversation checkpoint coverage", () => {
       branch,
       audienceKey,
       progress: new Map(),
-      availableReferences: [reference(1), reference(2), reference(3)],
     };
     expect(selectConversationKnowledgeCheckpointBootstrap(input)).toEqual(checkpoint);
     expect(coverage.has(conversationKnowledgeContributionId(reference(2)))).toBe(false);
@@ -315,14 +308,8 @@ describe("conversation checkpoint coverage", () => {
     expect(
       selectConversationKnowledgeCheckpointBootstrap({ ...input, hasCheckpointReceipt: true }),
     ).toBeUndefined();
-    expect(
-      selectConversationKnowledgeCheckpointBootstrap({
-        ...input,
-        availableReferences: [reference(1)],
-      }),
-    ).toBeUndefined();
   });
-  it("does not grant another audience, replaced source, root incarnation or self replay", () => {
+  it("keeps root and audience binding after covered source replacement", () => {
     const checkpoint = create();
     const input = {
       checkpoint,
@@ -330,16 +317,9 @@ describe("conversation checkpoint coverage", () => {
       branch,
       audienceKey,
       progress: new Map(),
-      availableReferences: [reference(1)],
     };
     expect(
       selectConversationKnowledgeCheckpointBootstrap({ ...input, audienceKey: "other-person" }),
-    ).toBeUndefined();
-    expect(
-      selectConversationKnowledgeCheckpointBootstrap({
-        ...input,
-        availableReferences: [reference(1, "replacement-instance")],
-      }),
     ).toBeUndefined();
     expect(
       selectConversationKnowledgeCheckpointBootstrap({
@@ -352,7 +332,7 @@ describe("conversation checkpoint coverage", () => {
         ...input,
         branch: { ...branch, ...reference(1).source },
       }),
-    ).toBeUndefined();
+    ).toEqual(checkpoint);
     expect(
       selectConversationKnowledgeCheckpointBootstrap({
         ...input,

@@ -238,7 +238,7 @@ export async function prepareConversationKnowledgeInitialContext(params: {
       ...authority,
       audienceKey: warm?.audienceKey ?? sources.audienceKey,
     });
-    let coverage = checkpoint
+    const coverage = checkpoint
       ? warm?.checkpoint?.checkpointId === checkpoint.checkpointId && warm.coverage
         ? warm.coverage
         : await readConversationKnowledgeCheckpointCoverage({ ...authority, checkpoint })
@@ -250,15 +250,16 @@ export async function prepareConversationKnowledgeInitialContext(params: {
         branch,
         audienceKey: sources.audienceKey,
         progress: new Map(),
-        availableReferences: sources.references,
-        isAudienceCandidate: sources.isAudienceCandidate,
       });
     }
     const cached = new Map(
       warm?.tail.map((value) => [conversationKnowledgeContributionId(value.reference), value]),
     );
+    const references = sources.references.filter(
+      (reference) => !(checkpoint && coverage?.has(conversationKnowledgeContributionId(reference))),
+    );
     const cachedPackets = new Map(
-      sources.references.flatMap((reference) => {
+      references.flatMap((reference) => {
         const id = conversationKnowledgeContributionId(reference);
         const prior = cached.get(id);
         return prior && isDeepStrictEqual(prior.reference, reference)
@@ -267,9 +268,9 @@ export async function prepareConversationKnowledgeInitialContext(params: {
       }),
     );
     const verified = new Map<string, PreparedRootKnowledgeRange>();
-    const toVerify = sources.references.filter((reference) => {
+    const toVerify = references.filter((reference) => {
       const id = conversationKnowledgeContributionId(reference);
-      return (checkpoint && coverage?.has(id)) || cachedPackets.has(id);
+      return cachedPackets.has(id);
     });
     if (toVerify.length) {
       await sources.verifyAll(
@@ -281,28 +282,9 @@ export async function prepareConversationKnowledgeInitialContext(params: {
       );
     }
     const claims: PreparedInitialSessionContextSourceClaim[] = [];
-    if (checkpoint && coverage) {
-      // A summary is indivisible: every original it covers needs fresh custody.
-      for (const reference of sources.references) {
-        if (!coverage.has(conversationKnowledgeContributionId(reference))) {
-          continue;
-        }
-        const range = verified.get(conversationKnowledgeContributionId(reference));
-        if (!range || !coverage.matchesReference(reference, range)) {
-          checkpoint = undefined;
-          coverage = undefined;
-          claims.length = 0;
-          break;
-        }
-        claims.push(range.claim);
-      }
-    }
     const packets: PreparedProjectedInitialSessionContext["projection"]["packets"][number][] = [];
-    for (const reference of sources.references) {
+    for (const reference of references) {
       check();
-      if (checkpoint && coverage?.has(conversationKnowledgeContributionId(reference))) {
-        continue;
-      }
       const prior = cached.get(conversationKnowledgeContributionId(reference));
       const valid = cachedPackets.has(conversationKnowledgeContributionId(reference))
         ? verified.get(conversationKnowledgeContributionId(reference))

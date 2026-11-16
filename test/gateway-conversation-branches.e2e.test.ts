@@ -170,6 +170,7 @@ describe("isolated full Gateway conversation continuity", () => {
     let owner: Operator | undefined;
     context.onTestFailed(() => console.error(gateway?.logs()));
     const markers = Array.from({ length: 10 }, (_, index) => `SUMMARY_FACT_${index}_73`);
+    const tailMarker = "POST_CHECKPOINT_FRESH_73";
     await runQaGatewayTestFixture(
       context,
       async ({ signal, verifyCleanup }) => {
@@ -356,6 +357,51 @@ describe("isolated full Gateway conversation continuity", () => {
           },
           { timeout: 60_000, interval: 100 },
         );
+        // Warm recipients retain their own committed originals. Finish that copy
+        // before removing the donor; the new branch must instead use the checkpoint.
+        await vi.waitFor(() => {
+          expect(
+            sourceSequences.filter(
+              (sequence) =>
+                !preparedSourceReached(
+                  gateway!,
+                  reusableDescription.session.sessionId,
+                  sourceDescription.session.sessionId,
+                  sequence,
+                  "admitted",
+                ),
+            ),
+          ).toEqual([]);
+        }, WAIT);
+        expect(await owner.call("sessions.patch", { key: source, archived: true })).toMatchObject({
+          ok: true,
+        });
+        expect(
+          await owner.call("sessions.delete", {
+            key: source,
+            expectedSessionId: sourceDescription.session.sessionId,
+            archivedOnly: true,
+          }),
+        ).toMatchObject({ ok: true, deleted: true });
+        expect(await owner.call("sessions.describe", { key: source })).toMatchObject({
+          session: null,
+        });
+        const tailSource = `${source}-fresh`;
+        await send(tailSource, tailMarker);
+        const tailDescription = await owner.call<Description>("sessions.describe", {
+          key: tailSource,
+        });
+        const tailHistory = await owner.call<{ messages: NativeHistoryMessage[] }>("chat.history", {
+          sessionKey: tailSource,
+          limit: 100,
+        });
+        const tailSequence = tailHistory.messages.find(
+          (message) =>
+            message.role === "user" && JSON.stringify(message.content).includes(tailMarker),
+        )?.__openclaw?.transcriptPosition?.rawSeq;
+        if (typeof tailSequence !== "number") {
+          throw new Error("Native post-checkpoint tail sequence is missing");
+        }
         // Publishing the checkpoint schedules a separate frame-preparation
         // quantum. Wait for the actual initial frame before foreground activity
         // can preempt the preparation this cold-seed fixture needs.
@@ -365,7 +411,7 @@ describe("isolated full Gateway conversation continuity", () => {
             .filter(
               (line) =>
                 line.includes("Related-history root projection ready") &&
-                sourceFrontierReached(line, sourceDescription.session.sessionId, lastSequence),
+                sourceFrontierReached(line, tailDescription.session.sessionId, tailSequence),
             )
             .at(-1);
           const revision = Number(/"revision"\s*:\s*(\d+)/u.exec(projection ?? "")?.[1]);
@@ -393,6 +439,7 @@ describe("isolated full Gateway conversation continuity", () => {
         expect(requests).toHaveLength(1);
         const input = JSON.stringify(requests[0]);
         expect(input).toContain("Summary of related conversations");
+        expect(input.split(tailMarker).length - 1).toBe(1);
         expect(
           Object.fromEntries(markers.map((marker) => [marker, input.split(marker).length - 1])),
         ).toEqual(Object.fromEntries(markers.map((marker) => [marker, 1])));
@@ -403,23 +450,6 @@ describe("isolated full Gateway conversation continuity", () => {
         }
         // This branch already imported originals before the root checkpoint. It
         // must continue its own window, not replace it with the new root summary.
-        // Preparation logs only the first usable chunk; completion of a cached
-        // continuation need not emit another preparation event. Observe durable
-        // admission of every original before asking the recipient to respond.
-        await vi.waitFor(() => {
-          expect(
-            sourceSequences.filter(
-              (sequence) =>
-                !preparedSourceReached(
-                  gateway!,
-                  reusableDescription.session.sessionId,
-                  sourceDescription.session.sessionId,
-                  sequence,
-                  "admitted",
-                ),
-            ),
-          ).toEqual([]);
-        }, WAIT);
         const reused = JSON.stringify(await send(reusable, "REUSABLE_AFTER_ROOT_CHECKPOINT_73"));
         expect(reused).toContain("REUSABLE_LOCAL_HISTORY_73");
         expect(reused).not.toContain("Summary of related conversations");
@@ -443,7 +473,7 @@ describe("isolated full Gateway conversation continuity", () => {
         ).toBe(destinationDescription.session.sessionId);
         const restarted = JSON.stringify(await send(destination, "CHECKPOINT_RESTART_PROBE_73"));
         expect(restarted).toContain("Summary of related conversations");
-        for (const marker of markers) {
+        for (const marker of [...markers, tailMarker]) {
           expect(restarted.split(marker).length - 1).toBe(1);
         }
         expect(model.errors).toEqual([]);

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   CONVERSATION_KNOWLEDGE_CHECKPOINT,
@@ -14,7 +15,10 @@ import {
   readSessionTranscriptReportReceipts,
 } from "./session-accessor.sqlite-transcript-reports.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
-import type { SessionSourceAssertion } from "./session-source-authority.js";
+import {
+  type SessionSourceAssertion,
+  type SessionSourcePredicate,
+} from "./session-source-authority.js";
 
 // Weak values share immutable provenance between live owners. Bounded keys do not
 // keep old roots alive; eviction affects preparation cost, never authorization.
@@ -23,7 +27,7 @@ const MAX_SHARED_COVERAGE_KEYS = 128;
 
 type CheckpointAuthority = {
   branch: ConversationKnowledgeBranch;
-  /** Must retain current root, audience, and exact contributing-source authority through commit. */
+  /** Current root/audience custody; publication additionally owns its newly summarized sources. */
   source: SessionSourceAssertion;
   signal?: AbortSignal;
 };
@@ -41,6 +45,83 @@ function rootTarget(branch: ConversationKnowledgeBranch) {
 function check(params: CheckpointAuthority) {
   params.signal?.throwIfAborted();
   params.source();
+}
+
+/** Bind the persisted artifact to its native root prefix, never to covered donors. */
+export async function preparePersistedConversationKnowledgeCheckpoint(
+  params: CheckpointAuthority & {
+    checkpoint: ConversationKnowledgeCheckpoint;
+    audienceKey: string;
+    reader: SessionEntryCohortReader;
+  },
+): Promise<SessionSourcePredicate> {
+  check(params);
+  if (params.checkpoint.audienceKey !== params.audienceKey) {
+    throw new Error("Conversation checkpoint audience changed before artifact preparation");
+  }
+  const before = await params.reader.withRead(
+    {
+      sessionKeys: [...new Set([params.reader.sessionKey, params.branch.root.sessionKey])],
+      transcript: {
+        sessionKey: params.branch.root.sessionKey,
+        entryIds: [],
+        includeContextVersion: true,
+      },
+    },
+    () => check(params),
+    (facts) => {
+      const entry = facts.entries.find(
+        (row) => row.sessionKey === params.branch.root.sessionKey,
+      )?.entry;
+      if (
+        entry?.sessionId !== params.branch.root.sessionId ||
+        entry.lifecycleRevision !== params.branch.root.lifecycleRevision ||
+        !facts.transcript?.contextVersion?.generation
+      ) {
+        throw new Error("Conversation checkpoint root changed before artifact preparation");
+      }
+      return {
+        source: facts.source,
+        entry: {
+          sessionId: entry.sessionId,
+          lifecycleRevision: entry.lifecycleRevision,
+          createdActor: entry.createdActor,
+          visibility: entry.visibility,
+          incognito: entry.incognito,
+          publicShare: entry.publicShare,
+          conversationTopology: entry.conversationTopology,
+        },
+        version: facts.transcript.contextVersion,
+      };
+    },
+  );
+  const persisted = await readConversationKnowledgeCheckpointById({
+    ...params,
+    checkpointId: params.checkpoint.checkpointId,
+  });
+  if (!isDeepStrictEqual(persisted, params.checkpoint)) {
+    throw new Error("Conversation checkpoint differs from its persisted root artifact");
+  }
+  check(params);
+  return {
+    source: before.source,
+    sessionKey: params.branch.root.sessionKey,
+    expected: before.entry,
+    fields: [
+      "sessionId",
+      "lifecycleRevision",
+      "createdActor",
+      "visibility",
+      "incognito",
+      "publicShare",
+      "conversationTopology",
+    ],
+    transcript: {
+      sessionId: before.entry.sessionId,
+      version: before.version,
+      consistency: "prefix",
+    },
+  };
 }
 
 /** Exact historical head for an already admitted receipt, not the latest audience summary. */

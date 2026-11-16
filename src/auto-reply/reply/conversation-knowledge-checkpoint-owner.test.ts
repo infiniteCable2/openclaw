@@ -687,7 +687,7 @@ describe("shared root projection preparation", () => {
     );
     expect(boundary.read.mock.calls.map(([ref]) => ref.through.rawSeq)).toEqual([1, 2, 1]);
   });
-  it("continues preparing valid originals when previous checkpoint coverage leaves source selection", async () => {
+  it("reuses the checkpoint without retired originals and summarizes only the uncovered tail", async () => {
     const f = register();
     const read = boundary.read.getMockImplementation()!;
     boundary.read.mockImplementationOnce(async (ref: ConversationKnowledgeReference) => ({
@@ -717,28 +717,12 @@ describe("shared root projection preparation", () => {
       conversationKnowledgeContributionId(reference(1)),
     ]);
 
-    // Selection may retire a summarized occurrence after source archival or
-    // incarnation replacement. It must neither authorize its old summary nor
-    // prevent unrelated, currently verified originals from being prepared.
+    // Covered originals need not remain readable after the native checkpoint.
     boundary.refs = [reference(2)];
     boundary.read.mockImplementationOnce(async (ref: ConversationKnowledgeReference) => ({
       ...(await read(ref)),
       text: "quoted ".repeat(2_000),
     }));
-    await quantum();
-    await quantum();
-    expect(f.registration.latest()).toBeUndefined();
-    expect(boundary.latest).toEqual(previous);
-    expect(boundary.summarize).toHaveBeenCalledOnce();
-    expect(boundary.append).toHaveBeenCalledOnce();
-    expect(boundary.plan).toHaveBeenCalledOnce();
-    expect(f.registration.projection().tail.map((item) => item.reference.through.rawSeq)).toEqual([
-      2,
-    ]);
-
-    // Native source recovery restores the original immutable chain. Only the
-    // still-uncovered current original is summarized in the successor.
-    boundary.refs = [reference(1), reference(2)];
     expect(await quantum()).toBe(true);
     const recovered = f.registration.latest()!;
     expect(recovered.checkpoint.previousCheckpointId).toBe(previous.checkpointId);
@@ -747,6 +731,8 @@ describe("shared root projection preparation", () => {
     ]);
     expect(boundary.summarize.mock.calls[1]![0].previousSummary).toBe(previous.summary);
     expect(boundary.summarize.mock.calls[1]![0].contributions).toHaveLength(1);
+    expect(boundary.read.mock.calls.map(([ref]) => ref.through.rawSeq)).toEqual([1, 2]);
+    expect(boundary.verifyAll).not.toHaveBeenCalled();
   });
   it("prepares complete originals when native compaction is disabled", async () => {
     const f = register();

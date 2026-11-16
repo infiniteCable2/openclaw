@@ -223,6 +223,7 @@ function params() {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  sources.references = [first.reference, second.reference];
   boundary.acquire.mockReset();
   boundary.admission.mockResolvedValue({
     databaseClaim: { kind: "worker", reader: rootReader, release: boundary.releaseAdmission },
@@ -397,35 +398,38 @@ it("selects a logical store locator once and binds projection custody to its adm
   expect(boundary.releaseAdmission).toHaveBeenCalledOnce();
 });
 
-it("uses a real checkpoint only after authorizing its entire covered range", async () => {
-  const checkpoint = createConversationKnowledgeCheckpoint({
-    audienceKey,
-    branch,
-    summary: "A synthetic previous fact.",
-    covered: [first.reference],
-  });
-  const coverage = prepareConversationKnowledgeCheckpointCoverage({
-    checkpoint,
-    records: [checkpoint],
-    assertCurrent,
-  });
-  boundary.latest.mockResolvedValue(checkpoint);
-  boundary.coverage.mockResolvedValue(coverage);
-  sources.validate.mockResolvedValue({
-    through: first.packet.through,
-    from: first.packet.from,
-    claim: first.claim,
-  });
-  const prepared = await prepareConversationKnowledgeInitialContext(params());
-  if (prepared?.context.kind !== "root-projection") {
-    throw new Error("Expected projected context");
-  }
-  expect(prepared.context.projection.checkpoint).toEqual(checkpoint);
-  expect(prepared.context.projection.packets).toHaveLength(1);
-  expect(prepared.context.projection.claims).toHaveLength(2);
-  expect(sources.read).toHaveBeenCalledExactlyOnceWith(second.reference);
-  await prepared.release();
-});
+it.each([false, true])(
+  "uses a checkpoint without reading covered originals (missing=%s)",
+  async (missing) => {
+    const checkpoint = createConversationKnowledgeCheckpoint({
+      audienceKey,
+      branch,
+      summary: "A synthetic previous fact.",
+      covered: [first.reference],
+    });
+    const coverage = prepareConversationKnowledgeCheckpointCoverage({
+      checkpoint,
+      records: [checkpoint],
+      assertCurrent,
+    });
+    boundary.latest.mockResolvedValue(checkpoint);
+    boundary.coverage.mockResolvedValue(coverage);
+    if (missing) {
+      sources.references = [second.reference];
+    }
+    const prepared = await prepareConversationKnowledgeInitialContext(params());
+    if (prepared?.context.kind !== "root-projection") {
+      throw new Error("Expected projected context");
+    }
+    expect(prepared.context.projection.checkpoint).toEqual(checkpoint);
+    expect(prepared.context.projection.packets).toHaveLength(1);
+    expect(prepared.context.projection.claims).toEqual([second.claim]);
+    expect(sources.read).toHaveBeenCalledExactlyOnceWith(second.reference);
+    expect(sources.verifyAll).not.toHaveBeenCalled();
+    expect(sources.validate).not.toHaveBeenCalled();
+    await prepared.release();
+  },
+);
 
 it("does not open a root or disclose projection data without a verified private destination", async () => {
   expect(

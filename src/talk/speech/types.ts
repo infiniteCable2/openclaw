@@ -58,8 +58,10 @@ export type SpeechRuntimeSurface = {
   sessionIdPrefix: string;
 };
 
-/** Opening remains nonblocking; the actual connection owns cancellation and joined cleanup. */
+/** Providers may open in parallel; initial native context gates readiness, not future updates. */
 export type SpeechConnectionPreparation = Readonly<{
+  /** Optional for existing provider integrations without native connection preparation. */
+  ready?(): Promise<void>;
   cancel(): void;
   close(): Promise<void>;
 }>;

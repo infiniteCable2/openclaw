@@ -55,18 +55,21 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
           preparationAbort.signal.throwIfAborted();
           return prepare({ signal: preparationAbort.signal });
         }),
-      ).catch(() => {
-        if (!preparationAbort.signal.aborted) {
-          params.logger.warn("Related conversation preparation deferred at connection opening");
-        }
-      })
+      )
     : Promise.resolve();
+  void preparing.catch(() => {
+    if (!preparationAbort.signal.aborted) {
+      params.logger.warn("Related conversation preparation failed at connection opening");
+    }
+  });
   const connectionPreparation = prepare
     ? {
+        ready: () => preparing,
         cancel: () => preparationAbort.abort(),
         async close() {
           preparationAbort.abort();
-          await preparing;
+          // Startup owns this failure; teardown still joins and closes its source.
+          await preparing.catch(() => {});
           await params.inputSource.closeConnection?.();
         },
       }

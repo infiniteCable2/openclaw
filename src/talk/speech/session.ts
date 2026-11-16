@@ -665,8 +665,8 @@ export async function startSpeechSession(
       payload: { sessionId: params.sessionId, provider: resolved.provider.id },
     });
     activity.publish();
-    // Drain transport input while connect() is pending so the capture pipe never backpressures;
-    // chunks before session.ready are dropped instead of arriving later as a stale burst.
+    // Drain capture while providers and native context prepare; drop pre-ready audio
+    // instead of replaying a stale burst once the connection is ready.
     await input.start(
       (audio, metadata) => {
         if (stopped || !realtimeReady || audio.byteLength === 0) {
@@ -678,8 +678,10 @@ export async function startSpeechSession(
       () => video.start(params.transport, assertStarting),
     );
 
-    const session = sttSession;
-    await racePromiseWithAbortSignal(() => session.connect(), params.signal);
+    await racePromiseWithAbortSignal(sttSession.connect.bind(sttSession), params.signal);
+    if (params.connectionPreparation?.ready) {
+      await racePromiseWithAbortSignal(params.connectionPreparation.ready(), params.signal);
+    }
     assertStarting();
   } catch (error) {
     try {

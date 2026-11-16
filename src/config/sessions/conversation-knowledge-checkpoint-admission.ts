@@ -2,21 +2,14 @@ import { isDeepStrictEqual } from "node:util";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import { createConversationKnowledgeCheckpointContext } from "./conversation-knowledge-checkpoint-context.js";
+import { preparePersistedConversationKnowledgeCheckpoint } from "./conversation-knowledge-checkpoint-store.js";
 import {
   selectConversationKnowledgeCheckpointBootstrap,
   type ConversationKnowledgeCheckpoint,
   type PreparedConversationKnowledgeCheckpointCoverage,
 } from "./conversation-knowledge-checkpoint.js";
 import { readConversationKnowledgeImportProgress } from "./conversation-knowledge-packets.js";
-import {
-  prepareNativeKnowledgeRootContributionGroup,
-  assertNativeKnowledgeRootContributionGroup,
-  type NativeKnowledgeRootContributionGroup,
-  type NativeKnowledgeRootEvidence,
-  type PreparedKnowledgeRootCandidates,
-  type ConversationKnowledgeBranch,
-} from "./conversation-knowledge-store.js";
-import type { ConversationKnowledgeReference } from "./conversation-knowledge.js";
+import { type ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
 import { appendSessionTranscriptReportBatch } from "./session-accessor.sqlite-transcript-reports.js";
 import type {
   SessionTranscriptRuntimeTarget,
@@ -42,22 +35,23 @@ type CheckpointSelectionBinding = {
   checkpoint: ConversationKnowledgeCheckpoint;
   coverage: PreparedConversationKnowledgeCheckpointCoverage;
   audienceKey: string;
-  manifest: PreparedKnowledgeRootCandidates;
-  rootEvidence: NativeKnowledgeRootEvidence;
 };
+type CheckpointSelectionScope = Pick<
+  CheckpointSelectionBinding,
+  "branch" | "checkpoint" | "audienceKey"
+>;
 
-/** Sealed data correspondence, never a substitute for fresh source ACL/prefix custody. */
+/** Native root artifact data; current root/audience custody remains the caller's responsibility. */
 export class PreparedConversationKnowledgeCheckpointSelection {
   readonly checkpoint: ConversationKnowledgeCheckpoint;
   readonly #branch: ConversationKnowledgeBranch;
   readonly #coverage: PreparedConversationKnowledgeCheckpointCoverage;
   readonly #audienceKey: string;
-  readonly #manifest: PreparedKnowledgeRootCandidates;
-  readonly #rootProof: NativeKnowledgeRootContributionGroup;
+  readonly #rootPredicate: SessionSourcePredicate;
   constructor(
     issuer: typeof selectionIssuer,
     params: CheckpointSelectionBinding,
-    proof: NativeKnowledgeRootContributionGroup,
+    rootPredicate: SessionSourcePredicate,
   ) {
     if (issuer !== selectionIssuer) {
       throw new Error("Checkpoint selection requires verified preparation");
@@ -66,24 +60,60 @@ export class PreparedConversationKnowledgeCheckpointSelection {
     this.#branch = structuredClone(params.branch);
     this.#coverage = params.coverage;
     this.#audienceKey = params.audienceKey;
-    this.#manifest = params.manifest;
-    this.#rootProof = proof;
+    this.#rootPredicate = freezeJsonSnapshot(structuredClone(rootPredicate));
     Object.freeze(this);
   }
-  validate(params: CheckpointSelectionBinding): ConversationKnowledgeCheckpoint {
+  assertScope(params: CheckpointSelectionScope): void {
     if (
       !isDeepStrictEqual(params.branch, this.#branch) ||
       params.checkpoint !== this.checkpoint ||
-      params.coverage !== this.#coverage ||
-      params.audienceKey !== this.#audienceKey ||
-      params.manifest !== this.#manifest
+      params.audienceKey !== this.#audienceKey
     ) {
       throw new Error("Prepared checkpoint selection changed");
     }
-    assertNativeKnowledgeRootContributionGroup(params.rootEvidence, params.branch, this.#rootProof);
+    this.#coverage.assertCheckpoint(this.checkpoint);
+  }
+  validate(
+    params: CheckpointSelectionBinding & { source: SessionSourceAssertion; signal?: AbortSignal },
+  ): ConversationKnowledgeCheckpoint {
+    params.signal?.throwIfAborted();
+    params.source();
+    this.assertScope(params);
+    if (params.coverage !== this.#coverage) {
+      throw new Error("Prepared checkpoint coverage changed");
+    }
     return this.checkpoint;
   }
-  static read(value: unknown, params: CheckpointSelectionBinding): ConversationKnowledgeCheckpoint {
+  source(
+    params: CheckpointSelectionScope & { source: SessionSourceAssertion; signal?: AbortSignal },
+  ): SessionSourceAssertion {
+    const check = () => {
+      params.signal?.throwIfAborted();
+      this.assertScope(params);
+    };
+    check();
+    const root = Object.assign(check, {
+      prepareSessionSource: async () => {
+        check();
+        return {
+          assertCurrent: check,
+          checks: [
+            {
+              predicate: this.#rootPredicate,
+              refuse: (): never => {
+                throw new Error("Conversation checkpoint root artifact changed before commit");
+              },
+            },
+          ],
+        };
+      },
+    });
+    return composeSessionSourceAssertion([params.source, root]);
+  }
+  static read(
+    value: unknown,
+    params: CheckpointSelectionBinding & { source: SessionSourceAssertion; signal?: AbortSignal },
+  ): ConversationKnowledgeCheckpoint {
     if (typeof value !== "object" || value === null || !(#branch in value)) {
       throw new Error("Checkpoint selection requires verified preparation");
     }
@@ -93,14 +123,14 @@ export class PreparedConversationKnowledgeCheckpointSelection {
 Object.freeze(PreparedConversationKnowledgeCheckpointSelection);
 Object.freeze(PreparedConversationKnowledgeCheckpointSelection.prototype);
 
-/** Off-turn: caller must have validated every covered original range with native source grants. */
-export function prepareConversationKnowledgeCheckpointSelection(
+/** Off-turn native artifact read. Covered originals have no further read or grant lifetime. */
+export async function prepareConversationKnowledgeCheckpointSelection(
   params: CheckpointSelectionBinding & {
-    availableReferences: readonly ConversationKnowledgeReference[];
+    reader: SessionEntryCohortReader;
     source: SessionSourceAssertion;
-    isAudienceCandidate?: (reference: ConversationKnowledgeReference) => boolean;
+    signal?: AbortSignal;
   },
-): PreparedConversationKnowledgeCheckpointSelection | undefined {
+): Promise<PreparedConversationKnowledgeCheckpointSelection | undefined> {
   params.source();
   const checkpoint = selectConversationKnowledgeCheckpointBootstrap({
     ...params,
@@ -109,16 +139,15 @@ export function prepareConversationKnowledgeCheckpointSelection(
   if (!checkpoint) {
     return undefined;
   }
-  const proof = prepareNativeKnowledgeRootContributionGroup(
-    params.rootEvidence,
-    params.branch,
-    params.availableReferences,
-  );
+  const predicate = await preparePersistedConversationKnowledgeCheckpoint({
+    ...params,
+    checkpoint,
+  });
   params.source();
   return new PreparedConversationKnowledgeCheckpointSelection(
     selectionIssuer,
     { ...params, checkpoint },
-    proof,
+    predicate,
   );
 }
 /** Values from the first actual native provider request, not configuration guesses. */
@@ -456,10 +485,7 @@ export async function retainConversationKnowledgeCheckpoint(params: {
   checkpoint: ConversationKnowledgeCheckpoint;
   coverage: PreparedConversationKnowledgeCheckpointCoverage;
   audienceKey: string;
-  availableReferences?: readonly ConversationKnowledgeReference[];
   selection?: PreparedConversationKnowledgeCheckpointSelection;
-  manifest?: PreparedKnowledgeRootCandidates;
-  rootEvidence?: NativeKnowledgeRootEvidence;
   writeTarget: SessionTranscriptRuntimeTarget &
     Pick<SessionTranscriptWriteScope, "expectedWriterRunId" | "expectedLifecycleRevision">;
   reader: SessionEntryCohortReader;
@@ -486,21 +512,15 @@ export async function retainConversationKnowledgeCheckpoint(params: {
     throw new Error("Conversation checkpoint writer differs from its recipient");
   }
   const recipientVersion = params.bootstrap.version(params.branch);
-  const checkpoint = params.selection
-    ? PreparedConversationKnowledgeCheckpointSelection.read(params.selection, {
-        ...params,
-        manifest: params.manifest!,
-        rootEvidence: params.rootEvidence!,
-      })
-    : selectConversationKnowledgeCheckpointBootstrap({
-        ...params,
-        availableReferences: params.availableReferences ?? [],
-        progress: new Map(),
-        hasCheckpointReceipt: false,
-      });
-  if (!checkpoint) {
+  const selection =
+    params.selection ?? (await prepareConversationKnowledgeCheckpointSelection(params));
+  if (!selection) {
     return { accepted: false, appended: false, deferred: false };
   }
+  const checkpoint = PreparedConversationKnowledgeCheckpointSelection.read(selection, {
+    ...params,
+    checkpoint: params.selection ? params.checkpoint : selection.checkpoint,
+  });
   const predicate = await params.reader.withRead(
     { sessionKeys: [params.branch.sessionKey] },
     check,
@@ -523,7 +543,7 @@ export async function retainConversationKnowledgeCheckpoint(params: {
     },
   );
   const source = composeSessionSourceAssertion([
-    params.source,
+    selection.source({ ...params, checkpoint }),
     Object.assign(check, {
       prepareSessionSource: async () => ({
         assertCurrent: check,

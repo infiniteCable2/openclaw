@@ -72,6 +72,8 @@ export async function startSpeechRealtimeSession(params: {
   // Fatal transport callbacks can stop the session before its bridge exists.
   let bridge: RealtimeVoiceBridgeSession | undefined;
   let realtimeReady = false;
+  let connectionReady = params.connectionPreparation?.ready === undefined;
+  let providerReady = false;
   let outputGenerationActive = false;
   let continuityResetActive = false;
   const outputOwner = createSpeechRealtimeOutputOwner();
@@ -269,6 +271,14 @@ export async function startSpeechRealtimeSession(params: {
   const outputTalkPayload = params.talkContext
     ? { bridgeId: params.talkContext.bridgeId }
     : { sessionId: params.sessionId };
+  const publishReady = () => {
+    if (stopped || !connectionReady || !providerReady) {
+      return;
+    }
+    realtimeReady = true;
+    continuityResetActive = false;
+    harness.emit({ type: "session.ready", payload: outputTalkPayload });
+  };
   const reasonTalkPayload = (reason: string) =>
     params.talkContext ? { bridgeId: params.talkContext.bridgeId, reason } : { reason };
   // The closures above only run after harness creation; they capture this later `const`.
@@ -510,6 +520,7 @@ export async function startSpeechRealtimeSession(params: {
             return;
           }
           continuityResetActive = true;
+          providerReady = false;
           realtimeReady = false;
           outputOwner.reset();
           outputGenerationActive = false;
@@ -617,15 +628,8 @@ export async function startSpeechRealtimeSession(params: {
         stopAfterFailure("voice bridge close");
       },
       onReady: () => {
-        if (stopped) {
-          return;
-        }
-        realtimeReady = true;
-        continuityResetActive = false;
-        harness.emit({
-          type: "session.ready",
-          payload: outputTalkPayload,
-        });
+        providerReady = true;
+        publishReady();
       },
     });
     if (bridge.bridge.outputAudioMode === "continuous") {
@@ -634,10 +638,9 @@ export async function startSpeechRealtimeSession(params: {
     startHumanBargeInMonitor();
 
     // Drain transport input while connect() is pending so the capture pipe never backpressures.
-    // Pre-connect audio is forwarded; the voice bridge owns buffering, matching the previous
-    // local command-pair behavior.
+    // The voice bridge buffers pre-connect audio only after native context is ready.
     await input.start((audio) => {
-      if (stopped || audio.byteLength === 0) {
+      if (stopped || !connectionReady || audio.byteLength === 0) {
         return;
       }
       if (!harness.recordInputAudio(audio)) {
@@ -647,10 +650,15 @@ export async function startSpeechRealtimeSession(params: {
     }, assertStarting);
 
     await bridge.connect();
+    await params.connectionPreparation?.ready?.();
     if (stopped) {
       throw new Error(
         `${params.surface.displayName} audio transport stopped during realtime provider setup`,
       );
+    }
+    if (!connectionReady) {
+      connectionReady = true;
+      publishReady();
     }
   } catch (error) {
     try {

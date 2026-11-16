@@ -9,6 +9,7 @@ import {
   consumeConversationBranchCreation,
   type PreparedConversationBranchCreation,
 } from "./conversation-branch-creation.js";
+import { PreparedConversationKnowledgeCheckpointSelection } from "./conversation-knowledge-checkpoint-admission.js";
 import { conversationKnowledgeContributionId } from "./conversation-knowledge-identity.js";
 import {
   readPersonalConversationContributionCustody,
@@ -38,6 +39,7 @@ type FrameContext = Omit<
 type FramePreparation = {
   context: FrameContext;
   evidence: NativeKnowledgeRootEvidence;
+  checkpointSelection?: PreparedConversationKnowledgeCheckpointSelection;
   ranges: readonly PersonalConversationContributionRange[];
   participant: SessionParticipantIdentity;
   audience: ConversationPrivateAudience;
@@ -253,9 +255,19 @@ export async function prepareConversationKnowledgeInitialFrame(
     !identity ||
     identity !== conversationKnowledgeParticipantIdentity(params.audience.participant) ||
     params.ranges.length !== context.projection.claims.length ||
-    !params.ranges.length
+    (!params.ranges.length && !context.projection.checkpoint)
   ) {
     throw new Error("Initial root frame requires original personal source custody");
+  }
+  if (context.projection.checkpoint) {
+    if (!(params.checkpointSelection instanceof PreparedConversationKnowledgeCheckpointSelection)) {
+      throw new Error("Initial root frame requires a native checkpoint selection");
+    }
+    params.checkpointSelection.assertScope({
+      branch: context.projection.branch,
+      checkpoint: context.projection.checkpoint,
+      audienceKey: identity,
+    });
   }
   const source = await prepareSessionSourceAuthority(params.source);
   try {

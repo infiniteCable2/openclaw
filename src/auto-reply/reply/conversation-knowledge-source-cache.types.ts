@@ -3,10 +3,7 @@ import type {
   PreparedConversationKnowledgeCheckpointSelection,
 } from "../../config/sessions/conversation-knowledge-checkpoint-admission.js";
 import type { PreparedKnowledgeRootCandidates } from "../../config/sessions/conversation-knowledge-store.js";
-import type {
-  projectConversationKnowledge,
-  ConversationKnowledgeReference,
-} from "../../config/sessions/conversation-knowledge.js";
+import type { projectConversationKnowledge } from "../../config/sessions/conversation-knowledge.js";
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-transcript-context-version.types.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import type { PreparedPersonalConversationContributionGroup } from "../../gateway/session-transcript-personal-read.js";
@@ -32,11 +29,6 @@ export type ConversationKnowledgeCachedAdmission<Admission> =
     };
 export type PreparedRecipientConversationCheckpoint =
   PreparedConversationKnowledgeRootCheckpoint & {
-    manifest: PreparedKnowledgeRootCandidates;
     bootstrap: PreparedConversationKnowledgeBootstrap;
     selection: PreparedConversationKnowledgeCheckpointSelection;
-    groups: readonly {
-      source: Readonly<Pick<ConversationKnowledgeReference["source"], "agentId" | "sessionKey">>;
-      admission: PreparedPersonalConversationContributionGroup;
-    }[];
   };

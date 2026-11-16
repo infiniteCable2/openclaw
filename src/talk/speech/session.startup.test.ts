@@ -1,17 +1,170 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import type {
   RealtimeTranscriptionProviderPlugin,
   RealtimeVoiceProviderPlugin,
 } from "../../plugins/types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import type { RealtimeVoiceBridgeCreateRequest } from "../provider-contexts.js";
 import { startSpeechRealtimeSession } from "./provider-session.js";
 import { startSpeechSession } from "./session.js";
 import type { SpeechRealtimeSessionHandle } from "./types.js";
 import * as waitingAudio from "./waiting-audio.js";
 
 describe("speech session failed-start ownership", () => {
+  it.each(["transcription", "realtime"] as const)(
+    "gates %s readiness on the original initial context and joins failure or cancellation",
+    async (strategy) => {
+      const outcomes = ["ready", "failure", "stop"] as const;
+      for (const outcome of strategy === "transcription"
+        ? [...outcomes, "signal abort" as const]
+        : outcomes) {
+        const prepared = createDeferredCore();
+        const preparing = createDeferredCore();
+        const ownership = createDeferredCore<SpeechRealtimeSessionHandle>();
+        const failure = new Error("synthetic initial context failure");
+        const controller = new AbortController();
+        let callbacks: RealtimeVoiceBridgeCreateRequest | undefined;
+        let input: ((audio: Buffer) => void) | undefined;
+        const providerReady = () => callbacks?.onReady?.();
+        const sendAudio = vi.fn();
+        const connect = vi.fn(async () => {
+          providerReady();
+        });
+        const close = vi.fn();
+        const dispose = vi.fn(async () => {});
+        const preparation = {
+          ready: () => {
+            preparing.resolve();
+            return prepared.promise;
+          },
+          cancel: vi.fn(() => prepared.resolve()),
+          close: vi.fn(async () => {
+            await prepared.promise.catch(() => {});
+          }),
+        };
+        const common = {
+          config: {
+            audioFormat: "pcm16-24khz" as const,
+            provider: "test",
+            transcriptionProvider: "test",
+            providers: { test: {} },
+          },
+          fullConfig: {},
+          signal: controller.signal,
+          // This startup-only fixture never invokes an agent, TTS or the plugin runtime.
+          runtime: {} as PluginRuntime,
+          surface: { displayName: "Test", logScope: "test", sessionIdPrefix: "test" },
+          sessionId: "initial-context",
+          logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+          consultAgent: vi.fn(async () => ({ text: "unused" })),
+          transport: {
+            onFatal() {},
+            startInput: (callback: (audio: Buffer) => void) => {
+              input = callback;
+            },
+            stop: async () => {},
+            dispose,
+            writeOutput: async () => {},
+            clearOutput: async () => {},
+          },
+          connectionPreparation: preparation,
+          onSession: (owner: SpeechRealtimeSessionHandle) => ownership.resolve(owner),
+        };
+        const transcription: RealtimeTranscriptionProviderPlugin = {
+          id: "test",
+          label: "Test",
+          isConfigured: () => true,
+          createSession: () => ({ connect, close, sendAudio, isConnected: () => true }),
+        };
+        const realtime: RealtimeVoiceProviderPlugin = {
+          id: "test",
+          label: "Test",
+          isConfigured: () => true,
+          createBridge: (request) => {
+            callbacks = request;
+            return {
+              connect,
+              close,
+              sendAudio,
+              isConnected: () => true,
+              acknowledgeMark() {},
+              setMediaTimestamp() {},
+              submitToolResult() {},
+            };
+          },
+        };
+        const startup =
+          strategy === "transcription"
+            ? startSpeechSession({ ...common, providers: [transcription] })
+            : startSpeechRealtimeSession({
+                ...common,
+                config: { ...common.config, strategy: "bidi" },
+                providers: [realtime],
+                tools: [],
+                handleToolCall: async () => {},
+              });
+        // Observe rejection before an asynchronously failed startup can settle.
+        const settled = startup.then(
+          (handle) => ({ handle, error: undefined }),
+          (error: unknown) => ({ handle: undefined, error }),
+        );
+        const owner = await awaitGateBeforeSettlement(
+          ownership.promise,
+          startup,
+          "Startup did not publish its cleanup owner",
+        );
+        const readyEvents = () =>
+          owner.getHealth().recentTalkEvents?.filter((event) => event.type === "session.ready");
+        try {
+          await Promise.race([preparing.promise, settled]);
+          expect(connect).toHaveBeenCalledOnce();
+          expect(readyEvents()).toHaveLength(0);
+          expectDefined(
+            input,
+            "Capture drains while native context is preparing",
+          )(Buffer.alloc(960));
+          expect(sendAudio).not.toHaveBeenCalled();
+          let closing: Promise<void> | undefined;
+          if (outcome === "stop") {
+            closing = owner.stop();
+          } else if (outcome === "signal abort") {
+            controller.abort(failure);
+            await vi.waitFor(() => expect(preparation.cancel).toHaveBeenCalledOnce());
+          } else if (outcome === "failure") {
+            prepared.reject(failure);
+          } else {
+            prepared.resolve();
+          }
+          const result = await settled;
+          await closing;
+          if (outcome === "ready") {
+            expect(result.handle).toBe(owner);
+            expect(result.error).toBeUndefined();
+            expect(readyEvents()).toHaveLength(1);
+            expectDefined(input)(Buffer.alloc(960));
+            expect(sendAudio).toHaveBeenCalledOnce();
+          } else {
+            expect(result.error).toBeInstanceOf(Error);
+            expect(readyEvents()).toHaveLength(0);
+            providerReady();
+            expect(readyEvents()).toHaveLength(0);
+          }
+          expect(common.consultAgent).not.toHaveBeenCalled();
+        } finally {
+          prepared.resolve();
+          await settled;
+          await owner.stop();
+        }
+        expect(preparation.close).toHaveBeenCalledOnce();
+        expect(close).toHaveBeenCalledOnce();
+        expect(dispose).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
   it("flushes each capture boundary once and starts the next input with fresh converter state", async () => {
     const finishing = createDeferredCore();
     const finished = createDeferredCore();

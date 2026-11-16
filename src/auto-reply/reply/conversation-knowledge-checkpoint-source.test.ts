@@ -145,9 +145,6 @@ it("selects private channel aliases as candidates without manufacturing personal
   const held = await sources();
   const canonical = readConversationUtteranceObservation(saved);
   expect(held.references).toEqual([canonical]);
-  expect(held.isAudienceCandidate(structuredClone(held.references[0]!))).toBe(true);
-  expect(held.isAudienceCandidate(foreign)).toBe(false);
-  expect(held.isAudienceCandidate(unknown)).toBe(false);
   expect(boundary.personal).not.toHaveBeenCalled();
   expect(boundary.group).not.toHaveBeenCalled();
 });

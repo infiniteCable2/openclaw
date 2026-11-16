@@ -4,13 +4,6 @@ import {
   prepareConversationKnowledgeSourceSelection,
   publishPreparedConversationKnowledgeRoot,
 } from "../../auto-reply/reply/conversation-knowledge-source-reader.js";
-import { conversationKnowledgeParticipantIdentity } from "./conversation-audience.js";
-import { prepareConversationKnowledgeCheckpointSelection } from "./conversation-knowledge-checkpoint-admission.js";
-import {
-  createConversationKnowledgeCheckpoint,
-  prepareConversationKnowledgeCheckpointCoverage,
-  PreparedConversationKnowledgeCheckpointCoverage,
-} from "./conversation-knowledge-checkpoint.js";
 import {
   ConversationKnowledgeRootCache,
   readConversationKnowledgeRootSnapshot,
@@ -24,7 +17,6 @@ import {
   issuePreparedKnowledgeRootCandidates,
   readConversationKnowledgeRoot,
   readPreparedConversationKnowledgeRoot,
-  readPreparedConversationKnowledgeRootEvidence,
   type ConversationKnowledgeBranch,
   type PreparedKnowledgeRootCandidates,
 } from "./conversation-knowledge-store.js";
@@ -602,67 +594,6 @@ describe("prepared native knowledge root candidates", () => {
     expect(() =>
       assertNativeKnowledgeRootContributionGroup(second.evidence, f.branch, proof),
     ).not.toThrow();
-    const audienceKey = conversationKnowledgeParticipantIdentity(
-      f.receipt.privateAudience!.participant,
-    )!;
-    const checkpoint = createConversationKnowledgeCheckpoint({
-      branch: f.branch,
-      audienceKey,
-      covered: references,
-      summary: "Synthetic shared summary.",
-    });
-    const coverage = prepareConversationKnowledgeCheckpointCoverage({
-      checkpoint,
-      records: [checkpoint],
-      assertCurrent() {},
-    });
-    const selection = prepareConversationKnowledgeCheckpointSelection({
-      branch: f.branch,
-      checkpoint,
-      coverage,
-      audienceKey,
-      manifest,
-      rootEvidence: first.evidence!,
-      availableReferences: references,
-      source() {},
-    })!;
-    expect(selection).toBeDefined();
-    const enumerate = vi
-      .spyOn(PreparedConversationKnowledgeCheckpointCoverage.prototype, "contributionIds")
-      .mockImplementation(() => {
-        throw new Error("ready enumerated historical membership");
-      });
-    const rehash = vi
-      .spyOn(PreparedConversationKnowledgeCheckpointCoverage.prototype, "matchesReference")
-      .mockImplementation(() => {
-        throw new Error("ready rehashed historical references");
-      });
-    try {
-      const readyEvidence = await readPreparedConversationKnowledgeRootEvidence({
-        ...f,
-        manifest,
-        assertCurrent() {},
-      });
-      expect(Array.isArray(readyEvidence)).toBe(false);
-      const binding = {
-        branch: f.branch,
-        checkpoint: selection.checkpoint,
-        coverage,
-        audienceKey,
-        manifest,
-        rootEvidence: readyEvidence,
-      };
-      expect(selection.validate(binding)).toBe(selection.checkpoint);
-      expect(() => selection.validate({ ...binding, checkpoint })).toThrow("selection changed");
-      expect(() => selection.validate({ ...binding, audienceKey: "different-person" })).toThrow(
-        "selection changed",
-      );
-      expect(enumerate).not.toHaveBeenCalled();
-      expect(rehash).not.toHaveBeenCalled();
-    } finally {
-      enumerate.mockRestore();
-      rehash.mockRestore();
-    }
     const subset = issuePreparedKnowledgeRootCandidates(root.evidence, references.slice(1), {
       maxBytes: 2_048,
       sharedMetadata: true,

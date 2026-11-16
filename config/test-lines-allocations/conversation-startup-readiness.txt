@@ -1,0 +1,2 @@
+176
+# Original-host preparation gates STT and realtime readiness; preserve cancellation, failed-start cleanup, and pre-ready audio handling without waiting for future context updates.

@@ -202,9 +202,7 @@ describe("disposable conversation source preparation", () => {
     expect(cache.preparedContributionGroup(source, manifest, "first")).toBeUndefined();
     expect(cache.preparedContributionGroup(source, manifest, "second")).toBe(second);
     const checkpoint = {
-      manifest,
       checkpoint: { checkpointId: "synthetic-checkpoint", summary: "Both originals are covered." },
-      groups: [],
       coverage: { has: () => true },
     } as unknown as Parameters<typeof cache.stageCheckpoint>[0];
     expect(cache.stageCheckpoint(checkpoint)).toBe(true);
@@ -245,19 +243,17 @@ describe("disposable conversation source preparation", () => {
     expect(refusedRelease).toHaveBeenCalledTimes(2);
     cache.clear();
   });
-  it("charges checkpoint-owned custody and summary bytes, not shared root metadata", () => {
+  it("bounds checkpoint artifact bytes without retaining covered donor custody", () => {
     const cache = createConversationKnowledgeSourceCache(256);
     const candidate = {
-      manifest: { byteLength: 10_000_000, ownedByteLength: 32 },
       checkpoint: { summary: "Small summary" },
-      groups: [{ admission: { byteLength: 10_000_000, ownedByteLength: 32, release: vi.fn() } }],
     } as unknown as Parameters<typeof cache.stageCheckpoint>[0];
     expect(cache.stageCheckpoint(candidate)).toBe(true);
     cache.clearCheckpoint();
     expect(
       cache.stageCheckpoint({
         ...candidate,
-        checkpoint: { ...candidate.checkpoint, summary: "x".repeat(256) },
+        checkpoint: { ...candidate.checkpoint, coveredContributionIds: ["x".repeat(257)] },
       }),
     ).toBe(false);
     expect(cache.preparedCheckpoint).toBeUndefined();
@@ -284,28 +280,6 @@ describe("disposable conversation source preparation", () => {
     expect(diagnostics[0]).toEqual({ sourceHash: redactIdentifier("source-0"), throughSeq: 25 });
     expect(JSON.stringify(diagnostics)).not.toContain("Source observation");
     expect(JSON.stringify(diagnostics)).not.toContain("partial-source");
-  });
-  it("retires all checkpoint groups and retains failed native cleanup for retry", () => {
-    const cache = createConversationKnowledgeSourceCache();
-    const first = vi.fn().mockImplementationOnce(() => {
-      throw new Error("cleanup busy");
-    });
-    const second = vi.fn();
-    const candidate = {
-      manifest: { byteLength: 10, ownedByteLength: 10 },
-      checkpoint: { summary: "Synthetic summary" },
-      groups: [first, second].map((release) => ({
-        admission: { byteLength: 10, ownedByteLength: 10, release },
-      })),
-    } as unknown as Parameters<typeof cache.stageCheckpoint>[0];
-    expect(cache.stageCheckpoint(candidate)).toBe(true);
-    expect(() => cache.clearCheckpoint()).toThrow("cleanup remains pending");
-    expect(cache.preparedCheckpoint).toBeUndefined();
-    expect(first).toHaveBeenCalledOnce();
-    expect(second).toHaveBeenCalledOnce();
-    cache.retryCleanup();
-    expect(first).toHaveBeenCalledTimes(2);
-    expect(second).toHaveBeenCalledOnce();
   });
   it("shares bounded native custody across one donor's pending packets", () => {
     const cache = createConversationKnowledgeSourceCache<{ byteLength: number; release(): void }>(
