@@ -738,7 +738,11 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
     if (process.platform !== "linux") {
       throw new Error("Load accounting requires Linux /proc");
     }
-    for (let repetition = 1; repetition <= 5; repetition++) {
+    const repetitions = Number(process.env.OPENCLAW_E2E_CONVERSATION_PCM_REPETITIONS ?? 5);
+    if (!Number.isSafeInteger(repetitions) || repetitions < 1 || repetitions > 5) {
+      throw new Error("PCM workload requires 1–5 native/branch pairs");
+    }
+    for (let repetition = 1; repetition <= repetitions; repetition++) {
       const modes =
         repetition % 2 ? (["native", "branches"] as const) : (["branches", "native"] as const);
       for (const mode of modes) {
