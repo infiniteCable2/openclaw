@@ -15,7 +15,10 @@ export function getRuntimeConfigCapture(
   return config ? captures.get(config) : undefined;
 }
 
-const publishedSources = new WeakMap<OpenClawConfig, OpenClawConfig>();
+const publishedSources = new WeakMap<
+  OpenClawConfig,
+  { source: OpenClawConfig; capture?: OpenClawConfig }
+>();
 
 /**
  * Record the authored source last published with a runtime config object, without cloning it.
@@ -25,14 +28,30 @@ const publishedSources = new WeakMap<OpenClawConfig, OpenClawConfig>();
 export function recordPublishedRuntimeConfigSource(
   config: OpenClawConfig,
   source: OpenClawConfig,
+  capture?: OpenClawConfig | null,
 ): void {
-  publishedSources.set(config, source);
+  publishedSources.set(config, { source, capture: capture ?? undefined });
 }
 
 export function getPublishedRuntimeConfigSource(
   config: OpenClawConfig | undefined,
 ): OpenClawConfig | undefined {
-  return config ? publishedSources.get(config) : undefined;
+  return config ? publishedSources.get(config)?.source : undefined;
+}
+
+/** Select this object's native publication, never the globally newest runtime. */
+export function getPublishedRuntimeConfigCapture(
+  config: OpenClawConfig,
+): OpenClawConfig | undefined {
+  return publishedSources.get(config)?.capture;
+}
+
+/** A mutable input can match the current publication without being adopted. */
+export function discardPublishedRuntimeConfigCapture(config: OpenClawConfig): void {
+  const publication = publishedSources.get(config);
+  if (publication) {
+    publication.capture = undefined;
+  }
 }
 
 /** Freeze a selected runtime/source pair before its publication owner yields. */

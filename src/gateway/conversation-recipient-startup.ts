@@ -4,6 +4,7 @@ import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { openConversationKnowledgeRoot } from "../auto-reply/reply/conversation-knowledge-open.js";
 import { wakeConversationRecipientsAfterConfigChange } from "../auto-reply/reply/conversation-knowledge-prefetch.js";
 import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
+import { getPublishedRuntimeConfigCapture } from "../config/runtime-config-capture-state.js";
 import { captureConversationRecipientEnrollment } from "../config/sessions/conversation-recipient-enrollment.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -50,7 +51,11 @@ export function startGatewayConversationRecipients(params: {
   if (!projection || signal.aborted) {
     return undefined;
   }
-  const getConfig = context.getCommittedRuntimeConfig ?? context.getRuntimeConfig;
+  const readConfig = context.getCommittedRuntimeConfig ?? context.getRuntimeConfig;
+  const getConfig = () => {
+    const config = readConfig();
+    return getPublishedRuntimeConfigCapture(config) ?? config;
+  };
   let committed = getConfig();
   let runtime = context.getRuntimeConfig();
   const owners = new Map<

@@ -1,6 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 import { beforeEach, expect, it, vi } from "vitest";
 import { beginForegroundSessionMaintenance } from "../agents/session-maintenance/coordinator.js";
+import { createRuntimeConfigSnapshotMatcher } from "../config/runtime-config-snapshot-match.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import type { ConversationRecipientEnrollment } from "../config/sessions/conversation-recipient-enrollment.js";
 import { projectSessionSharingEntry } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
@@ -119,6 +124,7 @@ function start(
   projectSharing: (
     entry: InternalSessionEntry,
   ) => InternalSessionEntry = projectSessionSharingEntry,
+  publishedConfig = false,
 ) {
   let onFacts: (change: { kind: "row"; key: string } | { kind: "reset" }) => void = () => {};
   mocks.projection.mockReturnValue({
@@ -137,6 +143,9 @@ function start(
   let cfg = { agents: { entries: { main: { conversationMode: "branches" as const } } } };
   context.getRuntimeConfig = () => cfg;
   context.getCommittedRuntimeConfig = () => cfg;
+  if (publishedConfig) {
+    setRuntimeConfigSnapshot(cfg);
+  }
   const signal = new AbortController();
   const log = { warn: vi.fn() };
   const owner = startGatewayConversationRecipients({ context, signal: signal.signal, log })!;
@@ -152,6 +161,28 @@ function start(
     },
   };
 }
+
+it("reuses the committed native capture across repeated recipient authority checks", async () => {
+  const owner = start([row("captured-device")], undefined, true);
+  try {
+    await owner.settled();
+    const read = mocks.open.mock.calls[0]![0].getRuntimeConfig;
+    const matches = createRuntimeConfigSnapshotMatcher(read());
+    expect(matches(read())).toBe(true);
+    const stringify = vi.spyOn(JSON, "stringify");
+    try {
+      for (let index = 0; index < 64; index++) {
+        expect(matches(read())).toBe(true);
+      }
+      expect(stringify).not.toHaveBeenCalled();
+    } finally {
+      stringify.mockRestore();
+    }
+  } finally {
+    await owner.close();
+    clearRuntimeConfigSnapshot();
+  }
+});
 
 it("reuses immutable enrollment comparisons while checking live privacy and incarnation", async () => {
   const target = row("immutable-device");

@@ -1,0 +1,4 @@
+90
+# Verify recipient authority reuses the existing native config publication with
+# no warm serialization, while source rollback, tentative config, in-place
+# publication and former-object no-op inputs cannot retain stale captures.

@@ -17,6 +17,7 @@ import {
 } from "./resolution-facts.js";
 import {
   captureRuntimeConfigWithSource,
+  discardPublishedRuntimeConfigCapture,
   type CapturedRuntimeConfigRead,
   getRuntimeConfigCapture,
   recordPublishedRuntimeConfigSource,
@@ -218,6 +219,9 @@ function publishRuntimeConfigSnapshot(
     sourceMatchesPublished &&
     (valuesUnchanged || matchesPublished)
   ) {
+    if (config !== runtimeConfigSnapshot) {
+      discardPublishedRuntimeConfigCapture(config);
+    }
     return;
   }
   const sourceFact =
@@ -248,7 +252,7 @@ function publishRuntimeConfigSnapshot(
   runtimeConfigSnapshot = config;
   runtimeConfigCapturedSnapshot = captured;
   runtimeConfigSourceSnapshot = sourceConfig ?? null;
-  recordPublishedRuntimeConfigSource(config, sourceConfig ?? config);
+  recordPublishedRuntimeConfigSource(config, sourceConfig ?? config, captured);
   runtimeConfigSnapshotMetadata = metadata;
   if (
     runtimeModelConfigCacheKey === null ||
