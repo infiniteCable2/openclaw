@@ -483,7 +483,7 @@ describe("ready checkpoint recipient", () => {
       ]),
     ).toBe(true);
     expect(native.group).toHaveBeenCalledOnce();
-    expect(cache.preparedRoot?.references).toEqual([late]);
+    expect(native.issue.mock.calls[0]?.[1]).toEqual([late]);
     expect(native.select).toHaveBeenCalledWith(late);
     expect(cache.peek(conversationKnowledgeContributionId(reference), 0)).toBeUndefined();
     const admitted = await admitRecipientConversationCheckpoint(params);
