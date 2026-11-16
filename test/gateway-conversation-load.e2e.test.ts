@@ -785,6 +785,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
             let acceptedFrames = 0,
               acceptedBytes = 0,
               outputFrames = 0;
+            let warmInputStarted: number | undefined, firstWarmAudioAt: number | undefined;
             const fail = () => {
               failure = new Error("Talk failed during a measured connection");
               ended.reject(failure);
@@ -806,6 +807,9 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
                   if (payload.type === "audio" && typeof payload.audioBase64 === "string") {
                     expect(Buffer.from(payload.audioBase64, "base64").length).toBeGreaterThan(0);
                     outputFrames++;
+                    if (warmInputStarted !== undefined) {
+                      firstWarmAudioAt ??= performance.now();
+                    }
                   }
                   if (!isRecord(payload.talkEvent)) {
                     return;
@@ -832,6 +836,9 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
               },
             );
             cleanups.push(() => operator.close());
+            const createProcessStart = await cpuTicks(pid),
+              createMainStart = await cpuTicks(pid, true);
+            const createStarted = performance.now();
             const created = await operator.call<{ sessionId: string; readyMark: string }>(
               "talk.session.create",
               {
@@ -843,30 +850,60 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
                 capabilities: ["isolated-input", "output-gate"],
               },
             );
+            const createElapsedMs = performance.now() - createStarted;
             cleanups.push(async () => {
               closing = true;
               await operator.call("talk.session.close", { sessionId: created.sessionId });
             });
+            const createProcessCpuTicks = (await cpuTicks(pid)) - createProcessStart,
+              createMainCpuTicks = (await cpuTicks(pid, true)) - createMainStart;
+            const readyAckStarted = performance.now();
             await operator.call("talk.session.acknowledgeMark", {
               sessionId: created.sessionId,
               markName: created.readyMark,
             });
+            const readyAckMs = performance.now() - readyAckStarted;
             const warmText = "PCM_WARM: Please reply briefly. ";
             const warm = Buffer.from(warmText + (Buffer.byteLength(warmText) % 2 ? " " : ""));
             const beforeWarm = model.requests.length;
+            const warmProcessStart = await cpuTicks(pid),
+              warmMainStart = await cpuTicks(pid, true);
+            warmInputStarted = performance.now();
             await operator.call("talk.session.appendAudio", {
               sessionId: created.sessionId,
               audioBase64: warm.toString("base64"),
               endOfInput: true,
             });
             await withinTest(completed, signal);
+            const warmElapsedMs = performance.now() - warmInputStarted;
+            const warmProcessCpuTicks = (await cpuTicks(pid)) - warmProcessStart,
+              warmMainCpuTicks = (await cpuTicks(pid, true)) - warmMainStart;
             expect(outputFrames).toBeGreaterThan(0);
+            expect(firstWarmAudioAt).toBeDefined();
             expect(
               model.requests
                 .slice(beforeWarm)
                 .filter((request) => JSON.stringify(request.input).includes("PCM_WARM")),
             ).toHaveLength(1);
             expect(failure).toBeUndefined();
+            console.log(
+              JSON.stringify({
+                kind: "native-gateway-pcm-startup",
+                mode,
+                repetition,
+                createElapsedMs,
+                createProcessCpuTicks,
+                createMainCpuTicks,
+                readyAckMs,
+                firstAudioMs: firstWarmAudioAt! - warmInputStarted,
+                warmElapsedMs,
+                warmProcessCpuTicks,
+                warmMainCpuTicks,
+                modelRequests: model.requests.length - beforeWarm,
+                boundary: "signed-talk-speech-relay",
+                hardwareVadOrAecMeasured: false,
+              }),
+            );
             const requests = model.requests.length;
             const sample = async <T extends Record<string, number>>(
               phase: string,
