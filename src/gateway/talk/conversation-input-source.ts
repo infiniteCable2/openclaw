@@ -1,6 +1,7 @@
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { buildHostChannelInboundEventContext } from "../../channels/inbound-event/context.js";
 import { bindHostConversationContextGatewayResolver } from "../../channels/message-access/admission-evidence.js";
+import { resolveAgentConversationMode } from "../../config/agent-conversation-mode.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -209,6 +210,13 @@ export function createGatewayTalkConversationInputSource(input: {
           signal.throwIfAborted();
           params.assertInputCurrent();
         };
+        if (
+          resolveAgentConversationMode(params.getRuntimeConfig(), params.target.agentId) !==
+          "branches"
+        ) {
+          assertConnectionCurrent();
+          return;
+        }
         const held = await acquireOriginalSource({
           assertPreparing: assertConnectionCurrent,
           captureSignal: signal,
