@@ -1,3 +1,0 @@
-104
-# Count the real orchestration guard across different consumed-receipt counts.
-# Native consumers separately retain source/revocation/final-effect coverage.

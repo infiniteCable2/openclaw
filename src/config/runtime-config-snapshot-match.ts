@@ -20,15 +20,9 @@ export function stableConfigStringify(value: unknown): string {
   // SAFETY: the guards above establish `value` is a non-null, non-array object, so its own properties are string-keyed.
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).toSorted();
-  let text = "{";
-  for (let index = 0; index < keys.length; index++) {
-    const key = keys[index]!;
-    if (index > 0) {
-      text += ",";
-    }
-    text += `${JSON.stringify(key)}:${stableConfigStringify(record[key])}`;
-  }
-  return `${text}}`;
+  return `{${keys
+    .map((key) => `${JSON.stringify(key)}:${stableConfigStringify(record[key])}`)
+    .join(",")}}`;
 }
 
 export function configSnapshotsMatch(left: OpenClawConfig, right: OpenClawConfig): boolean {

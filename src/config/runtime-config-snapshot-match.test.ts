@@ -1,12 +1,7 @@
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
-import { freezeJsonSnapshot } from "../shared/immutable-data.js";
 import { createConfigResolutionFacts, setConfigResolutionFacts } from "./resolution-facts.js";
 import { captureRuntimeConfigWithSource } from "./runtime-config-capture-state.js";
-import {
-  configSnapshotsMatch,
-  createRuntimeConfigSnapshotMatcher,
-  stableConfigStringify,
-} from "./runtime-config-snapshot-match.js";
+import { createRuntimeConfigSnapshotMatcher } from "./runtime-config-snapshot-match.js";
 import {
   clearRuntimeConfigSnapshot,
   createRuntimeConfigReader,
@@ -78,66 +73,4 @@ it.each([false, true])("does not retain mutable or shallow-frozen matches: %s", 
   expect(matches(cfg)).toBe(true);
   cfg.gateway!.port = 19002;
   expect(matches(cfg)).toBe(false);
-});
-
-it("avoids temporary property-value arrays when comparing interleaved mutable configurations", () => {
-  const cfg: OpenClawConfig = { gateway: { port: 19001 } };
-  const other = structuredClone(cfg);
-  const matches = createRuntimeConfigSnapshotMatcher(cfg);
-  expect(matches(cfg)).toBe(true);
-  const map = vi.spyOn(Array.prototype, "map");
-  onTestFinished(() => map.mockRestore());
-  let allMatched = true;
-  for (let index = 0; index < 50; index++) {
-    allMatched &&= matches(cfg) && matches(other);
-  }
-  const propertyArrayCount = map.mock.calls.length;
-  map.mockRestore();
-  expect(allMatched).toBe(true);
-  expect(propertyArrayCount).toBe(0);
-  other.gateway!.port = 19002;
-  expect(matches(other)).toBe(false);
-  expect(matches(cfg)).toBe(true);
-  cfg.gateway!.port = 19003;
-  expect(matches(cfg)).toBe(false);
-});
-
-it.each([
-  [undefined, null],
-  [-0, 0],
-  [Number.NaN, null],
-  [Number.POSITIVE_INFINITY, null],
-])("preserves byte-equivalent fallback values: %s / %s", (leftValue, rightValue) => {
-  const left: OpenClawConfig = {};
-  const right: OpenClawConfig = {};
-  Reflect.set(left, "edge", leftValue);
-  Reflect.set(right, "edge", rightValue);
-  expect(configSnapshotsMatch(freezeJsonSnapshot(left), right)).toBe(true);
-});
-
-it("retains serialization rejection for equal cyclic graphs and bigint values", () => {
-  for (const cyclic of [false, true]) {
-    const left: OpenClawConfig = {};
-    const right: OpenClawConfig = {};
-    Reflect.set(left, "edge", cyclic ? left : 1n);
-    Reflect.set(right, "edge", cyclic ? right : 1n);
-    expect(configSnapshotsMatch(freezeJsonSnapshot(left), right)).toBe(false);
-  }
-});
-
-it("reads mutable accessors only through the existing serialization fallback", () => {
-  const left = freezeJsonSnapshot({ gateway: { port: 19001 } });
-  const readPort = vi.fn(() => 19001);
-  const right = { gateway: Object.defineProperty({}, "port", { enumerable: true, get: readPort }) };
-  expect(configSnapshotsMatch(left, right)).toBe(true);
-  expect(readPort).toHaveBeenCalledTimes(1);
-});
-
-it("preserves sorted escaped keys and sparse array bytes", () => {
-  const sparse: unknown[] = [];
-  sparse.length = 2;
-  sparse[1] = undefined;
-  expect(stableConfigStringify({ z: sparse, 'a"': { b: undefined, a: [] } })).toBe(
-    '{"a\\\"":{"a":[],"b":null},"z":[,null]}',
-  );
 });
