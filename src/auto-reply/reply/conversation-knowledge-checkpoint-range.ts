@@ -130,11 +130,8 @@ export async function validateCheckpointCachedPackets(params: {
       }
     }
   }
-  // Cache hits do only synchronous comparisons; native reads recheck after awaiting.
-  if (candidates.length > 0) {
-    params.check();
-  }
   for (const { reference, range, packet } of candidates) {
+    params.check();
     const key = JSON.stringify(packet.version);
     let valid = prefixes.get(key);
     if (valid === undefined) {
