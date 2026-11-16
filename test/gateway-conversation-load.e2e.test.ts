@@ -785,7 +785,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
             let acceptedFrames = 0,
               acceptedBytes = 0,
               outputFrames = 0;
-            let warmInputStarted: number | undefined, firstWarmAudioAt: number | undefined;
+            const warmTiming: { inputStarted?: number; firstAudioAt?: number } = {};
             const fail = () => {
               failure = new Error("Talk failed during a measured connection");
               ended.reject(failure);
@@ -807,8 +807,8 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
                   if (payload.type === "audio" && typeof payload.audioBase64 === "string") {
                     expect(Buffer.from(payload.audioBase64, "base64").length).toBeGreaterThan(0);
                     outputFrames++;
-                    if (warmInputStarted !== undefined) {
-                      firstWarmAudioAt ??= performance.now();
+                    if (warmTiming.inputStarted !== undefined) {
+                      warmTiming.firstAudioAt ??= performance.now();
                     }
                   }
                   if (!isRecord(payload.talkEvent)) {
@@ -868,18 +868,18 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
             const beforeWarm = model.requests.length;
             const warmProcessStart = await cpuTicks(pid),
               warmMainStart = await cpuTicks(pid, true);
-            warmInputStarted = performance.now();
+            warmTiming.inputStarted = performance.now();
             await operator.call("talk.session.appendAudio", {
               sessionId: created.sessionId,
               audioBase64: warm.toString("base64"),
               endOfInput: true,
             });
             await withinTest(completed, signal);
-            const warmElapsedMs = performance.now() - warmInputStarted;
+            const warmElapsedMs = performance.now() - warmTiming.inputStarted;
             const warmProcessCpuTicks = (await cpuTicks(pid)) - warmProcessStart,
               warmMainCpuTicks = (await cpuTicks(pid, true)) - warmMainStart;
             expect(outputFrames).toBeGreaterThan(0);
-            expect(firstWarmAudioAt).toBeDefined();
+            expect(warmTiming.firstAudioAt).toBeDefined();
             expect(
               model.requests
                 .slice(beforeWarm)
@@ -895,7 +895,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_PCM_LOAD !== "1")(
                 createProcessCpuTicks,
                 createMainCpuTicks,
                 readyAckMs,
-                firstAudioMs: firstWarmAudioAt! - warmInputStarted,
+                firstAudioMs: warmTiming.firstAudioAt! - warmTiming.inputStarted,
                 warmElapsedMs,
                 warmProcessCpuTicks,
                 warmMainCpuTicks,
