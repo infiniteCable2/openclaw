@@ -144,7 +144,7 @@ describe("speech session failed-start ownership", () => {
             expect(result.handle).toBe(owner);
             expect(result.error).toBeUndefined();
             expect(readyEvents()).toHaveLength(1);
-            expectDefined(input)(Buffer.alloc(960));
+            expectDefined(input, "Ready capture callback")(Buffer.alloc(960));
             expect(sendAudio).toHaveBeenCalledOnce();
           } else {
             expect(result.error).toBeInstanceOf(Error);
