@@ -168,7 +168,6 @@ describe("isolated full Gateway conversation continuity", () => {
     let gateway: OpenClawTestInstance | undefined;
     let model: Model | undefined;
     let owner: Operator | undefined;
-    context.onTestFailed(() => console.error(gateway?.logs()));
     const markers = Array.from({ length: 10 }, (_, index) => `SUMMARY_FACT_${index}_73`);
     const tailMarker = "POST_CHECKPOINT_FRESH_73";
     await runQaGatewayTestFixture(
@@ -208,6 +207,8 @@ describe("isolated full Gateway conversation continuity", () => {
             OPENCLAW_LOG_LEVEL: "debug",
           },
         });
+        const diagnostics = gateway;
+        context.onTestFailed(() => console.error(diagnostics.logs()));
         isolateConversationGatewayEnvironment(gateway);
         await gateway.startGateway();
         owner = await connectConversationOperator(gateway, "alex@example.test", signal);
@@ -346,17 +347,22 @@ describe("isolated full Gateway conversation continuity", () => {
           sourceSequences,
           lastSequence,
         });
-        await vi.waitFor(
-          () => {
-            // Cross two native generations. A nearly full quoted tail alone can
-            // fit the root yet exceed a recipient's additional system/tool costs.
-            expect(rootCheckpointIds().size).toBeGreaterThanOrEqual(2);
-            expect(
-              [...rootCheckpointIds(lastSequence)].some((id) => !firstPhaseCheckpointIds.has(id)),
-            ).toBe(true);
-          },
-          { timeout: 60_000, interval: 100 },
-        );
+        await vi
+          .waitFor(
+            () => {
+              // Cross two native generations. A nearly full quoted tail alone can
+              // fit the root yet exceed a recipient's additional system/tool costs.
+              expect(rootCheckpointIds().size).toBeGreaterThanOrEqual(2);
+              expect(
+                [...rootCheckpointIds(lastSequence)].some((id) => !firstPhaseCheckpointIds.has(id)),
+              ).toBe(true);
+            },
+            { timeout: 60_000, interval: 100 },
+          )
+          .catch((error: unknown) => {
+            console.error(diagnostics.logs());
+            throw error;
+          });
         // Warm recipients retain their own committed originals. Finish that copy
         // before removing the donor; the new branch must instead use the checkpoint.
         await vi.waitFor(() => {
