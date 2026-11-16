@@ -15,10 +15,7 @@ import {
   readSessionTranscriptReportReceipts,
 } from "./session-accessor.sqlite-transcript-reports.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
-import {
-  type SessionSourceAssertion,
-  type SessionSourcePredicate,
-} from "./session-source-authority.js";
+import type { SessionSourceAssertion, SessionSourcePredicate } from "./session-source-authority.js";
 
 // Weak values share immutable provenance between live owners. Bounded keys do not
 // keep old roots alive; eviction affects preparation cost, never authorization.

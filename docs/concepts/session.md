@@ -302,14 +302,17 @@ the historical record or permission to read it.
 An unavailable original range remains outside new checkpoint coverage. It does
 not block preparation or summarization of later verified originals. If the range
 becomes verifiable later, a subsequent checkpoint can cover it as a new delta.
-Previously covered sources still require current authorization before their
-summary can be reused; unavailable storage facts retain the normal retry path.
+Once published, the summary is a root artifact for its confirmed audience.
+Reusing it checks that root and audience, not the availability or current grants
+of covered originals. Coverage IDs prevent duplicate imports; they do not grant
+access to original histories. Uncovered contributions still require native source
+authority, including late arrivals with older timestamps.
 
 A genuinely new private branch installs its authorized checkpoint and subsequent
 observations in the native creation transaction, before the first input. The
 original private destination, absent row, unused transcript/window identity, root
-prefix and every selected source range remain guarded through commit. A complete
-background frame retains its original broker and donor custody while new branches
+prefix and every uncovered source range remain guarded through commit. A complete
+background frame retains its original broker and tail custody while new branches
 borrow its immutable context. Creation proves the new private destination without
 repeating donor discovery. A revoked frame falls back to normal authorized
 preparation; borrowed custody is released only after its copies settle. Concurrent root
@@ -321,6 +324,11 @@ or waiting for a new summary. Existing recipients retain their own imported prog
 compaction; publishing a root checkpoint does not rebase them, repeat earlier
 imports, or remove their local conversation. Their missing original contributions
 remain independently recoverable under the same permissions.
+
+Speech providers may connect while initial context is prepared. Native connection
+preparation must finish before speech readiness is published; a preparation failure
+fails startup instead of silently starting without its result. This barrier does
+not wait for future root contributions or ongoing recipient catch-up.
 
 Foreground conversation takes priority over root summarization. Checkpoint work
 uses native provider/authentication and compaction facilities without creating a

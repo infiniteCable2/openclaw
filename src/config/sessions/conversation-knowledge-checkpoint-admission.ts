@@ -9,7 +9,7 @@ import {
   type PreparedConversationKnowledgeCheckpointCoverage,
 } from "./conversation-knowledge-checkpoint.js";
 import { readConversationKnowledgeImportProgress } from "./conversation-knowledge-packets.js";
-import { type ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
+import type { ConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
 import { appendSessionTranscriptReportBatch } from "./session-accessor.sqlite-transcript-reports.js";
 import type {
   SessionTranscriptRuntimeTarget,

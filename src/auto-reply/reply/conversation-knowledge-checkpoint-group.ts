@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import type { PreparedConversationBranchCreation } from "../../config/sessions/conversation-branch-creation.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
