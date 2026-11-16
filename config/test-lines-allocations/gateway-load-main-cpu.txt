@@ -1,0 +1,2 @@
+# Attribute the existing Gateway workload CPU to the main thread as well as the process.
+2

@@ -102,7 +102,7 @@ function configuration(baseUrl: string, mode: "native" | "branches" = "branches"
 }
 
 // Linux process accounting includes all Gateway threads, not children or the test runner.
-// Report clock ticks, without assuming the host's CLK_TCK or calling this main-thread CPU.
+// The optional task counter isolates the main thread; both report native clock ticks.
 async function cpuTicks(pid: number, mainThread = false) {
   const stat = await readFile(
     mainThread ? `/proc/${pid}/task/${pid}/stat` : `/proc/${pid}/stat`,
@@ -474,6 +474,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
           }
           meter.take();
           const startCpu = await cpuTicks(pid);
+          const startMainCpu = await cpuTicks(pid, true);
           const start = performance.now();
           const requests = model.requests.length;
           if (observer && phase === "initial:isolated-duplex:open") {
@@ -509,6 +510,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
                   outcome: completed ? "completed" : "failed",
                   elapsedMs: performance.now() - start,
                   cpuTicks: (await cpuTicks(pid)) - startCpu,
+                  mainCpuTicks: (await cpuTicks(pid, true)) - startMainCpu,
                   modelRequests: model.requests.length - requests,
                   modelShapes: model.requests.slice(requests).slice(-4).map(modelRequestShape),
                   ...observed,
