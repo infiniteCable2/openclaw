@@ -407,9 +407,13 @@ describe("isolated full Gateway conversation continuity", () => {
         // covers older A; remove only A, leaving every uncovered B original live.
         // Warm recipients retain their own committed originals before donor removal.
         await waitForAdmissions(secondPhaseSequences);
-        expect(await owner.call("sessions.patch", { key: source, archived: true })).toMatchObject({
-          ok: true,
-        });
+        expect(
+          await owner.call("sessions.patch", {
+            key: source,
+            expectedSessionId: sourceDescription.session.sessionId,
+            archived: true,
+          }),
+        ).toMatchObject({ ok: true });
         expect(
           await owner.call("sessions.delete", {
             key: source,
