@@ -328,7 +328,9 @@ remain independently recoverable under the same permissions.
 Speech providers may connect while initial context is prepared. Native connection
 preparation must finish before speech readiness is published; a preparation failure
 fails startup instead of silently starting without its result. This barrier does
-not wait for future root contributions or ongoing recipient catch-up.
+not wait for future root contributions or ongoing recipient catch-up. A retained
+frame must cover the root snapshot captured by native branch creation; an older
+frame uses the ordinary checkpoint and tail preparation path instead.
 
 Foreground conversation takes priority over root summarization. Checkpoint work
 uses native provider/authentication and compaction facilities without creating a

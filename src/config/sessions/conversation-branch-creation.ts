@@ -24,6 +24,7 @@ import {
   type SessionSourceAssertion,
   type SessionSourcePredicate,
 } from "./session-source-authority.js";
+import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 import { resolveSessionWorkStartError } from "./session-work-start.js";
 import type { InternalSessionEntry } from "./types.js";
 
@@ -83,6 +84,7 @@ class PreparedConversationBranchCreation {
   readonly audience: ConversationPrivateAudience;
   readonly participant: SessionParticipantIdentity;
   readonly source: SessionSourceAssertion;
+  readonly rootVersion: Readonly<SessionTranscriptContextVersion> | undefined;
   readonly #entry: InternalSessionEntry;
   readonly #readSource: CapturedSessionEntryReadSource;
   readonly #generation: Awaited<ReturnType<typeof prepareSessionGenerationFacts>>;
@@ -95,6 +97,7 @@ class PreparedConversationBranchCreation {
     params: CreationPreparation,
     readSource: CapturedSessionEntryReadSource,
     rootEntry: InternalSessionEntry,
+    rootVersion: SessionTranscriptContextVersion | undefined,
     generation: Awaited<ReturnType<typeof prepareSessionGenerationFacts>>,
     matchesConfig: (current: OpenClawConfig) => boolean,
     participant: SessionParticipantIdentity,
@@ -107,6 +110,7 @@ class PreparedConversationBranchCreation {
     this.audience = params.audience;
     this.participant = freezeJsonSnapshot(structuredClone(participant));
     this.#readSource = freezeJsonSnapshot(structuredClone(readSource));
+    this.rootVersion = rootVersion && freezeJsonSnapshot(structuredClone(rootVersion));
     this.#generation = generation;
     const check = (assertOriginal?: () => void) => {
       if (!this.#active || this.#publicationRefused) {
@@ -341,7 +345,15 @@ export async function prepareConversationBranchCreation(
   });
   try {
     const captured = await reader.withRead(
-      { sessionKeys: [branch.sessionKey, branch.root.sessionKey], includeMembers: true },
+      {
+        sessionKeys: [branch.sessionKey, branch.root.sessionKey],
+        includeMembers: true,
+        transcript: {
+          sessionKey: branch.root.sessionKey,
+          entryIds: [],
+          includeContextVersion: true,
+        },
+      },
       check,
       (read) => {
         const current = read.entries.find((row) => row.sessionKey === branch.sessionKey)?.entry;
@@ -364,7 +376,11 @@ export async function prepareConversationBranchCreation(
         ) {
           throw new Error("Conversation creation absence or root changed");
         }
-        return { source: structuredClone(read.source), root: structuredClone(root) };
+        return {
+          source: structuredClone(read.source),
+          root: structuredClone(root),
+          rootVersion: read.transcript?.contextVersion,
+        };
       },
     );
     check();
@@ -374,6 +390,7 @@ export async function prepareConversationBranchCreation(
       params,
       captured.source,
       captured.root,
+      captured.rootVersion,
       generation,
       matchesConfig,
       participant,

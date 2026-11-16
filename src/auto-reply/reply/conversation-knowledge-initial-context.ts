@@ -165,8 +165,13 @@ export async function prepareConversationKnowledgeInitialContext(params: {
       // A stale former broker cannot deny a newly authorized native creation.
       check();
     }
+    if (frame && !frame.frame.coversRootSnapshot(creation.rootVersion)) {
+      await frame.release();
+      frame = undefined;
+    }
     if (frame) {
-      cleanups.push(() => frame.release());
+      const retainedFrame = frame;
+      cleanups.push(() => retainedFrame.release());
       const prepared = await borrowPreparedConversationKnowledgeInitialFrame({
         frame: frame.frame,
         creation,

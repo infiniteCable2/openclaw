@@ -1,0 +1,2 @@
+70
+# Capture the creation root boundary in its existing native read and test prepared-frame freshness without replacing live authority checks.

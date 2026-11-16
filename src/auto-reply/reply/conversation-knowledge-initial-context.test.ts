@@ -231,6 +231,7 @@ beforeEach(() => {
   boundary.creation.mockResolvedValue({
     branch,
     participant,
+    rootVersion,
     source: assertCurrent,
     bindCreation: boundary.bind,
     assertEntry: boundary.entry,
@@ -287,6 +288,24 @@ it("does not treat revoked creating authority as optional stale frame lookup", a
     "Creating authority revoked",
   );
   expect(boundary.sources).not.toHaveBeenCalled();
+});
+
+it("releases an older prepared frame and copies the root snapshot captured at creation", async () => {
+  const release = vi.fn(async () => {});
+  const coversRootSnapshot = vi.fn(() => false);
+  boundary.acquire.mockReturnValue({ frame: { coversRootSnapshot }, release });
+  const prepared = await prepareConversationKnowledgeInitialContext(params());
+  expect(coversRootSnapshot).toHaveBeenCalledExactlyOnceWith(rootVersion);
+  expect(release).toHaveBeenCalledOnce();
+  expect(prepared?.context.kind).toBe("root-projection");
+  if (prepared?.context.kind !== "root-projection") {
+    throw new Error("Expected the current checkpoint and tail fallback");
+  }
+  expect(
+    prepared.context.projection.packets.map((packet) => packet.receipt.source.sessionId),
+  ).toEqual(["source-1", "source-2"]);
+  await prepared.release();
+  expect(release).toHaveBeenCalledOnce();
 });
 
 it("prepares the whole ordered brokerless tail before creation and retains exact source authority", async () => {

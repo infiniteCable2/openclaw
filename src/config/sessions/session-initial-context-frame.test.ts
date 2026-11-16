@@ -320,6 +320,26 @@ it("borrows independently for two destinations without preparing donor authority
   expect(() => frame.assertCurrent()).toThrow("released");
 });
 
+it("covers only captured root boundaries within its immutable prepared watermark", async () => {
+  const f = fixture();
+  const frame = await prepareConversationKnowledgeInitialFrame(f.params);
+  const version = f.params.context.sourceVersion;
+  try {
+    expect(frame.coversRootSnapshot(undefined)).toBe(false);
+    expect(frame.coversRootSnapshot({ ...version, generation: null })).toBe(false);
+    expect(frame.coversRootSnapshot({ ...version, rawSeq: null })).toBe(false);
+    expect(frame.coversRootSnapshot({ ...version, generation: "replacement" })).toBe(false);
+    expect(frame.coversRootSnapshot({ ...version, rawSeq: 3 })).toBe(false);
+    expect(frame.coversRootSnapshot({ ...version, rawSeq: 2, updatedAt: 99 })).toBe(true);
+    expect(frame.coversRootSnapshot({ ...version, rawSeq: 1 })).toBe(true);
+    version.rawSeq = 99;
+    expect(frame.coversRootSnapshot(version)).toBe(false);
+    expect(frame.coversRootSnapshot({ ...version, rawSeq: 2 })).toBe(true);
+  } finally {
+    await frame.release();
+  }
+});
+
 it("keeps the full retained source authority current independently of prepared-only checks", async () => {
   const f = fixture();
   const held = await f.prepare();

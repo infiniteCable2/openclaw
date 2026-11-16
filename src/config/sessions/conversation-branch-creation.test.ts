@@ -213,6 +213,37 @@ beforeEach(() => {
 });
 
 describe("native private conversation creation capability", () => {
+  it.each([false, true])(
+    "captures the root boundary in the absence read (version=%s)",
+    async (present) => {
+      const f = fixture();
+      const version = { generation: "root-generation", rawSeq: 7, updatedAt: 1 };
+      f.read.transcript = present ? { anchors: [], contextVersion: version } : undefined;
+      const read = vi.spyOn(f.reader, "withRead");
+      const creation = await prepareConversationBranchCreation(f.params);
+      try {
+        expect(read).toHaveBeenCalledOnce();
+        expect(read.mock.calls[0]?.[0]).toMatchObject({
+          sessionKeys: [f.branch.sessionKey, f.branch.root.sessionKey],
+          includeMembers: true,
+          transcript: {
+            sessionKey: f.branch.root.sessionKey,
+            entryIds: [],
+            includeContextVersion: true,
+          },
+        });
+        expect(creation.rootVersion).toEqual(present ? version : undefined);
+        version.rawSeq = 99;
+        expect(creation.rootVersion?.rawSeq).toBe(present ? 7 : undefined);
+        if (present) {
+          expect(Object.isFrozen(creation.rootVersion)).toBe(true);
+        }
+      } finally {
+        creation.release();
+      }
+    },
+  );
+
   it("checks the original owner once without losing its native predicate or prepared guard", async () => {
     const f = fixture();
     let current = true;

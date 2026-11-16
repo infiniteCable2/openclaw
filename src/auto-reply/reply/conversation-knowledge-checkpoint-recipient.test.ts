@@ -449,7 +449,13 @@ describe("ready checkpoint recipient", () => {
     expect(native.group).not.toHaveBeenCalled();
     expect(native.groupRead).not.toHaveBeenCalled();
     const lateSource = { ...source, sessionKey: "agent:example:late", sessionId: "late" };
-    const through = { ...anchor, ...lateSource, entryId: "late", rawSeq: 2 };
+    const through = {
+      ...anchor,
+      sessionKey: lateSource.sessionKey,
+      sessionId: lateSource.sessionId,
+      entryId: "late",
+      rawSeq: 2,
+    };
     const late = {
       ...reference,
       source: lateSource,

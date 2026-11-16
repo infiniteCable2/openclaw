@@ -31,6 +31,7 @@ import {
   type SessionSourceAssertion,
   type SessionSourcePredicate,
 } from "./session-source-authority.js";
+import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 
 type FrameContext = Omit<
   PreparedProjectedInitialSessionContext,
@@ -117,6 +118,19 @@ class PreparedConversationKnowledgeInitialFrame {
 
   assertCurrent(): void {
     this.#check();
+  }
+
+  /** Freshness only; borrowing still requires all current native authority. */
+  coversRootSnapshot(version: Readonly<SessionTranscriptContextVersion> | undefined): boolean {
+    const prepared = this.#context.sourceVersion;
+    return (
+      version !== undefined &&
+      version.generation !== null &&
+      prepared.generation === version.generation &&
+      version.rawSeq !== null &&
+      prepared.rawSeq !== null &&
+      prepared.rawSeq >= version.rawSeq
+    );
   }
 
   async release(): Promise<void> {
