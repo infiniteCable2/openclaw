@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as channelIdentities from "../state/user-channel-identities.js";
 import { changeCanonicalUserChannelIdentity } from "../state/user-channel-identity-operations.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -52,6 +53,7 @@ describe("native operator source custody", () => {
       const { fixture, profile, snapshot } = await createSource(state.stateDir);
       fixture.retire();
       await expect(fixture.restore()).rejects.toThrow("Recovery claim retired");
+      using subject = vi.spyOn(channelIdentities, "userChannelIdentitySubject");
       const held = await prepareGatewayOperatorSourceCustody({
         snapshot,
         context: fixture.context,
@@ -67,6 +69,11 @@ describe("native operator source custody", () => {
           "signal",
         ]);
         expect(held.profileId).toBe(profile.id);
+        expect(subject).toHaveBeenCalledTimes(1);
+        for (let index = 0; index < 64; index++) {
+          held.assertCurrent();
+        }
+        expect(subject).toHaveBeenCalledTimes(1);
         held.release();
         expect(held.assertCurrent).not.toThrow();
       } finally {

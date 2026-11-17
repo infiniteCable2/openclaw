@@ -1,0 +1,4 @@
+24
+# Count once-owned paired-device subject preparation through real retained source
+# custody and refuse a changed device ID from a directly supplied mutable snapshot,
+# while preserving existing link revocation and lifetime controls.

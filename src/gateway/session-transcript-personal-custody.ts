@@ -241,7 +241,7 @@ export async function preparePersonalConversationReadInternal(
     refusal = error;
     throw error;
   };
-  const policy = () => {
+  const checkPolicy = (assertOriginal?: () => void) => {
     params.signal?.throwIfAborted();
     if (!active) {
       throw new PersonalConversationReadRefusedError(
@@ -251,7 +251,7 @@ export async function preparePersonalConversationReadInternal(
     if (revoked) {
       throw refusal;
     }
-    original();
+    assertOriginal?.();
     custody.participants.assertCurrent();
     destination?.assertCurrent();
     if (creation) {
@@ -281,6 +281,7 @@ export async function preparePersonalConversationReadInternal(
     }
     return cfg;
   };
+  const policy = () => checkPolicy(original);
   const checkEntry = (entry: InternalSessionEntry, isRoot: boolean, sessionKey: string) => {
     if (isRoot) {
       assertSessionConversationRootEntry(entry, target.root.sessionKey);
@@ -394,9 +395,9 @@ export async function preparePersonalConversationReadInternal(
       );
     }
   };
-  const assertCurrent = () => {
+  const checkCurrent = (assertOriginal?: () => void) => {
     try {
-      const cfg = policy();
+      const cfg = checkPolicy(assertOriginal);
       for (const read of reads) {
         const facts = read.held.readCurrent(cfg);
         const current = facts.target;
@@ -427,6 +428,8 @@ export async function preparePersonalConversationReadInternal(
       refuse(error);
     }
   };
+  const assertCurrent = () => checkCurrent(original);
+  const assertLocalCurrent = () => checkCurrent();
   const release = () => {
     const retireView = active;
     active = false;
@@ -560,9 +563,10 @@ export async function preparePersonalConversationReadInternal(
     const prepare = async (): Promise<PreparedSessionSourceAuthority> => {
       assertCurrent();
       return {
-        assertCurrent,
+        assertCurrent: assertLocalCurrent,
         assertPreparedCurrent: () => {
           try {
+            // A native parent may defer its own prepared check to this boundary.
             policy();
           } catch (error) {
             refuse(error);
@@ -611,7 +615,8 @@ export async function preparePersonalConversationReadInternal(
         }),
       };
     };
-    const source = Object.assign(assertCurrent, {
+    // The composed sibling owns the parent; local checks must not traverse it again.
+    const source = Object.assign(assertLocalCurrent, {
       prepareSessionSource: prepare,
       prepareSessionSourceScope: prepare,
     });

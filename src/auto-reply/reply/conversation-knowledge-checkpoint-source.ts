@@ -134,7 +134,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       }
       authority.signal.throwIfAborted();
       assertSources();
-      params.audience.assertCurrent();
+      // Existing-target facts already retain this exact audience. A creation
+      // source can hold another admitted audience, so retain this broker's check.
+      params.targetCreation && params.audience.assertCurrent();
     },
   );
   const check = () => custody();

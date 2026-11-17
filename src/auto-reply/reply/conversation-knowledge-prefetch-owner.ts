@@ -2,6 +2,7 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { cloneEnvWithPlatformSemantics } from "../../config/config-env-vars.js";
+import { readPreparedSessionSharingChange } from "../../config/sessions/session-accessor.sqlite-entry-cache-publication.js";
 import { readPreparedSessionTranscriptChange } from "../../config/sessions/session-transcript-authority.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getBackgroundOwnerLane } from "../../process/background-work.js";
@@ -431,6 +432,15 @@ export function createConversationKnowledgePrefetchOwner(params: {
         change.storePath &&
         path.resolve(change.storePath) === target.storePath
       ) {
+        // Metadata-only writes still refresh their own recipient, but the native
+        // sharing owner certifies that other recipients need no donor rescan.
+        if (
+          change.sessionKey !== target.sessionKey &&
+          change.factsInvalidated === undefined &&
+          readPreparedSessionSharingChange(change) === "unchanged"
+        ) {
+          return;
+        }
         request(
           change.sessionKey === target.sessionKey ? "recipient" : "source",
           change.sessionKey === target.sessionKey ? "recipient-entry" : "source-entry",

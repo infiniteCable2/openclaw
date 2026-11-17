@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { prepareSessionSourceAuthority } from "../config/sessions/session-source-authority.js";
+import {
+  prepareSessionSourceAuthority,
+  type PreparedSessionSourceAuthority,
+} from "../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SessionSharingTarget } from "./session-sharing-policy.js";
 import {
@@ -163,6 +166,59 @@ beforeEach(() => {
 });
 
 describe("prepared native personal admission custody", () => {
+  it.each([false, true])(
+    "checks a shared parent once and retains native prepared revocation (native=%s)",
+    async (nativeSource) => {
+      const f = fixture();
+      const params = f.fresh();
+      const parent = Object.assign(vi.fn(f.original.personal.assertCurrent), { nativeSource });
+      const inherited: PreparedSessionSourceAuthority["checks"][number] = {
+        predicate: {
+          source: f.source.readSource!,
+          sessionKey: "agent:example:parent",
+          fields: ["sessionId"],
+          expected: { sessionId: "parent-a" },
+        },
+        refuse(): never {
+          throw new Error("Original parent predicate refused");
+        },
+      };
+      Object.assign(parent, {
+        prepareSessionSource: async () => ({
+          nativeSource,
+          assertCurrent: parent,
+          checks: [inherited],
+        }),
+      });
+      params.personal.assertCurrent = parent;
+      const grant = await preparePersonalConversationRead(params);
+      const prepared = await prepareSessionSourceAuthority(grant.assertCurrent);
+      try {
+        expect(prepared.checks.map(({ predicate }) => predicate)).toContainEqual(
+          inherited.predicate,
+        );
+        parent.mockClear();
+        grant.assertCurrent();
+        expect(parent).toHaveBeenCalledOnce();
+        parent.mockClear();
+        prepared.assertCurrent();
+        expect(parent).toHaveBeenCalledOnce();
+        if (nativeSource) {
+          parent.mockClear();
+          prepared.assertPreparedCurrent?.();
+          expect(parent).toHaveBeenCalledOnce();
+        }
+        f.endOriginal();
+        expect(grant.assertCurrent).toThrow("Original execution ended");
+        expect(prepared.assertCurrent).toThrow("Original execution ended");
+        expect(prepared.assertPreparedCurrent).toThrow("Original execution ended");
+      } finally {
+        await prepared.release?.();
+        grant.release();
+      }
+    },
+  );
+
   it.each(["grant", "descriptor"] as const)(
     "retries failed terminal %s cleanup without reviving its authority or repeating successful releases",
     async (kind) => {

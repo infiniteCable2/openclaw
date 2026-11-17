@@ -154,6 +154,16 @@ async function restoreGatewayOperatorSnapshot(params: {
         })
       : undefined;
     assertLifetime();
+    // Prepare the original subject once; mutable callers must still keep that device ID.
+    const personDeviceId = snapshot.device?.deviceId;
+    const personSubject =
+      snapshot.devicePerson && personDeviceId && snapshot.authPolicy?.authMethod === "device-token"
+        ? userChannelIdentitySubject({
+            channelId: "gateway",
+            accountId: "paired-device",
+            senderId: personDeviceId,
+          })
+        : null;
     const assertPerson = () => {
       if (!snapshot.devicePerson) {
         return;
@@ -163,12 +173,8 @@ async function restoreGatewayOperatorSnapshot(params: {
         snapshot.authPolicy?.authMethod !== "device-token" ||
         !person?.isCurrent() ||
         person.linked.profileId !== snapshot.profileId ||
-        person.linked.authorization?.subject !==
-          userChannelIdentitySubject({
-            channelId: "gateway",
-            accountId: "paired-device",
-            senderId: snapshot.device.deviceId,
-          }) ||
+        snapshot.device.deviceId !== personDeviceId ||
+        person.linked.authorization?.subject !== personSubject ||
         !isDeepStrictEqual(person.linked.authorization.grant, snapshot.grant)
       ) {
         throw new Error("Restart recovery device person binding changed; start a new user turn.");

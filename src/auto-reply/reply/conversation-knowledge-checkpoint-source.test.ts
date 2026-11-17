@@ -302,6 +302,8 @@ describe("checkpoint unavailable source custody", () => {
         if (!live.target) {
           throw new Error("Original target authority revoked");
         }
+        // Native existing-target facts already retain their destination audience.
+        audience();
       }),
       {
         prepareSessionSource: async (): Promise<PreparedSessionSourceAuthority> => ({

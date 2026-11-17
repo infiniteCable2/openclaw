@@ -3,11 +3,12 @@ import { describe, expect, it } from "vitest";
 import { changeCanonicalUserChannelIdentity } from "../state/user-channel-identity-operations.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { restoreGatewayOperatorSource } from "./operator-run-recovery.js";
 import { createOperatorRecoveryFixture } from "./operator-run-recovery.test-support.js";
 import { createContext } from "./server-plugin-in-process-dispatch.test-support.js";
 
 describe("restart recovery paired person authority", () => {
-  it.each(["before restore", "while retained", "unlink and relink"] as const)(
+  it.each(["before restore", "while retained", "unlink and relink", "mutable device"] as const)(
     "retains the original person link %s",
     async (change) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
@@ -40,12 +41,28 @@ describe("restart recovery paired person authority", () => {
           version: 1,
           id: expect.any(String),
         });
+        const mutableSnapshot =
+          change === "mutable device" ? structuredClone(fixture.snapshot) : fixture.snapshot;
         const restored =
-          change === "while retained"
-            ? expectDefined(await fixture.restore(), "original person")
-            : undefined;
+          change === "mutable device"
+            ? await restoreGatewayOperatorSource({
+                snapshot: mutableSnapshot,
+                context: fixture.context,
+                assertCurrent: () => {},
+              })
+            : change === "while retained"
+              ? expectDefined(await fixture.restore(), "original person")
+              : undefined;
         try {
           restored?.authority.assertCurrent();
+          if (change === "mutable device") {
+            expectDefined(mutableSnapshot.device, "original device").deviceId =
+              "replacement-device";
+            expect(expectDefined(restored, "original source").authority.assertCurrent).toThrow(
+              /binding changed/,
+            );
+            return;
+          }
           const identity = {
             channelId: "gateway",
             accountId: "paired-device",
