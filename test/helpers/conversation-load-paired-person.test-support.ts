@@ -1,4 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
+import { GATEWAY_CLIENT_IDS } from "../../packages/gateway-protocol/src/client-info.js";
 import type { DevicePairSetupCodeResult } from "../../packages/gateway-protocol/src/schema/devices.js";
 import type { HelloOk } from "../../packages/gateway-protocol/src/schema/frames.js";
 import type {
@@ -167,7 +168,9 @@ export async function preparePairedConversationLoadOperator(params: {
         bootstrapToken: decodePairingSetupCode(setup.setupCode).bootstrapToken,
         preferBootstrapToken: true,
         role: "node",
-        clientName: "node-host",
+        clientName: GATEWAY_CLIENT_IDS.ANDROID_APP,
+        platform: "android",
+        deviceFamily: "android",
         mode: "node",
         scopes: [],
       });
@@ -190,9 +193,10 @@ export async function preparePairedConversationLoadOperator(params: {
         const connected = await open({
           deviceToken,
           role: "operator",
-          clientName: "openclaw-control-ui",
-          mode: "webchat",
-          platform: "web",
+          clientName: GATEWAY_CLIENT_IDS.ANDROID_APP,
+          mode: "ui",
+          platform: "android",
+          deviceFamily: "android",
           scopes: options.scopes ?? BRANCH_GATEWAY_SCOPES,
           onEvent: (event) => options.onEvent?.(event.event, event.payload),
         });
