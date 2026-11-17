@@ -58,7 +58,7 @@ export async function preparePairedConversationLoadOperator(params: {
 }) {
   const { gateway, signal } = params;
   const identity = loadOrCreateDeviceIdentity({
-    path: gateway.state.statePath("conversation-load-paired-person", "credentials.sqlite"),
+    path: gateway.state.statePath("paired-load", "client", "credentials.sqlite"),
   });
   type ConnectionOptions = NonNullable<Parameters<typeof connectConversationOperator>[3]>;
   const open = async (options: GatewayClientOptions) => {
