@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, onTestFailed } from "vitest";
@@ -27,6 +28,8 @@ import type { ConversationInputScopeV1 } from "./conversation-input.types.js";
 import { replyToConversationInput } from "./conversation-reply.js";
 
 const HISTORY = "The synthetic note says cobalt.";
+const BOOTSTRAP = "Synthetic workspace instructions must not reach a greeting.";
+const CONVERSATION_GUIDANCE = "Synthetic conversation guidance must not reach a greeting.";
 const usage = {
   input: 1,
   output: 1,
@@ -95,7 +98,7 @@ function configuration(baseUrl: string, workspace: string): OpenClawConfig {
         models: { "fixture/fixture": { agentRuntime: { id: "openclaw" } } },
         utilityModel: "",
         skills: [],
-        skipBootstrap: true,
+        thinkingDefault: "medium",
       },
     },
     models: {
@@ -110,10 +113,10 @@ function configuration(baseUrl: string, workspace: string): OpenClawConfig {
             {
               id: "fixture",
               name: "Fixture",
-              reasoning: false,
+              reasoning: true,
               input: ["text"],
               contextWindow: 32768,
-              maxTokens: 128,
+              maxTokens: 4096,
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             },
           ],
@@ -132,7 +135,13 @@ it("isolates native greetings and publishes submitted speech once without overta
 }) => {
   let stage = "listener";
   let responseText = "Hello.";
-  const requests: Array<{ tools: number; hasHistory: boolean }> = [];
+  const requests: Array<{
+    tools: number;
+    hasHistory: boolean;
+    hasAmbientContext: boolean;
+    thinkingEnabled: boolean;
+  }> = [];
+  const measurements: Array<{ durationMs: number; requestBytes: number }> = [];
   const providerFailures: unknown[] = [];
   const warnings: unknown[][] = [];
   onTestFailed(() => {
@@ -167,7 +176,12 @@ it("isolates native greetings and publishes submitted speech once without overta
             requests.push({
               tools: Array.isArray(body.tools) ? body.tools.length : 0,
               hasHistory: JSON.stringify(body.messages).includes(HISTORY),
+              hasAmbientContext: [BOOTSTRAP, CONVERSATION_GUIDANCE].some((text) =>
+                JSON.stringify(body).includes(text),
+              ),
+              thinkingEnabled: isRecord(body.thinking) && body.thinking.type !== "disabled",
             });
+            measurements.push({ durationMs: 0, requestBytes: size });
             res.writeHead(200, { "content-type": "text/event-stream" });
             for (const event of eventsFor(responseText)) {
               res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
@@ -203,6 +217,7 @@ it("isolates native greetings and publishes submitted speech once without overta
       },
       async (state) => {
         const cfg = configuration(`http://127.0.0.1:${listener.claim.port}/v1`, state.workspaceDir);
+        await writeFile(`${state.workspaceDir}/SOUL.md`, BOOTSTRAP);
         await state.writeConfig(cfg);
         setRuntimeConfigSnapshot(cfg);
         const storePath = resolveOpenClawAgentSqlitePath({ agentId: "main" });
@@ -356,6 +371,7 @@ it("isolates native greetings and publishes submitted speech once without overta
               const admission = await freshAdmission();
               let liveOutput = 0;
               stage = `greeting:${hasHistory}:${expression}:reply`;
+              const startedAt = performance.now();
               const result = await replyToConversationInput({
                 cfg,
                 admission,
@@ -363,6 +379,7 @@ it("isolates native greetings and publishes submitted speech once without overta
                 text: "Prepare one short greeting only. Say Hello.",
                 workSignal: signal,
                 speech: {
+                  guidance: CONVERSATION_GUIDANCE,
                   assertOutputCurrent: assertLive,
                   onSpeakableText: () => {
                     liveOutput++;
@@ -385,11 +402,14 @@ it("isolates native greetings and publishes submitted speech once without overta
                     : {}),
                 },
               });
+              measurements[requestStart]!.durationMs = performance.now() - startedAt;
               expect(result.kind).toBe("reply");
               assert(result.kind === "reply");
               expect(result.reply.text.trim()).toBe("Hello.");
               expect(liveOutput).toBe(0);
-              expect(requests.slice(requestStart)).toEqual([{ tools: 0, hasHistory: false }]);
+              expect(requests.slice(requestStart)).toEqual([
+                { tools: 0, hasHistory: false, hasAmbientContext: false, thinkingEnabled: false },
+              ]);
               expect(providerFailures).toEqual([]);
               expect(warnings).toEqual([]);
               if (expression) {
@@ -499,6 +519,9 @@ it("isolates native greetings and publishes submitted speech once without overta
       },
     );
   } finally {
+    if (process.env.OPENCLAW_TEST_GREETING_METRICS === "1") {
+      console.log("greeting measurements", JSON.stringify(measurements));
+    }
     listener.listener.closeAllConnections();
     try {
       await listener.releaseListener();

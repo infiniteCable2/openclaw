@@ -36,6 +36,13 @@ preserves realtime Talk.
 
 ## Commentary text in native speech sessions
 
+When a native speech connection enables a generated greeting, it uses a separate
+prompt-only completion on the agent's configured model and account. Thinking is
+off; conversation history, workspace instructions, skills, and tools are excluded.
+Only the explicit greeting prompt, confirmed caller name, and speech-format
+instructions are supplied. The greeting enters conversation history only after
+audio is submitted for playback. Normal conversation turns keep their usual context.
+
 Native STT/TTS sessions publish admitted spoken commentary as separate
 `output.text.delta` events before the final answer. The payload carries
 `purpose: "commentary"`, `textBlockId`, and `blockFinal: true`; the event's

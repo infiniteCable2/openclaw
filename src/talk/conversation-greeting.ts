@@ -1,34 +1,25 @@
 import { randomUUID } from "node:crypto";
-import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
+import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { buildApiErrorObservationFields } from "../agents/embedded-agent-error-observation.js";
-import { hasDeliberateSilentTerminalReply } from "../agents/embedded-agent-runner/result-fallback-classifier.js";
-import { runEmbeddedAgent } from "../agents/embedded-agent-runner/run.js";
-import { SessionManager } from "../agents/sessions/session-manager.js";
+import { runIsolatedCompletion } from "../agents/isolated-completion.js";
+import { resolveSimpleCompletionSelectionForAgent } from "../agents/simple-completion-selection.js";
 import { resolveAgentTimeoutMs } from "../agents/timeout.js";
 import { captureCommandOwnerAssertion } from "../auto-reply/command-owner-authority.js";
-import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
-import { prepareChannelRunAdmission } from "../auto-reply/reply/channel-run-admission.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import { isSilentReplyText } from "../auto-reply/tokens.js";
-import { normalizeChatType } from "../channels/chat-type.js";
-import {
-  readChannelContextAdmissionEvidence,
-  readChannelContextGatewayContextResolver,
-} from "../channels/message-access/admission-evidence.js";
+import { readChannelContextGatewayContextResolver } from "../channels/message-access/admission-evidence.js";
 import { resolveInternalSessionEffectsIdentity } from "../config/sessions/internal-session-key.js";
 import { sessionPersonalProfileId } from "../config/sessions/session-entry-provenance.js";
 import { readSessionTranscriptAnchorsAsync } from "../config/sessions/session-transcript-anchor-read.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { prepareSessionMutationFacts } from "../gateway/session-sharing-preparation.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { bindGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
-import { isSessionPersonalBootstrapTurn } from "../sessions/session-participant-input.js";
+import { parseSpeechPresentation } from "../tts/speech-presentation.js";
 import type { RealtimeVoiceAgentConsultResult } from "./agent-consult-runtime.js";
-import { createRealtimeVoiceConsultSpeechDelivery } from "./agent-consult-speech-delivery.js";
 import type { ConsumedConversationInput } from "./conversation-input-admission.js";
 import type { ConversationReplyParams } from "./conversation-reply.js";
 
-/** Generate an unplayed greeting in one native detached run, never a durable user turn. */
+/** Generate an unplayed greeting with native prompt-only inference, never a user turn. */
 export async function prepareConversationGreeting(params: {
   input: ConsumedConversationInput;
   context: MsgContext;
@@ -54,11 +45,8 @@ export async function prepareConversationGreeting(params: {
   // This is exactly the admitted conversation target, not its parent/root/history donor.
   // The existing owner retains its lifecycle facts; equality of an agent/key is not a read grant.
   let releaseSource: (() => void) | undefined;
-  let admission: ReturnType<typeof prepareChannelRunAdmission> | undefined;
   const startedAt = performance.now();
   let phase = "greeting-authority";
-  let executionPhase: string | undefined;
-  let failureReported = false;
   try {
     const facts = await prepareSessionMutationFacts({
       cfg: currentConfig(),
@@ -97,10 +85,6 @@ export async function prepareConversationGreeting(params: {
     if (original && original.agentId !== agentId) {
       throw new Error("Greeting context is not the original admitted conversation target");
     }
-    const chatType = normalizeChatType(params.context.ChatType) ?? original?.entry.chatType;
-    const bootstrapUserProfileId = isSessionPersonalBootstrapTurn(params.context)
-      ? sessionPersonalProfileId(original?.entry)
-      : undefined;
     const expectedTranscript = original
       ? (
           await readSessionTranscriptAnchorsAsync(
@@ -115,124 +99,67 @@ export async function prepareConversationGreeting(params: {
           )
         ).contextVersion
       : undefined;
-    // A greeting needs persona and current caller facts, never a conversation
-    // snapshot or memory retrieval. Keep native run admission and bootstrap.
-    const sessionManager = SessionManager.inMemory(workspaceDir);
     assertTargetCurrent();
     const assertSpeechCurrent = () => {
       assertTargetCurrent();
       params.speech.speechExpressionContext?.assertCurrent();
     };
-    const signal = params.signal ?? new AbortController().signal;
-    const delivery = createRealtimeVoiceConsultSpeechDelivery({
-      ...params.speech,
-      // Preparation is capture-only; it must not acquire a live output receipt.
-      onSpeakableText: undefined,
-      runId,
-      sessionId: identity.sessionId,
-      abortSignal: signal,
-      speechExpressionCaptureOnly: true,
-      speakCommentary: false,
-      fallbackText: "",
-      assertExpressionCurrent: assertSpeechCurrent,
-      assertNotInterrupted: assertTargetCurrent,
-    });
-    admission = prepareChannelRunAdmission({
+    const selection = resolveSimpleCompletionSelectionForAgent({
       cfg: params.cfg,
-      sourceContext: params.context,
-      runId,
       agentId,
-      ingressKind: "channel",
-      boundary: "talk.conversation-greeting",
-      evidence: readChannelContextAdmissionEvidence(params.context),
-      operatorAuthority: input.operatorAuthority,
-      assertSourceCurrent: assertTargetCurrent,
-      onAdmitted(context) {
-        bindGatewayContextResolver(context, resolveGateway);
-      },
     });
+    if (!selection) {
+      throw new Error("No greeting model configured for the admitted agent");
+    }
     phase = "greeting-generation";
-    const result = await runEmbeddedAgent({
+    // Input admission already owns caller/command authority. The isolated owner
+    // checks that authority and the selected model at dispatch, without agent
+    // bootstrap, hooks, conversation hydration, tools, or source delivery.
+    const result = await runIsolatedCompletion({
       ...identity,
-      sessionFile: identity.sessionKey,
-      sessionTarget: { agentId, storePath: facts.storageTarget.storePath, ...identity },
-      sessionManager,
-      sessionPersistence: "detached",
-      cleanupBundleMcpOnRunEnd: true,
-      preparedRunAdmission: admission,
       config: params.cfg,
       agentId,
-      chatType,
-      bootstrapUserProfileId,
+      provider: selection.provider,
+      model: selection.modelId,
+      authProfileId: selection.profileId,
       workspaceDir,
-      agentDir: resolveAgentDir(params.cfg, agentId),
-      sandboxSessionKey: input.source.sessionKey,
+      agentDir: selection.agentDir,
+      operatorAuthority: input.operatorAuthority,
+      assertCurrent: assertSpeechCurrent,
       prompt: params.text,
-      extraSystemPrompt: [
-        params.speech.guidance,
+      systemPrompt: [
+        "Prepare one short spoken greeting only. It has not been played or delivered. Do not perform tasks or use tools.",
         params.speech.speechExpressionContext?.guidance,
         input.requesterProfile?.displayName
           ? `Confirmed caller name (data): ${JSON.stringify(input.requesterProfile.displayName)}.`
           : undefined,
-        "Prepare one short greeting only. It has not been played or delivered. Do not perform tasks or use tools.",
       ]
         .filter(Boolean)
         .join("\n\n"),
-      disableTools: true,
-      toolsAllow: [],
-      disableTrajectory: true,
-      modelRequestProfile: params.speech.modelRequestProfile,
-      nativeSpeechPresentation: params.speech.speechExpressionContext
-        ? { assertCurrent: assertSpeechCurrent }
-        : undefined,
-      currentSourceReplyTarget: delivery.currentSourceReplyTarget,
-      verboseLevel: "off",
-      reasoningLevel: "off",
+      thinkLevel: "off",
+      answerTokenBudget: 256,
+      outputTextPolicy: "strict-visible",
       timeoutMs: resolveAgentTimeoutMs({ cfg: params.cfg }),
-      runId,
-      abortSignal: signal,
-      onBlockReply: delivery.onBlockReply,
-      onExecutionPhase: (info) => {
-        executionPhase = info.phase;
-      },
-    });
-    assertTargetCurrent();
-    const providerError = result.payloads
-      ?.map(getReplyPayloadMetadata)
-      .find((metadata) => metadata?.terminalProviderError === true);
-    if (result.meta?.aborted || result.meta?.error || providerError) {
-      const observed = buildApiErrorObservationFields(
-        providerError?.providerFailure?.rawError ?? result.meta?.error?.message,
-      );
-      // Keep native failure facts without exposing provider previews or generated text.
-      const failure = {
-        runId,
-        phase: "greeting-generation",
-        kind: result.meta?.error?.kind ?? (result.meta?.aborted ? "aborted" : "provider_error"),
-        reason: providerError?.providerFailure?.reason,
-        rawErrorHash: observed.rawErrorHash,
-        rawErrorFingerprint: observed.rawErrorFingerprint,
-        httpCode: observed.httpCode,
-        providerRuntimeFailureKind: observed.providerRuntimeFailureKind,
-        executionPhase,
-        elapsedMs: Math.round(performance.now() - startedAt),
-      };
-      params.speech.logger.warn("[talk] native greeting generation failed", failure);
-      failureReported = true;
-      throw new Error("Native greeting generation did not complete", { cause: failure });
-    }
-    phase = "greeting-finalization";
-    const greeting = await delivery.finish({
-      yielded: false,
-      deliberateSilent: hasDeliberateSilentTerminalReply(result),
-      payloads: result.payloads ?? [],
+      abortSignal: params.signal,
     });
     assertSpeechCurrent();
+    phase = "greeting-finalization";
+    const greeting = parseSpeechPresentation(result.text, {
+      expressionEnabled: Boolean(params.speech.speechExpressionContext),
+    });
     if (!greeting.text.trim() || isSilentReplyText(greeting.text)) {
       throw new Error("Native greeting generation produced no greeting");
     }
     return {
-      ...greeting,
+      text: greeting.text,
+      utterances: [
+        {
+          text: greeting.text,
+          speech: greeting.speech,
+          localServiceAdmission: params.speech.speechExpressionContext?.localServiceAdmission,
+          expectedSpeechSelection: params.speech.speechExpressionContext?.expectedSpeechSelection,
+        },
+      ],
       ...(originalIdentity && expectedTranscript
         ? {
             greeting: {
@@ -251,25 +178,19 @@ export async function prepareConversationGreeting(params: {
         : {}),
     };
   } catch (error) {
-    if (!failureReported) {
-      const { rawErrorHash, rawErrorFingerprint, httpCode, providerRuntimeFailureKind } =
-        buildApiErrorObservationFields(formatErrorMessage(error));
-      params.speech.logger.warn("[talk] native greeting preparation failed", {
-        phase,
-        executionPhase,
-        elapsedMs: Math.round(performance.now() - startedAt),
-        rawErrorHash,
-        rawErrorFingerprint,
-        httpCode,
-        providerRuntimeFailureKind,
-      });
-    }
+    const { rawErrorHash, rawErrorFingerprint, httpCode, providerRuntimeFailureKind } =
+      buildApiErrorObservationFields(formatErrorMessage(error));
+    params.speech.logger.warn("[talk] native greeting preparation failed", {
+      runId,
+      phase,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      rawErrorHash,
+      rawErrorFingerprint,
+      httpCode,
+      providerRuntimeFailureKind,
+    });
     throw error;
   } finally {
-    try {
-      admission?.close();
-    } finally {
-      releaseSource?.();
-    }
+    releaseSource?.();
   }
 }
