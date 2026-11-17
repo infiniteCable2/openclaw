@@ -9,7 +9,11 @@ import { composeSessionSourceAssertion } from "../config/sessions/session-source
 import { readSessionTranscriptAnchorsAsync } from "../config/sessions/session-transcript-anchor-read.js";
 import type { SessionTranscriptContextVersion } from "../config/sessions/session-transcript-context-version.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { prepareSessionMutationFacts } from "../gateway/session-sharing-preparation.js";
+import {
+  prepareSessionMutationFacts,
+  type PreparedSessionSourceFacts,
+  type SessionFactsRead,
+} from "../gateway/session-sharing-preparation.js";
 import {
   claimConversationInputExecution,
   consumeConversationInputAdmission,
@@ -51,7 +55,7 @@ export async function prepareConversationGreetingPublication(params: {
   signal?: AbortSignal;
 }): Promise<PreparedGreetingPublication> {
   const input = consumeConversationInputAdmission(params.admission, params.scope);
-  let facts: Awaited<ReturnType<typeof prepareSessionMutationFacts>> | undefined;
+  let facts: SessionFactsRead<PreparedSessionSourceFacts> | undefined;
   try {
     claimConversationInputExecution(input);
     if (input.scope.purpose !== "greeting") {
