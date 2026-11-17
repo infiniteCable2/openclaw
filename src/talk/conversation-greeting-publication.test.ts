@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import {
   publishConversationGreeting,
+  prepareConversationGreetingPublication,
   type GreetingPublicationTarget,
 } from "./conversation-greeting-publication.js";
 import { createConversationInputAdmission } from "./conversation-input-admission.js";
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   append: vi.fn(),
   publish: vi.fn(),
   reconcile: vi.fn(),
+  anchors: vi.fn(),
 }));
 // mock-isolation: Exercise opaque host admission and publication intent without starting DB workers.
 vi.mock("../gateway/session-sharing-preparation.js", () => ({
@@ -28,6 +30,10 @@ vi.mock("../config/sessions/session-accessor.js", () => ({
 // mock-isolation: Background reconciliation is independent of greeting admission and append.
 vi.mock("../config/sessions/conversation-publication-reconcile.js", () => ({
   startConversationKnowledgePublication: mocks.reconcile,
+}));
+// mock-isolation: Only capture the ordering witness; native SQLite coverage verifies later conflicts.
+vi.mock("../config/sessions/session-transcript-anchor-read.js", () => ({
+  readSessionTranscriptAnchorsAsync: mocks.anchors,
 }));
 
 function fixture() {
@@ -90,6 +96,9 @@ function fixture() {
       prepareContext: () => ({ AgentId: "example", SessionKey: expectedTarget.sessionKey }),
     });
   mocks.facts.mockResolvedValue({ readCurrent: () => ({ target }), release: sourceRelease });
+  mocks.anchors.mockResolvedValue({
+    contextVersion: { generation: "original-generation", rawSeq: 1, updatedAt: 1 },
+  });
   mocks.append.mockImplementation(async (_target, options) => {
     options.assertCurrent();
     return {
@@ -114,6 +123,73 @@ function fixture() {
 beforeEach(() => vi.clearAllMocks());
 
 describe("greeting publication at the original conversation", () => {
+  it("captures its exact original target and ordering witness without publishing", async () => {
+    const f = fixture();
+    const binding = await prepareConversationGreetingPublication({
+      cfg: f.params.cfg,
+      scope: f.params.scope,
+      admission: f.admit(),
+    });
+    expect(binding).toEqual({
+      requesterProfileId: null,
+      publication: {
+        target: f.params.expectedTarget,
+        expectedTranscript: f.params.expectedTranscript,
+      },
+    });
+    expect(mocks.append).not.toHaveBeenCalled();
+    expect(f.release).toHaveBeenCalledOnce();
+    expect(f.sourceRelease).toHaveBeenCalledOnce();
+  });
+
+  it.each(["target", "authority", "abort"])(
+    "refuses %s changes while capturing the ordering witness",
+    async (change) => {
+      const f = fixture();
+      const abort = new AbortController();
+      mocks.anchors.mockImplementationOnce(async () => {
+        if (change === "target") {
+          f.target.entry.sessionId = "replacement";
+        } else if (change === "authority") {
+          f.revoke();
+        } else {
+          abort.abort(new Error("Preparation aborted"));
+        }
+        return { contextVersion: f.params.expectedTranscript };
+      });
+      await expect(
+        prepareConversationGreetingPublication({
+          cfg: f.params.cfg,
+          scope: f.params.scope,
+          admission: f.admit(),
+          signal: abort.signal,
+        }),
+      ).rejects.toThrow();
+      expect(mocks.append).not.toHaveBeenCalled();
+      expect(f.release).toHaveBeenCalledOnce();
+      expect(f.sourceRelease).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not create a missing native conversation just to record a greeting", async () => {
+    const f = fixture();
+    mocks.facts.mockResolvedValueOnce({
+      readCurrent: () => ({ target: null }),
+      release: f.sourceRelease,
+    });
+    expect(
+      await prepareConversationGreetingPublication({
+        cfg: f.params.cfg,
+        scope: f.params.scope,
+        admission: f.admit(),
+      }),
+    ).toEqual({ requesterProfileId: null });
+    expect(mocks.anchors).not.toHaveBeenCalled();
+    expect(mocks.append).not.toHaveBeenCalled();
+    expect(f.release).toHaveBeenCalledOnce();
+    expect(f.sourceRelease).toHaveBeenCalledOnce();
+  });
+
   it.each(["submitted", "interrupted"] as const)(
     "publishes %s speech with a stable assistant-only identity and private audience",
     async (audioDelivery) => {

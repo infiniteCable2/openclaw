@@ -389,6 +389,7 @@ export function registerMatrixRtcController(params: {
               audioFormat: "pcm16-24khz",
               ttsContext,
               onSubmitted: bindings.onGreetingSubmitted,
+              preparePublication: bindings.prepareGreetingPublication,
               signal: greetingSignal,
               onPreparation: (preparation) => {
                 call.greetingPreparation = preparation;

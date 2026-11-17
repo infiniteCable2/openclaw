@@ -43,6 +43,13 @@ Only the explicit greeting prompt, configured language, confirmed caller name, a
 instructions are supplied. The greeting enters conversation history only after
 audio is submitted for playback. Normal conversation turns keep their usual context.
 
+Once speech services are ready, greeting generation and audio buffering run in
+parallel with conversation preparation. Connection readiness still requires both.
+History publication binds to the prepared conversation while generation or
+synthesis may still be running; it cannot append a late greeting after a newer
+user turn. Closing the connection cancels greeting preparation and releases its
+resources without playing the buffered audio.
+
 ## Commentary text in native speech sessions
 
 Native STT/TTS sessions publish admitted spoken commentary as separate

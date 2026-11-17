@@ -75,9 +75,21 @@ const mocks = vi.hoisted(() => ({
     payloads: [{ text: "Synthetic consult answer" }],
     meta: { durationMs: 0 },
   })),
+  isolatedGreeting: vi.fn(
+    async (
+      _params: Parameters<
+        typeof import("../../../agents/isolated-completion.js").runIsolatedCompletion
+      >[0],
+    ) => ({ text: "Hello, welcome to your call." }),
+  ),
 }));
 
-// mock-isolation: detached greetings use this native runner entry; keep their admission/presentation real and replace the same controlled model boundary as ordinary replies.
+// mock-isolation: Caller tests retain admission, speech buffering and publication;
+// isolated inference has separate real HTTP/SQLite coverage in talk/*.native.test.ts.
+vi.mock("../../../agents/isolated-completion.js", () => ({
+  runIsolatedCompletion: mocks.isolatedGreeting,
+}));
+// mock-isolation: Ordinary conversation runs retain their controlled model boundary.
 vi.mock("../../../agents/embedded-agent-runner/run.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../agents/embedded-agent-runner/run.js")>()),
   runEmbeddedAgent: mocks.runEmbeddedAgent,

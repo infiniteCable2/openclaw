@@ -13,7 +13,6 @@ import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { appendExpectedSessionTranscriptTurn } from "../config/sessions/session-accessor.sqlite-transcript-turn.js";
 import { readSessionTranscriptAnchorsAsync } from "../config/sessions/session-transcript-anchor-read.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { bindSessionRowProjection } from "../gateway/session-row-projection-access.js";
 import { createSessionRowProjection } from "../gateway/session-row-projection.js";
 import type { AssistantMessage } from "../llm/types.js";
@@ -23,7 +22,14 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { reserveTestPortListener } from "../test-utils/port-claims.js";
 import "../test-utils/prepare-compiled-subprocesses.js";
 import "./conversation-greeting.js"; // Preload the lazy owner outside the test deadline.
-import { publishConversationGreeting } from "./conversation-greeting-publication.js";
+import {
+  prepareConversationGreetingPublication,
+  publishConversationGreeting,
+} from "./conversation-greeting-publication.js";
+import {
+  greetingConfiguration,
+  greetingEventsFor,
+} from "./conversation-greeting.native.test-support.js";
 import type { ConversationInputScopeV1 } from "./conversation-input.types.js";
 import { replyToConversationInput } from "./conversation-reply.js";
 
@@ -52,79 +58,6 @@ function assistant(
     stopReason,
     usage,
     timestamp: 2,
-  };
-}
-
-function eventsFor(text: string) {
-  return [
-    {
-      type: "message_start",
-      message: {
-        id: "msg_fixture",
-        type: "message",
-        role: "assistant",
-        content: [],
-        model: "fixture",
-        stop_reason: null,
-        stop_sequence: null,
-        usage: { input_tokens: 20, output_tokens: 0 },
-      },
-    },
-    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-    ...Array.from(text, (part) => ({
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "text_delta", text: part },
-    })),
-    { type: "content_block_stop", index: 0 },
-    {
-      type: "message_delta",
-      delta: { stop_reason: "end_turn", stop_sequence: null },
-      usage: { output_tokens: 10 },
-    },
-    { type: "message_stop" },
-  ];
-}
-
-function configuration(baseUrl: string, workspace: string): OpenClawConfig {
-  return {
-    gateway: { mode: "local" },
-    agents: {
-      entries: { main: { workspace, identity: { language: "de" } } },
-      defaults: {
-        workspace,
-        model: { primary: "fixture/fixture", fallbacks: [] },
-        modelPolicy: { allow: ["fixture/fixture"] },
-        models: { "fixture/fixture": { agentRuntime: { id: "openclaw" } } },
-        utilityModel: "",
-        skills: [],
-        thinkingDefault: "medium",
-      },
-    },
-    models: {
-      mode: "replace",
-      providers: {
-        fixture: {
-          baseUrl,
-          api: "anthropic-messages",
-          apiKey: "synthetic-fixture-key",
-          request: { allowPrivateNetwork: true },
-          models: [
-            {
-              id: "fixture",
-              name: "Fixture",
-              reasoning: true,
-              input: ["text"],
-              contextWindow: 32768,
-              maxTokens: 4096,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            },
-          ],
-        },
-      },
-    },
-    plugins: { slots: { memory: "none" } },
-    skills: { load: { watch: false } },
   };
 }
 
@@ -195,7 +128,7 @@ it("isolates native greetings and publishes submitted speech once without overta
             });
             measurements.push({ durationMs: 0, requestBytes: size });
             res.writeHead(200, { "content-type": "text/event-stream" });
-            for (const event of eventsFor(responseText)) {
+            for (const event of greetingEventsFor(responseText)) {
               res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
             }
             res.end();
@@ -228,7 +161,10 @@ it("isolates native greetings and publishes submitted speech once without overta
         },
       },
       async (state) => {
-        const cfg = configuration(`http://127.0.0.1:${listener.claim.port}/v1`, state.workspaceDir);
+        const cfg = greetingConfiguration(
+          `http://127.0.0.1:${listener.claim.port}/v1`,
+          state.workspaceDir,
+        );
         await writeFile(`${state.workspaceDir}/SOUL.md`, BOOTSTRAP);
         await state.writeConfig(cfg);
         setRuntimeConfigSnapshot(cfg);
@@ -380,6 +316,12 @@ it("isolates native greetings and publishes submitted speech once without overta
                   },
                 });
               };
+              const binding = await prepareConversationGreetingPublication({
+                cfg,
+                admission: await freshAdmission(),
+                scope: input,
+                signal,
+              });
               const admission = await freshAdmission();
               let liveOutput = 0;
               stage = `greeting:${hasHistory}:${expression}:reply`;
@@ -442,8 +384,10 @@ it("isolates native greetings and publishes submitted speech once without overta
               );
               expect(reread.getBranch()).toEqual(original);
               if (expression) {
-                const greeting = result.reply.greeting;
-                assert(greeting, "Native greeting must retain its original publication target");
+                assert(binding.publication);
+                assert(result.reply.greetingPreparation);
+                expect(result.reply.greeting).toBeUndefined();
+                const greeting = { ...binding.publication, ...result.reply.greetingPreparation };
                 for (const appended of [true, false]) {
                   stage = `greeting:${hasHistory}:publication:${appended}`;
                   const publication = await publishConversationGreeting({

@@ -3,10 +3,7 @@ import { EventType } from "matrix-js-sdk/lib/@types/event.js";
 import { ClientEvent } from "matrix-js-sdk/lib/client.js";
 import { MatrixRTCSessionEvent } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSession.js";
 import { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";
-import type {
-  MeetingAgentRealtimePreparation,
-  MeetingRealtimeBindingsV2Params,
-} from "openclaw/plugin-sdk/meeting-runtime";
+import type { MeetingRealtimeBindingsV2Params } from "openclaw/plugin-sdk/meeting-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { vi } from "vitest";
 import type { CoreConfig } from "../types.js";
@@ -16,6 +13,7 @@ const mocks = vi.hoisted(() => ({
     platform: {},
     consultAgent: vi.fn(),
     nativeInput: vi.fn(),
+    prepareGreetingPublication: vi.fn(),
     connectionPresentation: _params.connectionPresentation,
   })),
   prepareMeetingAgentRealtimeEngine: vi.fn(
@@ -26,10 +24,11 @@ const mocks = vi.hoisted(() => ({
     ) => ({ release: vi.fn(async () => undefined) }),
   ),
   prepareMeetingAgentGreeting: vi.fn(
-    async (_params: {
-      meetingSessionId: string;
-      onPreparation?: (preparation: MeetingAgentRealtimePreparation) => void;
-    }) => ({
+    async (
+      _params: Parameters<
+        typeof import("openclaw/plugin-sdk/meeting-runtime").prepareMeetingAgentGreeting
+      >[0],
+    ) => ({
       text: "Hello, caller.",
       audio: Buffer.from([1, 0]),
     }),

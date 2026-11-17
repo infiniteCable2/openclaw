@@ -575,6 +575,7 @@ export async function createTalkSpeechRelaySession(params: {
           audioFormat: config.audioFormat,
           ttsContext: { agentId: params.sessionTarget.agentId, channelId: "talk" },
           onSubmitted: bindings.onGreetingSubmitted,
+          preparePublication: bindings.prepareGreetingPublication,
           signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(greeting.timeoutMs)]),
           onPreparation(prepared) {
             greetingPreparation = prepared;

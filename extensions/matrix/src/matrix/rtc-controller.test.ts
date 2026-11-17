@@ -43,6 +43,9 @@ describe("registerMatrixRtcController", () => {
     harness.managerEmitter.emit("session_started", roomId, harness.session);
     await flushPromises();
     expect(mocks.prepareMeetingAgentGreeting).toHaveBeenCalledOnce();
+    expect(mocks.prepareMeetingAgentGreeting.mock.calls[0]![0].preparePublication).toBe(
+      mocks.createMeetingRealtimeEngineBindingsV2.mock.results[0]!.value.prepareGreetingPublication,
+    );
     expect(mocks.prepareMeetingAgentGreeting.mock.invocationCallOrder[0]).toBeLessThan(
       harness.session.join.mock.invocationCallOrder[0]!,
     );

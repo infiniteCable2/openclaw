@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   prepareExpression: vi.fn(),
   prepareGreeting: vi.fn(),
   publishGreeting: vi.fn(),
+  preparePublication: vi.fn(),
 }));
 // mock-isolation: Native model/storage execution is the boundary, not part of this host adapter test.
 vi.mock("../auto-reply/reply/get-reply.js", () => ({
@@ -34,6 +35,7 @@ vi.mock("../talk/conversation-greeting.js", () => ({
 // mock-isolation: The native guarded writer is verified through its real SQLite integration.
 vi.mock("../talk/conversation-greeting-publication.js", () => ({
   publishConversationGreeting: mocks.publishGreeting,
+  prepareConversationGreetingPublication: mocks.preparePublication,
 }));
 
 function fixture() {
@@ -110,6 +112,7 @@ describe("original speech binding to native reply", () => {
     mocks.getReplyFromConfig.mockReset();
     mocks.prepareExpression.mockReset().mockResolvedValue(undefined);
     mocks.prepareGreeting.mockReset().mockResolvedValue({ text: "Hello." });
+    mocks.preparePublication.mockReset().mockResolvedValue({ requesterProfileId: null });
   });
 
   it("re-admits submitted greetings under their original host without another model call", async () => {
@@ -146,7 +149,7 @@ describe("original speech binding to native reply", () => {
     expect(mocks.prepareGreeting).not.toHaveBeenCalled();
   });
 
-  it.each(["user", "greeting"] as const)(
+  it.each(["user", "steering"] as const)(
     "settles connection enrollment before admitting a %s input",
     async (purpose) => {
       const f = fixture();
@@ -172,7 +175,6 @@ describe("original speech binding to native reply", () => {
         onNativeRunBound: vi.fn(),
         onInputDisposition: vi.fn(),
         onQueueAccepted: vi.fn(),
-        ...(purpose === "greeting" ? { speechExpressionCaptureOnly: true as const } : {}),
       });
       try {
         await started.promise;
@@ -194,11 +196,84 @@ describe("original speech binding to native reply", () => {
         await bindings.connectionPreparation?.close();
       }
       expect(f.params.inputSource.admitInput).toHaveBeenCalledOnce();
-      expect(
-        purpose === "greeting" ? mocks.prepareGreeting : mocks.getReplyFromConfig,
-      ).toHaveBeenCalledOnce();
+      expect(mocks.getReplyFromConfig).toHaveBeenCalledOnce();
     },
   );
+
+  it("prepares an isolated greeting while enrollment is pending, but binds history only afterward", async () => {
+    const f = fixture();
+    const started = Promise.withResolvers<void>();
+    const created = Promise.withResolvers<void>();
+    f.params.inputSource = {
+      ...f.params.inputSource,
+      prepareConnection: async () => {
+        started.resolve();
+        await created.promise;
+      },
+    };
+    const bindings = createMeetingRealtimeEngineBindingsV2(f.params);
+    const greeting = bindings.consultAgent({
+      meetingSessionId: "example-call",
+      inputId: "first",
+      purpose: "greeting",
+      args: { question: "Greet briefly." },
+      transcript: [],
+    });
+    const publication = bindings.prepareGreetingPublication({
+      inputId: "first",
+      signal: new AbortController().signal,
+    });
+    try {
+      await started.promise;
+      expect(f.params.inputSource.admitInput).toHaveBeenCalledOnce();
+      await greeting;
+      expect(mocks.prepareGreeting).toHaveBeenCalledOnce();
+      expect(mocks.preparePublication).not.toHaveBeenCalled();
+      created.resolve();
+      await publication;
+      expect(f.params.inputSource.admitInput).toHaveBeenCalledTimes(2);
+      expect(mocks.preparePublication).toHaveBeenCalledOnce();
+    } finally {
+      created.resolve();
+      await Promise.allSettled([greeting, publication]);
+      await bindings.connectionPreparation?.close();
+    }
+  });
+
+  it("cancels a waiting greeting binding without admitting work, while close still joins enrollment", async () => {
+    const f = fixture();
+    const started = Promise.withResolvers<void>();
+    const created = Promise.withResolvers<void>();
+    f.params.inputSource = {
+      ...f.params.inputSource,
+      prepareConnection: async () => {
+        started.resolve();
+        await created.promise;
+      },
+    };
+    const bindings = createMeetingRealtimeEngineBindingsV2(f.params);
+    const abort = new AbortController();
+    const publication = bindings.prepareGreetingPublication({
+      inputId: "first",
+      signal: abort.signal,
+    });
+    const rejection = expect(publication).rejects.toMatchObject({ name: "AbortError" });
+    await started.promise;
+    abort.abort();
+    await rejection;
+    expect(f.params.inputSource.admitInput).not.toHaveBeenCalled();
+    let closed = false;
+    const closing = bindings.connectionPreparation!.close().then(() => {
+      closed = true;
+    });
+    try {
+      await Promise.resolve();
+      expect(closed).toBe(false);
+    } finally {
+      created.resolve();
+      await closing;
+    }
+  });
 
   it("refuses a source revoked while connection enrollment is settling", async () => {
     const f = fixture();
@@ -215,7 +290,7 @@ describe("original speech binding to native reply", () => {
     const reply = bindings.consultAgent({
       meetingSessionId: "example-call",
       inputId: "example-greeting",
-      purpose: "greeting",
+      purpose: "user",
       args: { question: "Greet briefly." },
       transcript: [],
     });

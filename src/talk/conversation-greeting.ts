@@ -8,12 +8,8 @@ import { resolveAgentTimeoutMs } from "../agents/timeout.js";
 import { captureCommandOwnerAssertion } from "../auto-reply/command-owner-authority.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import { isSilentReplyText } from "../auto-reply/tokens.js";
-import { readChannelContextGatewayContextResolver } from "../channels/message-access/admission-evidence.js";
 import { resolveInternalSessionEffectsIdentity } from "../config/sessions/internal-session-key.js";
-import { sessionPersonalProfileId } from "../config/sessions/session-entry-provenance.js";
-import { readSessionTranscriptAnchorsAsync } from "../config/sessions/session-transcript-anchor-read.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { prepareSessionMutationFacts } from "../gateway/session-sharing-preparation.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { parseSpeechPresentation } from "../tts/speech-presentation.js";
 import type { RealtimeVoiceAgentConsultResult } from "./agent-consult-runtime.js";
@@ -35,76 +31,21 @@ export async function prepareConversationGreeting(params: {
     params.signal?.throwIfAborted();
     input.assertCurrent();
     assertCommandOwner?.();
+    params.speech.speechExpressionContext?.assertCurrent();
   };
   assertCurrent();
   const agentId = input.scope.agentId;
   const workspaceDir = resolveAgentWorkspaceDir(params.cfg, agentId);
   const runId = `conversation-greeting-${randomUUID()}`;
   const identity = resolveInternalSessionEffectsIdentity({ agentId, runId });
-  const resolveGateway = readChannelContextGatewayContextResolver(params.context);
-  const currentConfig = () => resolveGateway?.()?.getRuntimeConfig() ?? params.cfg;
-  // This is exactly the admitted conversation target, not its parent/root/history donor.
-  // The existing owner retains its lifecycle facts; equality of an agent/key is not a read grant.
-  let releaseSource: (() => void) | undefined;
+  const greetingPreparation = {
+    eventId: `talk-greeting:${input.scope.conversationId}:${input.scope.inputId}`,
+    timestamp: input.participant?.promptedAt ?? Date.now(),
+    requesterProfileId: input.requesterProfile?.id ?? null,
+  };
   const startedAt = performance.now();
-  let phase = "greeting-authority";
+  let phase = "greeting-generation";
   try {
-    const facts = await prepareSessionMutationFacts({
-      cfg: currentConfig(),
-      agentId,
-      sessionKey: input.source.sessionKey,
-      preserveQualifiedAddress: true,
-      allowMissing: true,
-    });
-    releaseSource = facts.release;
-    assertCurrent();
-    const original = facts.readCurrent(currentConfig()).target;
-    const originalIdentity = original && {
-      agentId: original.agentId,
-      canonicalKey: original.canonicalKey,
-      storePath: original.storePath,
-      sessionId: original.entry.sessionId,
-      lifecycleRevision: original.entry.lifecycleRevision,
-      personalProfileId: sessionPersonalProfileId(original.entry),
-      chatType: original.entry.chatType,
-    };
-    const assertTargetCurrent = () => {
-      assertCurrent();
-      const current = facts.readCurrent(currentConfig()).target;
-      if (
-        current?.agentId !== originalIdentity?.agentId ||
-        current?.canonicalKey !== originalIdentity?.canonicalKey ||
-        current?.storePath !== originalIdentity?.storePath ||
-        current?.entry.sessionId !== originalIdentity?.sessionId ||
-        current?.entry.lifecycleRevision !== originalIdentity?.lifecycleRevision ||
-        sessionPersonalProfileId(current?.entry) !== originalIdentity?.personalProfileId ||
-        current?.entry.chatType !== originalIdentity?.chatType
-      ) {
-        throw new Error("Greeting conversation target changed during preparation");
-      }
-    };
-    if (original && original.agentId !== agentId) {
-      throw new Error("Greeting context is not the original admitted conversation target");
-    }
-    const expectedTranscript = original
-      ? (
-          await readSessionTranscriptAnchorsAsync(
-            {
-              agentId,
-              sessionKey: original.canonicalKey,
-              sessionId: original.entry.sessionId,
-              storePath: original.storePath,
-            },
-            { entryIds: [], includeContextVersion: true },
-            params.signal,
-          )
-        ).contextVersion
-      : undefined;
-    assertTargetCurrent();
-    const assertSpeechCurrent = () => {
-      assertTargetCurrent();
-      params.speech.speechExpressionContext?.assertCurrent();
-    };
     const selection = resolveSimpleCompletionSelectionForAgent({
       cfg: params.cfg,
       agentId,
@@ -113,7 +54,6 @@ export async function prepareConversationGreeting(params: {
       throw new Error("No greeting model configured for the admitted agent");
     }
     const language = resolveAgentIdentity(params.cfg, agentId)?.language;
-    phase = "greeting-generation";
     // Input admission already owns caller/command authority. The isolated owner
     // checks that authority and the selected model at dispatch, without agent
     // bootstrap, hooks, conversation hydration, tools, or source delivery.
@@ -127,7 +67,7 @@ export async function prepareConversationGreeting(params: {
       workspaceDir,
       agentDir: selection.agentDir,
       operatorAuthority: input.operatorAuthority,
-      assertCurrent: assertSpeechCurrent,
+      assertCurrent,
       prompt: params.text,
       systemPrompt: [
         "Prepare one short spoken greeting only. It has not been played or delivered. Do not perform tasks or use tools.",
@@ -145,7 +85,7 @@ export async function prepareConversationGreeting(params: {
       timeoutMs: resolveAgentTimeoutMs({ cfg: params.cfg }),
       abortSignal: params.signal,
     });
-    assertSpeechCurrent();
+    assertCurrent();
     phase = "greeting-finalization";
     const greeting = parseSpeechPresentation(result.text, {
       expressionEnabled: Boolean(params.speech.speechExpressionContext),
@@ -163,22 +103,7 @@ export async function prepareConversationGreeting(params: {
           expectedSpeechSelection: params.speech.speechExpressionContext?.expectedSpeechSelection,
         },
       ],
-      ...(originalIdentity && expectedTranscript
-        ? {
-            greeting: {
-              target: {
-                agentId,
-                sessionKey: originalIdentity.canonicalKey,
-                sessionId: originalIdentity.sessionId,
-                lifecycleRevision: originalIdentity.lifecycleRevision ?? null,
-                storePath: originalIdentity.storePath,
-              },
-              eventId: `talk-greeting:${input.scope.conversationId}:${input.scope.inputId}`,
-              timestamp: input.participant?.promptedAt ?? Date.now(),
-              expectedTranscript,
-            },
-          }
-        : {}),
+      greetingPreparation,
     };
   } catch (error) {
     const { rawErrorHash, rawErrorFingerprint, httpCode, providerRuntimeFailureKind } =
@@ -193,7 +118,5 @@ export async function prepareConversationGreeting(params: {
       providerRuntimeFailureKind,
     });
     throw error;
-  } finally {
-    releaseSource?.();
   }
 }

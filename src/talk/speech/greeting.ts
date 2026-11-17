@@ -7,6 +7,7 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import type { RealtimeVoiceAgentConsultResult } from "../agent-consult-runtime.js";
+import type { PreparedGreetingPublication } from "../conversation-greeting-publication.js";
 import type { RealtimeVoiceSessionHarness } from "../realtime-session-harness.js";
 import { createSpeechTtsAudioStreamConverter } from "./audio-format.js";
 import type { SpeechAudioFormat } from "./audio-format.js";
@@ -122,6 +123,11 @@ type PrepareSpeechGreetingParams = {
   /** Keep late acquisition and failed cleanup owned by the admitting call. */
   onPreparation?: (preparation: SpeechSessionPreparation) => void;
   now?: Date;
+  /** Bind history on connection readiness, independently of model/TTS preparation. */
+  preparePublication?: (params: {
+    inputId: string;
+    signal: AbortSignal;
+  }) => Promise<PreparedGreetingPublication>;
   onSubmitted?: (
     submission: GreetingSubmission & {
       greeting: NonNullable<RealtimeVoiceAgentConsultResult["greeting"]>;
@@ -135,10 +141,32 @@ export async function prepareSpeechGreeting(
 ): Promise<PreparedSpeechGreeting> {
   const startedAt = performance.now();
   let phase = "consult";
+  const inputId = randomUUID();
+  const abort = new AbortController();
+  const signal = AbortSignal.any([params.signal, abort.signal]);
+  const preparePublication = params.preparePublication;
+  const publication = preparePublication
+    ? Promise.resolve()
+        .then(() => {
+          signal.throwIfAborted();
+          return preparePublication({ inputId, signal });
+        })
+        .catch((error: unknown) => {
+          abort.abort(error);
+          throw error;
+        })
+    : undefined;
+  // Inference/TTS may still be pending when the independent binding fails.
+  void publication?.catch(() => {});
   try {
-    return await prepareGreeting(params, (next) => {
-      phase = next;
-    });
+    return await prepareGreeting(
+      { ...params, signal },
+      (next) => {
+        phase = next;
+      },
+      inputId,
+      publication,
+    );
   } catch (error) {
     log.warn("Speech greeting preparation failed", {
       phase,
@@ -146,12 +174,18 @@ export async function prepareSpeechGreeting(
       ...greetingFailureFields(error),
     });
     throw error;
+  } finally {
+    abort.abort();
+    // Cancellation ends observation, not ownership of a late admission/read.
+    await publication?.catch(() => {});
   }
 }
 
 async function prepareGreeting(
   params: PrepareSpeechGreetingParams,
   onPhase: (phase: string) => void,
+  inputId: string,
+  pendingPublication: Promise<PreparedGreetingPublication> | undefined,
 ): Promise<PreparedSpeechGreeting> {
   params.signal.throwIfAborted();
   const localTime = new Intl.DateTimeFormat("de-DE", {
@@ -166,7 +200,7 @@ async function prepareGreeting(
   const result = await racePromiseWithAbortSignal(
     params.consultAgent({
       sessionId: params.sessionId,
-      inputId: randomUUID(),
+      inputId,
       purpose: "greeting",
       requesterSessionKey: params.requesterSessionKey,
       args: {
@@ -316,17 +350,9 @@ async function prepareGreeting(
     if (size === 0) {
       throw new Error("Meeting greeting TTS returned no audio");
     }
-    const publication = result.greeting;
-    const record = params.onSubmitted;
     greeting = {
       text,
       audio: Buffer.concat(chunks, size),
-      ...(publication && record
-        ? {
-            recordSubmitted: (submission: GreetingSubmission) =>
-              record({ ...submission, greeting: publication, text }),
-          }
-        : {}),
     };
   } catch (error) {
     failed = true;
@@ -349,6 +375,33 @@ async function prepareGreeting(
   }
   if (failed) {
     throw failure;
+  }
+  let publication = result.greeting;
+  if (pendingPublication) {
+    onPhase("publication");
+    const binding = await racePromiseWithAbortSignal(pendingPublication, params.signal);
+    const generated = result.greetingPreparation;
+    if (
+      !generated ||
+      generated.eventId !== `talk-greeting:${params.sessionId}:${inputId}` ||
+      generated.requesterProfileId !== binding.requesterProfileId
+    ) {
+      throw new Error("Greeting publication no longer matches its original input");
+    }
+    publication = binding.publication
+      ? {
+          ...binding.publication,
+          eventId: generated.eventId,
+          timestamp: generated.timestamp,
+        }
+      : undefined;
+  }
+  params.signal.throwIfAborted();
+  const record = params.onSubmitted;
+  if (publication && record) {
+    const originalPublication = publication;
+    greeting!.recordSubmitted = (submission: GreetingSubmission) =>
+      record({ ...submission, greeting: originalPublication, text });
   }
   return greeting!;
 }

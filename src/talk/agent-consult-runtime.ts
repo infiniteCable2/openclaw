@@ -59,6 +59,12 @@ export type RealtimeVoiceAgentConsultResult = {
   yielded?: true;
   /** Ordered admitted utterances for buffered playback; includes explicit commentary. */
   utterances?: RealtimeVoiceSpeechUtterance[];
+  /** Original greeting input facts, without a session read or publication authority. */
+  greetingPreparation?: Readonly<{
+    eventId: string;
+    timestamp: number;
+    requesterProfileId: string | null;
+  }>;
   /** Host-captured binding for later submitted greeting speech; never an admission grant. */
   greeting?: {
     target: GreetingPublicationTarget;

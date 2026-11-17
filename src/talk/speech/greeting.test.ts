@@ -1,5 +1,7 @@
+import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
+import type { PreparedGreetingPublication } from "../conversation-greeting-publication.js";
 import { playSpeechGreeting, prepareSpeechGreeting } from "./greeting.js";
 import type { SpeechSessionPreparation } from "./preparation.js";
 import type { SpeechAgentConsultParams } from "./types.js";
@@ -76,6 +78,125 @@ describe("meeting agent greeting preparation", () => {
     expect(tts).toHaveBeenCalledWith(expect.objectContaining({ text: "Guten Morgen, Alex!" }));
     expect(greeting.text).toBe("Guten Morgen, Alex!");
     expect(greeting.audio.byteLength).toBeGreaterThan(0);
+  });
+
+  it.each([false, true])(
+    "buffers and releases speech before joining its history binding, changed requester=%s",
+    async (changed) => {
+      const binding = Promise.withResolvers<PreparedGreetingPublication>();
+      const released = Promise.withResolvers<void>();
+      const preparePublication = vi.fn(() => binding.promise);
+      const onSubmitted = vi.fn(async () => {});
+      const release = vi.fn(async () => {
+        released.resolve();
+      });
+      let ready = false;
+      const pending = prepareSpeechGreeting({
+        ...greetingParams({
+          tts: {
+            streamTextToSpeechTelephony: async () => {
+              expect(preparePublication).toHaveBeenCalledOnce();
+              return {
+                success: true,
+                sampleRate: 24_000,
+                outputFormat: "pcm",
+                release,
+                audioStream: new ReadableStream<Uint8Array>({
+                  start(controller) {
+                    controller.enqueue(Uint8Array.from([1, 0]));
+                    controller.close();
+                  },
+                }),
+              };
+            },
+          },
+        } as unknown as PluginRuntime),
+        consultAgent: async (request) => ({
+          text: "Hello!",
+          greetingPreparation: {
+            eventId: `talk-greeting:${request.sessionId}:${request.inputId}`,
+            timestamp: 1234,
+            requesterProfileId: "example",
+          },
+        }),
+        preparePublication,
+        onSubmitted,
+      });
+      void pending.then(
+        () => {
+          ready = true;
+        },
+        () => {},
+      );
+      try {
+        await released.promise;
+        expect(release).toHaveBeenCalledOnce();
+        expect(ready).toBe(false);
+        binding.resolve({
+          requesterProfileId: changed ? "another" : "example",
+          publication: {
+            target: {
+              agentId: "example",
+              sessionKey: "agent:example:call",
+              sessionId: "original",
+              lifecycleRevision: null,
+              storePath: "/example/sessions.sqlite",
+            },
+            expectedTranscript: { generation: "original", rawSeq: 1, updatedAt: 1 },
+          },
+        });
+        if (changed) {
+          await expect(pending).rejects.toThrow(
+            "Greeting publication no longer matches its original input",
+          );
+          expect(onSubmitted).not.toHaveBeenCalled();
+        } else {
+          const result = await pending;
+          await result.recordSubmitted?.({ audioDelivery: "submitted" });
+          expect(onSubmitted).toHaveBeenCalledWith(
+            expect.objectContaining({
+              greeting: expect.objectContaining({
+                timestamp: 1234,
+                target: expect.objectContaining({ sessionId: "original" }),
+              }),
+            }),
+          );
+        }
+      } finally {
+        binding.resolve({ requesterProfileId: null });
+        await pending.catch(() => {});
+      }
+    },
+  );
+
+  it("aborts ongoing greeting inference when the independent connection binding fails", async () => {
+    const started = Promise.withResolvers<void>();
+    const binding = Promise.withResolvers<PreparedGreetingPublication>();
+    const failure = new Error("Synthetic connection failure");
+    let stopped = false;
+    const pending = prepareSpeechGreeting({
+      ...greetingParams({} as PluginRuntime),
+      preparePublication: () => binding.promise,
+      consultAgent: async ({ abortSignal }) => {
+        assert(abortSignal);
+        started.resolve();
+        return new Promise<never>((_resolve, reject) => {
+          abortSignal.addEventListener(
+            "abort",
+            () => {
+              stopped = true;
+              reject(new Error("Greeting inference cancelled", { cause: abortSignal.reason }));
+            },
+            { once: true },
+          );
+        });
+      },
+    });
+    const rejection = expect(pending).rejects.toBe(failure);
+    await started.promise;
+    binding.reject(failure);
+    await rejection;
+    expect(stopped).toBe(true);
   });
 
   it("reports a consult failure without losing its cause or exposing its text", async () => {

@@ -4,7 +4,9 @@ import { resolveAgentConversationMode } from "../config/agent-conversation-mode.
 import { startConversationKnowledgePublication } from "../config/sessions/conversation-publication-reconcile.js";
 import { publishTranscriptUpdate } from "../config/sessions/session-accessor.js";
 import { appendExpectedSessionTranscriptTurn } from "../config/sessions/session-accessor.sqlite-transcript-turn.js";
+import { sessionPersonalProfileId } from "../config/sessions/session-entry-provenance.js";
 import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
+import { readSessionTranscriptAnchorsAsync } from "../config/sessions/session-transcript-anchor-read.js";
 import type { SessionTranscriptContextVersion } from "../config/sessions/session-transcript-context-version.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { prepareSessionMutationFacts } from "../gateway/session-sharing-preparation.js";
@@ -31,6 +33,95 @@ export type GreetingPublicationTarget = Readonly<{
   lifecycleRevision: string | null;
   storePath: string;
 }>;
+
+/** Read-only binding after connection creation; fresh admission still gates the later write. */
+export type PreparedGreetingPublication = Readonly<{
+  requesterProfileId: string | null;
+  publication?: {
+    target: GreetingPublicationTarget;
+    expectedTranscript: SessionTranscriptContextVersion;
+  };
+}>;
+
+/** Capture the no-overtake boundary as soon as the original connection is ready. */
+export async function prepareConversationGreetingPublication(params: {
+  cfg: OpenClawConfig;
+  admission: ConversationInputAdmissionV1;
+  scope: ConversationInputScopeV1;
+  signal?: AbortSignal;
+}): Promise<PreparedGreetingPublication> {
+  const input = consumeConversationInputAdmission(params.admission, params.scope);
+  let facts: Awaited<ReturnType<typeof prepareSessionMutationFacts>> | undefined;
+  try {
+    claimConversationInputExecution(input);
+    if (input.scope.purpose !== "greeting") {
+      throw new Error("Greeting preparation requires its original host input");
+    }
+    const context = await prepareConversationReplyContext(input, { text: "" });
+    const commandOwner = captureCommandOwnerAssertion(context);
+    const resolveGateway = readChannelContextGatewayContextResolver(context);
+    const currentConfig = () => resolveGateway?.()?.getRuntimeConfig() ?? params.cfg;
+    const assertCurrent = () => {
+      params.signal?.throwIfAborted();
+      input.assertCurrent();
+      commandOwner?.();
+    };
+    assertCurrent();
+    facts = await prepareSessionMutationFacts({
+      cfg: currentConfig(),
+      agentId: input.scope.agentId,
+      sessionKey: input.source.sessionKey,
+      preserveQualifiedAddress: true,
+      allowMissing: true,
+    });
+    assertCurrent();
+    const original = facts.readCurrent(currentConfig()).target;
+    const requesterProfileId = input.requesterProfile?.id ?? null;
+    if (!original) {
+      return { requesterProfileId };
+    }
+    if (original.agentId !== input.scope.agentId) {
+      throw new Error("Greeting context is not the original admitted conversation target");
+    }
+    const target: GreetingPublicationTarget = {
+      agentId: original.agentId,
+      sessionKey: original.canonicalKey,
+      storePath: original.storePath,
+      sessionId: original.entry.sessionId,
+      lifecycleRevision: original.entry.lifecycleRevision ?? null,
+    };
+    const personalProfileId = sessionPersonalProfileId(original.entry);
+    const chatType = original.entry.chatType;
+    const { contextVersion } = await readSessionTranscriptAnchorsAsync(
+      target,
+      { entryIds: [], includeContextVersion: true },
+      params.signal,
+    );
+    assertCurrent();
+    const current = facts.readCurrent(currentConfig()).target;
+    if (
+      current?.agentId !== target.agentId ||
+      current.canonicalKey !== target.sessionKey ||
+      current.storePath !== target.storePath ||
+      current.entry.sessionId !== target.sessionId ||
+      (current.entry.lifecycleRevision ?? null) !== target.lifecycleRevision ||
+      sessionPersonalProfileId(current.entry) !== personalProfileId ||
+      current.entry.chatType !== chatType
+    ) {
+      throw new Error("Greeting conversation target changed during preparation");
+    }
+    return {
+      requesterProfileId,
+      ...(contextVersion ? { publication: { target, expectedTranscript: contextVersion } } : {}),
+    };
+  } finally {
+    try {
+      facts?.release();
+    } finally {
+      input.release?.();
+    }
+  }
+}
 
 /** Record submitted speech once, without creating another user turn or claiming it was heard. */
 export async function publishConversationGreeting(params: {

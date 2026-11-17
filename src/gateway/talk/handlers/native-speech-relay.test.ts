@@ -554,13 +554,14 @@ it("public STT/TTS greeting is natively prepared without tools and held until th
     }
   });
   const { sessionId, readyMark, target } = await createSpeechRelayCall();
-  expect(mocks.runEmbeddedAgent).toHaveBeenCalledOnce();
-  expect(mocks.runEmbeddedAgent.mock.calls[0]![0]).toMatchObject({
+  expect(mocks.isolatedGreeting).toHaveBeenCalledOnce();
+  expect(mocks.isolatedGreeting.mock.calls[0]![0]).toMatchObject({
     agentId: "voice",
-    toolsAllow: [],
+    thinkLevel: "off",
     prompt: expect.stringContaining("A short personal greeting appropriate to the time of day."),
   });
-  expect(mocks.runEmbeddedAgent.mock.calls[0]![0].prompt).toContain("(UTC)");
+  expect(mocks.isolatedGreeting.mock.calls[0]![0].prompt).toContain("(UTC)");
+  expect(mocks.runEmbeddedAgent).not.toHaveBeenCalled();
   expect(mocks.streamSpeech).toHaveBeenCalledWith(
     expect.objectContaining({ text: "Hello, welcome to your call.", agentId: "voice" }),
   );

@@ -24,7 +24,7 @@ vi.mock("../config/sessions/session-transcript-anchor-read.js", () => ({
   readSessionTranscriptAnchorsAsync: mocks.anchors,
 }));
 
-async function setup(existing = true) {
+async function setup() {
   const scope: ConversationInputScopeV1 = {
     agentId: "example-agent",
     conversationId: "example-call",
@@ -62,26 +62,8 @@ async function setup(existing = true) {
   const projected = await prepareConversationReplyContext(input, {
     text: "Greet the caller briefly.",
   });
-  const target = {
-    agentId: scope.agentId,
-    canonicalKey: sessionKey,
-    storePath: "/example/sessions.sqlite",
-    entry: {
-      sessionId: "original-session",
-      lifecycleRevision: "original-generation",
-      chatType: "direct" as const,
-      owner: { actor: { type: "human" as const, id: "assigned-person" } },
-    },
-  };
-  let currentTarget = existing ? target : null;
-  const release = vi.fn();
-  mocks.prepareFacts.mockResolvedValue({
-    readCurrent: () => ({ target: currentTarget }),
-    release,
-  });
-  mocks.anchors.mockResolvedValue({
-    contextVersion: { generation: "original-generation", rawSeq: 1, updatedAt: 1 },
-  });
+  mocks.prepareFacts.mockRejectedValue(new Error("Greeting must not await a session"));
+  mocks.anchors.mockRejectedValue(new Error("Greeting must not read a transcript"));
   mocks.run.mockResolvedValue({ text: "Good morning!" });
   const onSpeakableText = vi.fn();
   const params = {
@@ -107,89 +89,66 @@ async function setup(existing = true) {
   };
   return {
     params,
-    target,
     state,
-    release,
     onSpeakableText,
-    replaceTarget() {
-      currentTarget = { ...target, entry: { ...target.entry, sessionId: "replacement" } };
-    },
   };
 }
 
 describe("native isolated greeting preparation", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it.each([false, true])(
-    "preserves the original authority and selected account when the target exists=%s",
-    async (existing) => {
-      const fixture = await setup(existing);
-      const result = await prepareConversationGreeting(fixture.params);
-      expect(result).toMatchObject({ text: "Good morning!" });
-      const run = mocks.run.mock.calls[0]![0] as RunIsolatedCompletionParams;
-      expect(run).toMatchObject({
-        agentId: "example-agent",
-        provider: "example-provider",
-        model: "example-model",
-        authProfileId: "selected-profile",
-        thinkLevel: "off",
-        operatorAuthority: fixture.params.input.operatorAuthority,
-      });
-      expect(run.prompt).toBe(fixture.params.text);
-      expect(run.systemPrompt).toContain('Confirmed caller name (data): "Alex".');
-      expect(run.systemPrompt).toContain('Default greeting language (data): "de".');
-      expect(run.systemPrompt).not.toContain(fixture.params.speech.guidance);
-      expect(run.sessionKey).not.toBe(fixture.target.canonicalKey);
-      expect(fixture.onSpeakableText).not.toHaveBeenCalled();
-      expect(result.delivered).toBeUndefined();
-      expect(mocks.anchors).toHaveBeenCalledTimes(existing ? 1 : 0);
-      expect(fixture.release).toHaveBeenCalledOnce();
-    },
-  );
-
-  it("rejects a replaced target before inference dispatch", async () => {
+  it("preserves authority and selected account without waiting for a session", async () => {
     const fixture = await setup();
-    mocks.anchors.mockImplementation(async () => {
-      fixture.replaceTarget();
-      return { contextVersion: { generation: "original-generation", rawSeq: 1, updatedAt: 1 } };
+    const result = await prepareConversationGreeting(fixture.params);
+    expect(result).toMatchObject({ text: "Good morning!" });
+    const run = mocks.run.mock.calls[0]![0] as RunIsolatedCompletionParams;
+    expect(run).toMatchObject({
+      agentId: "example-agent",
+      provider: "example-provider",
+      model: "example-model",
+      authProfileId: "selected-profile",
+      thinkLevel: "off",
+      operatorAuthority: fixture.params.input.operatorAuthority,
     });
-    await expect(prepareConversationGreeting(fixture.params)).rejects.toThrow("target changed");
-    expect(mocks.run).not.toHaveBeenCalled();
-    expect(fixture.release).toHaveBeenCalledOnce();
+    expect(run.prompt).toBe(fixture.params.text);
+    expect(run.systemPrompt).toContain('Confirmed caller name (data): "Alex".');
+    expect(run.systemPrompt).toContain('Default greeting language (data): "de".');
+    expect(run.systemPrompt).not.toContain(fixture.params.speech.guidance);
+    expect(run.sessionKey).not.toBe(fixture.params.input.source.sessionKey);
+    expect(fixture.onSpeakableText).not.toHaveBeenCalled();
+    expect(result.delivered).toBeUndefined();
+    expect(mocks.prepareFacts).not.toHaveBeenCalled();
+    expect(mocks.anchors).not.toHaveBeenCalled();
+    expect(result.greeting).toBeUndefined();
+    expect(result.greetingPreparation).toMatchObject({
+      eventId: "talk-greeting:example-call:example-greeting",
+      requesterProfileId: "assigned-person",
+    });
   });
 
-  it.each(["original", "target"])(
-    "keeps the %s authority live through inference",
-    async (owner) => {
-      const fixture = await setup();
-      mocks.run.mockImplementation(async (run: RunIsolatedCompletionParams) => {
-        if (owner === "original") {
-          fixture.state.current = false;
-        } else {
-          fixture.replaceTarget();
-        }
-        expect(() => run.assertCurrent?.()).toThrow();
-        return { text: "Not deliverable." };
-      });
-      await expect(prepareConversationGreeting(fixture.params)).rejects.toThrow();
-      expect(fixture.onSpeakableText).not.toHaveBeenCalled();
-      expect(fixture.release).toHaveBeenCalledOnce();
-    },
-  );
+  it("keeps original authority live through inference", async () => {
+    const fixture = await setup();
+    mocks.run.mockImplementation(async (run: RunIsolatedCompletionParams) => {
+      fixture.state.current = false;
+      expect(() => run.assertCurrent?.()).toThrow();
+      return { text: "Not deliverable." };
+    });
+    await expect(prepareConversationGreeting(fixture.params)).rejects.toThrow();
+    expect(fixture.onSpeakableText).not.toHaveBeenCalled();
+  });
 
   it.each(["", SILENT_REPLY_TOKEN])(
     "does not invent readiness from an empty or silent result",
     async (text) => {
-      const fixture = await setup(false);
+      const fixture = await setup();
       mocks.run.mockResolvedValue({ text });
       await expect(prepareConversationGreeting(fixture.params)).rejects.toThrow("no greeting");
       expect(fixture.onSpeakableText).not.toHaveBeenCalled();
-      expect(fixture.release).toHaveBeenCalledOnce();
     },
   );
 
   it("retains native failures without speaking or logging provider text", async () => {
-    const fixture = await setup(false);
+    const fixture = await setup();
     const error = new Error("synthetic-provider-detail-not-for-logs");
     mocks.run.mockRejectedValue(error);
     await expect(prepareConversationGreeting(fixture.params)).rejects.toBe(error);
@@ -198,11 +157,10 @@ describe("native isolated greeting preparation", () => {
       error.message,
     );
     expect(fixture.onSpeakableText).not.toHaveBeenCalled();
-    expect(fixture.release).toHaveBeenCalledOnce();
   });
 
   it("captures native speech metadata without preparing a live output", async () => {
-    const fixture = await setup(false);
+    const fixture = await setup();
     const assertExpressionCurrent = vi.fn();
     const localServiceAdmission = {
       generation: "synthetic-worker",
@@ -233,6 +191,5 @@ describe("native isolated greeting preparation", () => {
     expect(result.utterances?.[0]?.expectedSpeechSelection).toBe(expectedSpeechSelection);
     expect(fixture.onSpeakableText).not.toHaveBeenCalled();
     expect(assertExpressionCurrent).toHaveBeenCalled();
-    expect(fixture.release).toHaveBeenCalledOnce();
   });
 });

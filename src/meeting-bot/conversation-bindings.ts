@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { withCommentaryGuidance } from "../agents/commentary-guidance.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import type { RealtimeVoiceAgentConsultResult } from "../talk/agent-consult-runtime.js";
@@ -85,9 +86,11 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
     if (sessionId !== params.conversationId) {
       throw new Error("Conversation input binding changed");
     }
-    // Settle this connection's native session creation/enrollment before an input
-    // captures its source facts. Donor hydration remains background work.
-    await preparing;
+    // Context-free greetings need ingress authority, not a created session.
+    // Conversation turns still require their native session creation/enrollment.
+    if (consult.purpose !== "greeting") {
+      await preparing;
+    }
     const parsed = parseRealtimeVoiceAgentConsultArgs(consult.args);
     const text = parsed.question;
     const runtimeContext: NonNullable<ConversationReplyParams["runtimeContext"]> = [];
@@ -246,6 +249,30 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
     const result = await dispatch(consult);
     return result.kind === "reply" ? result.reply : { text: "", delivered: true };
   };
+  const prepareGreetingPublication: NonNullable<
+    Parameters<typeof prepareSpeechGreeting>[0]["preparePublication"]
+  > = async ({ inputId, signal }) => {
+    await racePromiseWithAbortSignal(preparing, signal);
+    signal.throwIfAborted();
+    params.assertOutputCurrent();
+    const { prepareConversationGreetingPublication } =
+      await import("../talk/conversation-greeting-publication.js");
+    signal.throwIfAborted();
+    params.assertOutputCurrent();
+    const scope = {
+      agentId: params.agentId,
+      conversationId: params.conversationId,
+      inputId: `talk-greeting:${params.conversationId}:${inputId}:prepare`,
+      purpose: "greeting" as const,
+    };
+    const admission = await params.inputSource.admitInput({ ...scope, signal });
+    return prepareConversationGreetingPublication({
+      cfg: params.fullConfig,
+      admission,
+      scope,
+      signal,
+    });
+  };
   const onGreetingSubmitted: NonNullable<
     Parameters<typeof prepareSpeechGreeting>[0]["onSubmitted"]
   > = async (submission) => {
@@ -279,6 +306,7 @@ export function createMeetingRealtimeEngineBindingsV2(params: MeetingRealtimeBin
       sessionIdPrefix: params.platform.id,
     },
     consultAgent,
+    prepareGreetingPublication,
     onGreetingSubmitted,
     nativeInput: (input: SpeechNativeInputParams) => dispatch(input),
     connectionPresentation: params.connectionPresentation,
