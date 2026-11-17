@@ -212,7 +212,7 @@ export function createSessionRowMaterializer(owner: {
           break;
         }
         const current = owner.rows.get(id);
-        let databaseFacts = accepted
+        const databaseFacts = accepted
           ? current?.pendingDatabaseFacts
           : current?.retainedDatabaseFacts;
         if (!records.isPreparedSessionRowDatabaseFacts(databaseFacts)) {
@@ -226,15 +226,15 @@ export function createSessionRowMaterializer(owner: {
         }
         const row =
           current && (accepted ? current : owner.acquireEntry(current, databaseFacts.entry));
-        databaseFacts = alignSessionRowFactsEntry(databaseFacts, row?.storedEntry);
+        const preparedFacts = alignSessionRowFactsEntry(databaseFacts, row?.storedEntry);
         if (row && isColdArchivedSessionRow(row) && !accepted) {
           owner.dirty.delete(id);
           owner.forgetBackfill(id);
           continue;
         }
-        if (row && owner.materialize(row, readRow, databaseFacts)) {
+        if (row && owner.materialize(row, readRow, preparedFacts)) {
           row.pendingDatabaseFacts = undefined;
-          row.retainedDatabaseFacts = databaseFacts;
+          row.retainedDatabaseFacts = preparedFacts;
           owner.dirty.delete(id);
           // A bulk slice may finish an exact read's accepted archive row. Keep its
           // residency under the archive owner's pins and bounded cache either way.
