@@ -46,8 +46,8 @@ type Registration = {
   audience: ConversationPrivateAudience;
   env: NodeJS.ProcessEnv;
   getRuntimeConfig(): OpenClawConfig;
-  /** Requests ordinary background recipient preparation; never starts a model turn. */
-  onReady?(): void;
+  /** Initial-frame readiness does not change the projection used by existing recipients. */
+  onReady?(kind: "projection" | "initial-frame"): void;
 };
 export type PreparedConversationKnowledgeRootCheckpoint = {
   checkpoint: ConversationKnowledgeCheckpoint;
@@ -102,8 +102,8 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
   let loggedProjectionRevision = -1;
   let loggedFrameRevision = -1;
   let sourceSessionKeys = new Set<string>();
-  const notify = () => {
-    if (loggedProjectionRevision !== tail.revision) {
+  const notify = (kind: "projection" | "initial-frame" = "projection") => {
+    if (kind === "projection" && loggedProjectionRevision !== tail.revision) {
       if (log.isEnabled("debug")) {
         const frontiers = new Map<string, number>();
         for (const value of tail.values()) {
@@ -125,7 +125,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     }
     for (const broker of brokers) {
       try {
-        broker.onReady?.();
+        broker.onReady?.(kind);
       } catch {
         log.debug("Related-history checkpoint notification deferred");
       }
@@ -325,7 +325,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
                   });
                 }
                 loggedFrameRevision = tail.revision;
-                notify();
+                notify("initial-frame");
               }
             }
             return false;

@@ -333,11 +333,13 @@ describe("shared root projection preparation", () => {
     try {
       await awaitGateBeforeSettlement(entered.promise, preparing, "Frame was not prepared");
       expect(f.ready).toHaveBeenCalledOnce();
+      expect(f.ready).toHaveBeenLastCalledWith("projection");
       expect(f.registration.projection().tail[0]!.reference).toEqual(reference(1));
       expect(f.registration.acquireInitialFrame()).toBeUndefined();
       finish.resolve();
       await expect(preparing).resolves.toBe(false);
       expect(f.ready).toHaveBeenCalledTimes(2);
+      expect(f.ready).toHaveBeenLastCalledWith("initial-frame");
       borrowed = f.registration.acquireInitialFrame();
       expect(borrowed?.frame).toBe(frame);
       await quantum();
@@ -845,8 +847,11 @@ describe("shared root projection preparation", () => {
     expect(boundary.read).toHaveBeenCalledTimes(2);
     expect(second.registration.projection().tail[0]!.packet.through.rawSeq).toBe(2);
     boundary.refs = [];
+    boundary.frame.mockResolvedValueOnce(nativeFrame());
+    second.ready.mockClear();
     await quantum();
     expect(second.registration.projection().tail).toHaveLength(0);
+    expect(second.ready.mock.calls).toEqual([["initial-frame"], ["projection"]]);
   });
   it("prepares originals while deferring unsupported summary worker placement and reports once", async () => {
     const f = register(branch, () => ({

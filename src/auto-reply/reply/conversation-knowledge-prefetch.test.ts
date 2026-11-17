@@ -17,6 +17,7 @@ const preparation = vi.hoisted(() => ({
   projection: vi.fn(),
   checkpoint: vi.fn(),
   rootProjection: vi.fn(),
+  rootReady: undefined as ((kind: "projection" | "initial-frame") => void) | undefined,
   idle: vi.fn(),
   caches: [] as Array<{
     consumptionRevision: number;
@@ -30,14 +31,19 @@ vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
 }));
 // mock-isolation: Shared root summaries have their own scheduling and authority tests.
 vi.mock("./conversation-knowledge-checkpoint-owner.js", () => ({
-  registerConversationKnowledgeCheckpointOwner: () => ({
-    request: vi.fn(),
-    pausePreparation: () => () => {},
-    latest: () => undefined,
-    projection: preparation.rootProjection,
-    watchesSource: () => false,
-    close: async () => {},
-  }),
+  registerConversationKnowledgeCheckpointOwner: (params: {
+    onReady: (kind: "projection" | "initial-frame") => void;
+  }) => {
+    preparation.rootReady = params.onReady;
+    return {
+      request: vi.fn(),
+      pausePreparation: () => () => {},
+      latest: () => undefined,
+      projection: preparation.rootProjection,
+      watchesSource: () => false,
+      close: async () => {},
+    };
+  },
 }));
 // mock-isolation: Native projection/authority behavior is covered by recipient and SQLite scenarios.
 vi.mock("./conversation-knowledge-checkpoint-recipient.js", () => ({
@@ -92,6 +98,7 @@ beforeEach(() => {
   preparation.projection.mockReset().mockResolvedValue(false);
   preparation.checkpoint.mockReset().mockResolvedValue(undefined);
   preparation.rootProjection.mockReset().mockReturnValue({ tail: [] });
+  preparation.rootReady = undefined;
   preparation.idle.mockReset().mockResolvedValue(false);
   preparation.caches.length = 0;
   for (const mock of Object.values(preparation.owner)) {
@@ -199,6 +206,20 @@ describe("recipient preparation scheduling", () => {
     preparation.prepare.mockResolvedValue({ release() {} });
     return { f, recipient, scheduled, release, cache: preparation.caches.at(-1)! };
   }
+
+  it("does not reprepare recipient sources when only the new-branch frame becomes ready", async () => {
+    const f = sourcePreparationOpening();
+    try {
+      await f.scheduled.prepare(new AbortController().signal);
+      preparation.owner.request.mockClear();
+      preparation.rootReady!("initial-frame");
+      expect(preparation.owner.request).not.toHaveBeenCalled();
+      preparation.rootReady!("projection");
+      expect(preparation.owner.request).toHaveBeenCalledExactlyOnceWith("source", "root-ready");
+    } finally {
+      f.scheduled.clear();
+    }
+  });
 
   it("reprobes a prepared recipient after its runtime snapshot changes without rereading donors", async () => {
     const { f, recipient, scheduled } = sourcePreparationOpening();

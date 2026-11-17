@@ -249,7 +249,13 @@ export function prepareConversationKnowledgeRecipient(params: {
       ...params,
       participant: participant!,
       audience,
-      onReady: () => recipients.get(key)?.owner.request("source", "root-ready"),
+      onReady: (kind) => {
+        // Existing recipients use the projection; frame verification prepares only
+        // the native copy for a new branch, without changing those source bytes.
+        if (kind === "projection") {
+          recipients.get(key)?.owner.request("source", "root-ready");
+        }
+      },
     });
     const rootCheckpoint = checkpoint;
     const owner = createConversationKnowledgePrefetchOwner({

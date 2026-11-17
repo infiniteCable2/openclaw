@@ -1,0 +1,3 @@
+26
+# Distinguish projection changes from initial-frame readiness so existing
+# recipients do not rescan unchanged sources; preserve empty-tail updates.
