@@ -124,8 +124,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
   const proofs: SessionSourceAssertion[] = [];
   let released = false;
   let targetReleased = false;
-  // Carry the native predicates with their owner check. Repeating these parents
-  // beside an opaque wrapper multiplied the same ingress checks for every donor.
+  // Preserve native predicates beside their owner without multiplying parent checks.
   const custody = composeSessionSourceAssertion(
     [authority.assertCurrent, targetFacts.assertCurrent],
     (assertSources) => {
@@ -134,9 +133,8 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       }
       authority.signal.throwIfAborted();
       assertSources();
-      // Existing-target facts already retain this exact audience. A creation
-      // source can hold another admitted audience, so retain this broker's check.
-      params.targetCreation && params.audience.assertCurrent();
+      // Existing targets retain this audience; creation may retain another admitted audience.
+      return params.targetCreation ? params.audience.assertCurrent() : undefined;
     },
   );
   const check = () => custody();
