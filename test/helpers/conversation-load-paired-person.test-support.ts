@@ -62,17 +62,17 @@ export async function preparePairedConversationLoadOperator(params: {
   });
   type ConnectionOptions = NonNullable<Parameters<typeof connectConversationOperator>[3]>;
   const open = async (options: GatewayClientOptions) => {
-    let client: GatewayClient | undefined;
+    const acquired: { client?: GatewayClient } = {};
     let hello: HelloOk | undefined;
     let failure: Error | undefined;
     let expectedClose = false;
     let stopping: Promise<void> | undefined;
     const stop = () => {
       expectedClose = true;
-      if (!client) {
+      if (!acquired.client) {
         return Promise.resolve();
       }
-      return (stopping ??= client.stopAndWait());
+      return (stopping ??= acquired.client.stopAndWait());
     };
     const abort = () => {
       failure ??= new Error("Paired load connection canceled", { cause: signal.reason });
@@ -87,7 +87,7 @@ export async function preparePairedConversationLoadOperator(params: {
         }
       }, stop);
     };
-    client = await acquireGatewayTestClient(
+    const client = await acquireGatewayTestClient(
       {
         url: gateway.url,
         origin: BRANCH_GATEWAY_ORIGIN,
@@ -119,7 +119,7 @@ export async function preparePairedConversationLoadOperator(params: {
         closeMessage: "Paired load handshake closed",
       },
     );
-    const connectedClient = client;
+    acquired.client = client;
     signal.addEventListener("abort", abort, { once: true });
     try {
       signal.throwIfAborted();
@@ -137,7 +137,7 @@ export async function preparePairedConversationLoadOperator(params: {
           if (failure) {
             throw failure;
           }
-          return connectedClient.request<T>(method, value, request);
+          return client.request<T>(method, value, request);
         },
         close,
       };
