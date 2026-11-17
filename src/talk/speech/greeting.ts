@@ -168,12 +168,24 @@ export async function prepareSpeechGreeting(
       publication,
     );
   } catch (error) {
+    // A failed history binding cancels the other lane; retain that cause alongside
+    // any synthesis/cleanup failure instead of reporting only its resulting abort.
+    const failure =
+      abort.signal.aborted && !params.signal.aborted
+        ? new AggregateError(
+            [abort.signal.reason, error],
+            "Greeting publication preparation failed",
+            {
+              cause: abort.signal.reason,
+            },
+          )
+        : error;
     log.warn("Speech greeting preparation failed", {
       phase,
       elapsedMs: Math.round(performance.now() - startedAt),
-      ...greetingFailureFields(error),
+      ...greetingFailureFields(failure),
     });
-    throw error;
+    throw failure;
   } finally {
     abort.abort();
     // Cancellation ends observation, not ownership of a late admission/read.

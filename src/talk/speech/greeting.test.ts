@@ -169,35 +169,57 @@ describe("meeting agent greeting preparation", () => {
     },
   );
 
-  it("aborts ongoing greeting inference when the independent connection binding fails", async () => {
-    const started = Promise.withResolvers<void>();
-    const binding = Promise.withResolvers<PreparedGreetingPublication>();
-    const failure = new Error("Synthetic connection failure");
-    let stopped = false;
-    const pending = prepareSpeechGreeting({
-      ...greetingParams({} as PluginRuntime),
-      preparePublication: () => binding.promise,
-      consultAgent: async ({ abortSignal }) => {
-        assert(abortSignal);
-        started.resolve();
-        return new Promise<never>((_resolve, reject) => {
-          abortSignal.addEventListener(
+  it.each([false, true])(
+    "stops greeting inference and distinguishes caller cancellation=%s from a binding failure",
+    async (cancelled) => {
+      const started = Promise.withResolvers<void>();
+      const binding = Promise.withResolvers<PreparedGreetingPublication>();
+      const failure = new Error("Synthetic connection failure");
+      const caller = new AbortController();
+      let stopped = false;
+      const pending = prepareSpeechGreeting({
+        ...greetingParams({} as PluginRuntime, caller.signal),
+        preparePublication: ({ signal }) => {
+          signal.addEventListener(
             "abort",
-            () => {
-              stopped = true;
-              reject(new Error("Greeting inference cancelled", { cause: abortSignal.reason }));
-            },
+            () => binding.reject(new Error("Greeting binding cancelled", { cause: signal.reason })),
             { once: true },
           );
-        });
-      },
-    });
-    const rejection = expect(pending).rejects.toBe(failure);
-    await started.promise;
-    binding.reject(failure);
-    await rejection;
-    expect(stopped).toBe(true);
-  });
+          return binding.promise;
+        },
+        consultAgent: async ({ abortSignal }) => {
+          assert(abortSignal);
+          started.resolve();
+          return new Promise<never>((_resolve, reject) => {
+            abortSignal.addEventListener(
+              "abort",
+              () => {
+                stopped = true;
+                reject(new Error("Greeting inference cancelled", { cause: abortSignal.reason }));
+              },
+              { once: true },
+            );
+          });
+        },
+      });
+      const rejection = expect(pending).rejects.toMatchObject(
+        cancelled
+          ? { name: "AbortError" }
+          : {
+              cause: failure,
+              errors: [failure, expect.objectContaining({ name: "AbortError" })],
+            },
+      );
+      await started.promise;
+      if (cancelled) {
+        caller.abort();
+      } else {
+        binding.reject(failure);
+      }
+      await rejection;
+      expect(stopped).toBe(true);
+    },
+  );
 
   it("reports a consult failure without losing its cause or exposing its text", async () => {
     logs.warn.mockClear();
