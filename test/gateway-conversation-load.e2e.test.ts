@@ -18,6 +18,11 @@ import {
   isolateConversationGatewayEnvironment,
   startConversationModel,
 } from "./helpers/conversation-branches-gateway.js";
+import {
+  configurePairedConversationLoad,
+  preparePairedConversationLoadOperator,
+  preparePairedConversationLoadProfile,
+} from "./helpers/conversation-load-paired-person.test-support.js";
 import { createOpenClawTestInstance } from "./helpers/openclaw-test-instance.js";
 import { createDeferred, withinTest } from "./helpers/promise.js";
 import { runCleanups, runQaGatewayFixture } from "./helpers/qa-gateway-cleanup.js";
@@ -311,6 +316,11 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
     if (process.platform !== "linux") {
       throw new Error("Load accounting requires Linux /proc");
     }
+    const authentication = process.env.OPENCLAW_E2E_CONVERSATION_LOAD_AUTH ?? "trusted-proxy";
+    if (authentication !== "trusted-proxy" && authentication !== "paired-person") {
+      throw new Error("Load authentication must be trusted-proxy or paired-person");
+    }
+    const pairedPerson = authentication === "paired-person";
     const quietMs = Number(process.env.OPENCLAW_E2E_CONVERSATION_LOAD_QUIET_MS ?? 10_000);
     if (!Number.isSafeInteger(quietMs) || quietMs < 1_000 || quietMs > 60_000) {
       throw new Error("Quiet measurement window must be 1–60 seconds");
@@ -341,6 +351,9 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
         const model = await startConversationModel(signal, () => "LOAD_REPLY.");
         cleanups.push(() => model.stop());
         const selected = configuration(model.baseUrl);
+        if (pairedPerson) {
+          configurePairedConversationLoad(selected);
+        }
         if (diagnosticDirectory) {
           expect(inputs.length).toBeGreaterThan(0);
           selected.gateway!.roles!.definitions.observer = {
@@ -382,6 +395,9 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
           setUserProfileRole(observer.id, "observer", { env: gateway.env });
           await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(gateway.env));
         }
+        if (pairedPerson) {
+          await preparePairedConversationLoadProfile(gateway);
+        }
         gateway.state.applyEnv();
         const meter = diagnostics();
         let diagnosticRecords = 0;
@@ -421,8 +437,10 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
           child?.stdout.off("data", meter.stdout);
           child?.stderr.off("data", meter.stderr);
         };
+        let connectOperator = (options: Parameters<typeof connectConversationOperator>[3]) =>
+          connectConversationOperator(gateway, "load-person@example.test", signal, options);
         const connect = () =>
-          connectConversationOperator(gateway, "load-person@example.test", signal, {
+          connectOperator({
             scopes: [...SCOPES],
             onEvent(event, payload) {
               if (
@@ -518,6 +536,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
                   corpusSeeded: false,
                   sourceMapping,
                   sourceBucketCap,
+                  authentication,
                 }),
               );
             },
@@ -595,6 +614,13 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
         ]);
         try {
           await gateway.startGateway();
+          if (pairedPerson) {
+            connectOperator = await preparePairedConversationLoadOperator({
+              gateway,
+              signal,
+              verifyCleanup,
+            });
+          }
           attach();
           operator = await connect();
           if (diagnosticDirectory) {
@@ -657,6 +683,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
               totalCorpusSources: corpus.totalSources,
               textBytes: inputs.reduce((sum, input) => sum + Buffer.byteLength(input.text), 0),
               historicalReceiptsImported: false,
+              authentication,
               originalAudienceEquivalenceClaimed: false,
               exactRootReceiptCount: null,
             }),
