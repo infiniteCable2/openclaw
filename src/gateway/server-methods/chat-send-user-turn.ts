@@ -20,7 +20,6 @@ import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { PreparedSkillLibrarySession } from "../../skills/library/selection.js";
 import {
   INTERNAL_MESSAGE_CHANNEL,
-  isBrowserOperatorUiClient,
   isOperatorUiClient,
   isWebchatClient,
 } from "../../utils/message-channel.js";
@@ -45,7 +44,10 @@ import type { PreparedChatSendAttachments } from "./chat-send-attachments.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import type { PreparedChatSendSession } from "./chat-send-session.js";
 import { resolveChatSendCallerContext } from "./gateway-client-identity.js";
-import { isSyntheticGatewayCaller } from "./gateway-personal-caller.js";
+import {
+  isSyntheticGatewayCaller,
+  resolveAuthenticatedPersonalGatewayProfileId,
+} from "./gateway-personal-caller.js";
 import type { GatewayRequestContext, GatewayRequestHandlerOptions } from "./types.js";
 
 const audioPreflightLoader = createLazyImportLoader(
@@ -328,7 +330,7 @@ export function prepareChatSendUserTurn(params: {
     client &&
     requester &&
     (client.authenticatedUserId || client.internal?.authenticatedOperator) &&
-    isBrowserOperatorUiClient(request.clientInfo) &&
+    resolveAuthenticatedPersonalGatewayProfileId(client) &&
     !isSyntheticGatewayCaller(client) &&
     externalInput
   ) {
@@ -421,14 +423,12 @@ export function prepareChatSendUserTurn(params: {
     !client.invalidated &&
     !client.connectionSignal?.aborted &&
     !isSyntheticGatewayCaller(client) &&
-    isBrowserOperatorUiClient(request.clientInfo) &&
+    resolveAuthenticatedPersonalGatewayProfileId(client) &&
     originatingChannel === INTERNAL_MESSAGE_CHANNEL &&
     originatingTo === session.sessionKey &&
     !explicitDeliverRoute &&
-    admission.assertWorkAdmissionCurrent &&
     admission.assertWorkAdmissionCurrent
   ) {
-    const assertTargetCurrent = admission.assertWorkAdmissionCurrent;
     const assertWorkCurrent = admission.assertWorkAdmissionCurrent;
     const audience = captureGatewayPrivateConversationAudience({
       agentId: session.agentId,
@@ -439,7 +439,6 @@ export function prepareChatSendUserTurn(params: {
       sourceClosed: client.connectionSignal,
       entry: admission.admittedSessionEntry ?? admission.initialSessionEntry ?? session.entry,
       assertCurrent() {
-        assertTargetCurrent();
         assertWorkCurrent();
       },
     });

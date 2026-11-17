@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
+  type GatewayClientInfo,
 } from "../../../packages/gateway-protocol/src/client-info.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { prepareReplyConversationKnowledge } from "../../auto-reply/reply/conversation-knowledge.js";
 import { createConversationKnowledgeScenario } from "../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
+import { getRequesterProfile } from "../../auto-reply/requester-profile.js";
 import { recordConversationKnowledgeTurn } from "../../config/sessions/conversation-knowledge-store.js";
 import * as publicationWakeup from "../../config/sessions/conversation-publication-wakeup.js";
 import { openConversationPublicationStore } from "../../config/sessions/conversation-publication.js";
@@ -29,7 +31,11 @@ import {
   createAttachments,
 } from "./chat-send-user-turn.test-support.js";
 
-function privateBrowserTurnFixture() {
+const personalClients = [GATEWAY_CLIENT_IDS.CONTROL_UI, GATEWAY_CLIENT_IDS.ANDROID_APP] as const;
+
+function privateBrowserTurnFixture(
+  clientId: GatewayClientInfo["id"] = GATEWAY_CLIENT_IDS.CONTROL_UI,
+) {
   let current = true;
   const assertCurrent = () => {
     if (!current) {
@@ -44,7 +50,7 @@ function privateBrowserTurnFixture() {
   });
   const connection = new AbortController();
   const clientInfo = createClientInfo({
-    id: GATEWAY_CLIENT_IDS.CONTROL_UI,
+    id: clientId,
     mode: GATEWAY_CLIENT_MODES.UI,
   });
   const entry: InternalSessionEntry = {
@@ -76,14 +82,22 @@ function privateBrowserTurnFixture() {
     client: {
       connId: "original-browser-connection",
       connectionSignal: connection.signal,
-      authenticatedUserId: "ada@example.test",
+      authenticatedUserId:
+        clientId === GATEWAY_CLIENT_IDS.CONTROL_UI ? "ada@example.test" : undefined,
+      internal: { authenticatedOperator: true },
       authenticatedUserProfile: {
         profileId: operatorAuthority.profileId,
         displayName: "Ada",
         hasAvatar: false,
         updatedAt: 1,
       },
-      connect: { minProtocol: 1, maxProtocol: 1, client: clientInfo, scopes: ["operator.write"] },
+      connect: {
+        minProtocol: 1,
+        maxProtocol: 1,
+        role: "operator",
+        client: clientInfo,
+        scopes: ["operator.write"],
+      },
     },
     attachments: createAttachments(),
     logGateway: { warn: vi.fn() } as never,
@@ -172,8 +186,10 @@ describe("prepareChatSendUserTurn private browser audience", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it("retains a personal browser recipient after normal close, never a successor connection", () => {
-    const f = privateBrowserTurnFixture();
+  it.each(personalClients)("retains personal %s custody after normal close", (clientId) => {
+    const f = privateBrowserTurnFixture(clientId);
+    const assertWork = vi.fn(f.params.admission.assertWorkAdmissionCurrent);
+    f.params.admission.assertWorkAdmissionCurrent = assertWork;
     const prepared = prepareChatSendUserTurn(f.params);
     const audience = readConversationPrivateAudience(finalizeInboundContext({ ...prepared.ctx }));
     expect(audience).toMatchObject({
@@ -185,6 +201,9 @@ describe("prepareChatSendUserTurn private browser audience", () => {
       participant: { type: "profile", id: "profile-ada" },
     });
     expect(Object.isFrozen(audience)).toBe(true);
+    assertWork.mockClear();
+    audience?.assertCurrent();
+    expect(assertWork).toHaveBeenCalledTimes(1);
     f.connection.abort(new Error("Normal socket close"));
     // This is retained accepted work, not authority to send to a successor socket.
     expect(() => audience?.assertCurrent()).not.toThrow();
@@ -194,7 +213,10 @@ describe("prepareChatSendUserTurn private browser audience", () => {
 
   it.each([
     "owner",
+    "shared-secret-cli",
     "unconfirmed",
+    "unattested",
+    "non-operator",
     "different-person",
     "synthetic",
     "internal-input",
@@ -210,15 +232,29 @@ describe("prepareChatSendUserTurn private browser audience", () => {
     const { params } = f;
     switch (kind) {
       case "owner":
+      case "shared-secret-cli":
         params.client!.authenticatedUserProfile!.profileId = GATEWAY_OWNER_PROFILE_ID;
         params.admission.operatorAuthority = createAdmittedRunOperatorAuthority({
           profileId: GATEWAY_OWNER_PROFILE_ID,
           scopes: ["operator.admin"],
           assertCurrent() {},
         });
+        if (kind === "shared-secret-cli") {
+          params.client!.connect.client = createClientInfo({
+            id: GATEWAY_CLIENT_IDS.CLI,
+            mode: GATEWAY_CLIENT_MODES.CLI,
+          });
+          params.request.clientInfo = params.client!.connect.client;
+        }
         break;
       case "unconfirmed":
         params.client!.authenticatedUserProfile = undefined;
+        break;
+      case "unattested":
+        params.client!.internal = undefined;
+        break;
+      case "non-operator":
+        params.client!.connect.role = "node";
         break;
       case "different-person":
         params.client!.authenticatedUserProfile!.profileId = "profile-other";
@@ -262,7 +298,7 @@ describe("prepareChatSendUserTurn private browser audience", () => {
     expect(readConversationPrivateAudience(prepared.ctx)).toBeUndefined();
   });
 
-  it("journals the original private browser input before model dispatch", async () => {
+  it.each(personalClients)("journals original %s input before model dispatch", async (clientId) => {
     await withOpenClawTestState(
       { scenario: "minimal", label: "browser-private-input-publication" },
       async (state) => {
@@ -279,7 +315,7 @@ describe("prepareChatSendUserTurn private browser audience", () => {
           if (!entry) {
             throw new Error("Expected the original enrolled browser branch");
           }
-          const browser = privateBrowserTurnFixture();
+          const browser = privateBrowserTurnFixture(clientId);
           const input = createUserTurnInputController(browser.params.request.inboundMessage);
           const recorder = createUserTurnTranscriptRecorder({
             input: input.controller.baseInput,
@@ -293,6 +329,7 @@ describe("prepareChatSendUserTurn private browser audience", () => {
           browser.params.admission.assertWorkAdmissionCurrent = owner.assertCurrent;
           const prepared = prepareChatSendUserTurn(browser.params);
           expect(readConversationPrivateAudience(prepared.ctx)).toBeDefined();
+          expect(getRequesterProfile(prepared.ctx)?.id).toBe(person.id);
 
           // Gateway restart-safe admission commits here, before any runner or terminal exists.
           const saved = await recorder.persistApproved();

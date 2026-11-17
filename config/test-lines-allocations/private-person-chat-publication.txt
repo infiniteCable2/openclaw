@@ -1,0 +1,4 @@
+41
+# Preserve native User-original publication for attested Browser and companion
+# people, count the single work guard, and retain privacy/source refusal controls.
+# Correct only the existing requester fixture's explicit native admission facts.

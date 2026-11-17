@@ -45,7 +45,7 @@ export function resolveGatewayInputParticipant(
 
 /**
  * Current personal Gateway ingress, not a reinterpretation of historical actors.
- * The caller owns the original private browser route and prepared native target.
+ * The caller owns the original private Gateway route and prepared native target.
  * An absent entry is allowed only for that owner's newly selected direct target.
  */
 export function captureGatewayPrivateConversationAudience(input: {

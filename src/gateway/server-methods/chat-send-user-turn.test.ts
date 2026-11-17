@@ -92,10 +92,14 @@ describe("prepareChatSendUserTurn", () => {
       client: {
         authenticatedUserId: verified ? "ada@example.test" : undefined,
         authenticatedUserProfile: clientProfile(profileId, "Ada"),
-        internal: synthetic ? { syntheticClient: true } : undefined,
+        internal: {
+          authenticatedOperator: verified ? true : undefined,
+          ...(synthetic ? { syntheticClient: true } : {}),
+        },
         connect: {
           minProtocol: 1,
           maxProtocol: 1,
+          role: "operator",
           client: createClientInfo({ id: GATEWAY_CLIENT_IDS.CONTROL_UI }),
           scopes: ["operator.write"],
         },

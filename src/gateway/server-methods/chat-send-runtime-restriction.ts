@@ -18,7 +18,6 @@ import { assertCapturedSessionEntryReadSource } from "../../config/sessions/sess
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
-import { isBrowserOperatorUiClient } from "../../utils/message-channel.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { hasGatewayAdminScope } from "../operator-scopes.js";
 import { resolveOperatorSessionCreation } from "../session-creation-provenance.js";
@@ -30,6 +29,7 @@ import { captureSessionMutationRouting } from "../session-sharing-preparation.js
 import { resolveSessionModelRef } from "../session-utils.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import { prepareChatSendSessionEntry, type PreparedChatSendSession } from "./chat-send-session.js";
+import { resolveAuthenticatedPersonalGatewayProfileId } from "./gateway-personal-caller.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import { resolveSessionNativeRuntimeRestriction } from "./sessions-patch-model-selection.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -136,7 +136,7 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
   const operator =
     rootSessionKey &&
     participant?.type === "profile" &&
-    isBrowserOperatorUiClient(request.clientInfo) &&
+    resolveAuthenticatedPersonalGatewayProfileId(client) &&
     !request.explicitOrigin
       ? await (
           await import("../operator-run-authority.js")
