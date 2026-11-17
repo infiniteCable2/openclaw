@@ -1,0 +1,3 @@
+# Full resident metadata and equal-read identity survive detached enrollment capture;
+# mutable caller aliases remain independent of the projection's frozen evidence.
+70

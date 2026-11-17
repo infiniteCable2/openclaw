@@ -29,6 +29,7 @@ import {
 } from "./session-row-model-facts.js";
 import { SessionRowCatalogPending, SessionRowFactsPending } from "./session-row-prepared-read.js";
 import { isColdArchivedSessionRow } from "./session-row-projection-archive.js";
+import { alignSessionRowFactsEntry } from "./session-row-projection-entry.js";
 import { createSessionRowCapabilityReader } from "./session-row-projection-identities.js";
 import * as records from "./session-row-projection-record.js";
 import { readSessionRowLookup, type prepareSessionRowScopes } from "./session-row-scope.js";
@@ -211,7 +212,7 @@ export function createSessionRowMaterializer(owner: {
           break;
         }
         const current = owner.rows.get(id);
-        const databaseFacts = accepted
+        let databaseFacts = accepted
           ? current?.pendingDatabaseFacts
           : current?.retainedDatabaseFacts;
         if (!records.isPreparedSessionRowDatabaseFacts(databaseFacts)) {
@@ -225,6 +226,7 @@ export function createSessionRowMaterializer(owner: {
         }
         const row =
           current && (accepted ? current : owner.acquireEntry(current, databaseFacts.entry));
+        databaseFacts = alignSessionRowFactsEntry(databaseFacts, row?.storedEntry);
         if (row && isColdArchivedSessionRow(row) && !accepted) {
           owner.dirty.delete(id);
           owner.forgetBackfill(id);
@@ -280,9 +282,8 @@ export function createSessionRowMaterializer(owner: {
               databaseFacts?.entry,
             );
           // Equal rereads keep the canonical entry; retained facets share that identity.
-          if (row?.storedEntry && databaseFacts && databaseFacts.entry !== row.storedEntry) {
-            databaseFacts = { ...databaseFacts, entry: row.storedEntry };
-          }
+          databaseFacts =
+            databaseFacts && alignSessionRowFactsEntry(databaseFacts, row?.storedEntry);
           if (row && databaseFacts) {
             row.preparedAcpMeta = databaseFacts.acpMeta;
             row.preparedRuntimeOwnership = databaseFacts.runtimeOwnership;

@@ -3,18 +3,13 @@ import path from "node:path";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { beginForegroundSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
-import { publishSessionEntryWorkerMetadataInvalidation } from "../../config/sessions/session-accessor.sqlite-entry-cache-publication.js";
-import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.sqlite-entry-replace.js";
 import { SessionEntryChangedDuringReadError } from "../../config/sessions/session-entry-read-errors.js";
 import type { SessionTranscriptAuthority } from "../../config/sessions/session-transcript-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
-import { sessionChanges, type SessionRowChange } from "../../sessions/session-row-changes.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createConversationKnowledgePrefetchOwner } from "./conversation-knowledge-prefetch-owner.js";
 
 const boundary = vi.hoisted(() => ({
@@ -507,72 +502,6 @@ describe("conversation knowledge prefetch lifecycle", () => {
     sessionChanges.emit(change);
     await owner.wait();
     expect(prepare).toHaveBeenCalledTimes(3);
-  });
-
-  it("skips native unchanged donor metadata while retaining recipient and uncertain sharing wakes", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const database = openOpenClawAgentDatabase({ agentId: target.agentId });
-      const localTarget = { ...target, storePath: database.path };
-      const donor = "agent:example:donor";
-      const donorEntry = {
-        sessionId: "donor-session",
-        lifecycleRevision: "original",
-        updatedAt: 1,
-      };
-      const donorScope = { agentId: target.agentId, storePath: database.path, sessionKey: donor };
-      replaceSessionEntrySync(donorScope, donorEntry);
-      const prepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => {});
-      const owner = createConversationKnowledgePrefetchOwner({
-        target: localTarget,
-        assertCurrent() {},
-        clear() {},
-        watchesSource: (key) => key === donor,
-        prepare,
-      });
-      const ownPrepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => {});
-      const ownRecipient = createConversationKnowledgePrefetchOwner({
-        target: { ...localTarget, sessionKey: donor, sessionId: "donor-session" },
-        assertCurrent() {},
-        clear() {},
-        prepare: ownPrepare,
-      });
-      await Promise.all([owner.wait(), ownRecipient.wait()]);
-      const changes: SessionRowChange[] = [];
-      const stop = sessionChanges.subscribeProjection((change) => changes.push(change));
-      try {
-        publishSessionEntryWorkerMetadataInvalidation({
-          agentId: target.agentId,
-          storePath: database.path,
-          databaseIdentity: readOpenClawAgentDatabaseIdentity(database).identity,
-          sessionKey: donor,
-        });
-        await Promise.all([owner.wait(), ownRecipient.wait()]);
-        expect(prepare.mock.calls.map((call) => call[1])).toEqual([true]);
-        expect(ownPrepare.mock.calls.map((call) => call[1])).toEqual([true, false]);
-        const unchanged = changes[0]!;
-        stop();
-        // A copied public fact has no native sharing certificate.
-        sessionChanges.emit({ ...unchanged });
-        await owner.wait();
-        expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true]);
-        replaceSessionEntrySync(donorScope, { ...donorEntry, visibility: "shared", updatedAt: 2 });
-        await owner.wait();
-        expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true, true]);
-        // Even an original unchanged certificate cannot mask an explicit invalidation.
-        for (const factsInvalidated of [true, "category"] as const) {
-          Object.assign(unchanged, { factsInvalidated });
-          sessionChanges.invalidate(unchanged);
-          await owner.wait();
-        }
-        expect(prepare.mock.calls.map((call) => call[1])).toEqual([true, true, true, true, true]);
-        rootUpdate({ storePath: database.path });
-        await owner.wait();
-        expect(prepare).toHaveBeenCalledTimes(6);
-      } finally {
-        stop();
-        await Promise.all([owner.close(), ownRecipient.close()]);
-      }
-    });
   });
 
   it("continues source pages and preserves new root wakeups", async () => {

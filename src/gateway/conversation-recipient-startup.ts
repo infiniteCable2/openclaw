@@ -164,10 +164,8 @@ export function startGatewayConversationRecipients(params: {
         accountId: "default",
         nativeChannelId: row.key,
         participant: { type: "profile" as const, id: custody.profileId },
-        assertCurrent() {
-          assertCurrent();
-          custody.assertCurrent();
-        },
+        // Custody already retains this owner's live enrollment check.
+        assertCurrent: custody.assertCurrent,
         retain() {
           audience.assertCurrent();
           const release = custody.retain();

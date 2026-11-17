@@ -223,6 +223,76 @@ it("keeps accepted facts and sharing revisions when database reads return equal 
   });
 });
 
+it("detaches enrollment without narrowing full row metadata or freezing caller aliases", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const candidate: SessionEntry = {
+      ...original,
+      verboseLevel: "full",
+      authProfileOverride: "synthetic-profile",
+      conversationRecipientEnrollment: {
+        version: 1,
+        lifetime: "reusable",
+        branch: {
+          agentId: target.agentId,
+          sessionKey: target.key,
+          sessionId: original.sessionId,
+          lifecycleRevision: original.lifecycleRevision!,
+          storePath: target.storeTarget.storePath,
+          root: { sessionKey: "agent:main:root", sessionId: "root", lifecycleRevision: "root-1" },
+        },
+        source: {
+          kind: "operator",
+          snapshot: {
+            profileId: "synthetic-person",
+            scopes: ["operator.read"],
+            assignedRole: null,
+            githubLogin: null,
+            grant: null,
+            aliasBindingIds: [],
+            controlUiAdmin: false,
+            localOperator: false,
+            sourceIngress: "principal",
+            ingress: { pluginId: "synthetic", audienceId: "private", recoveryId: "source" },
+          },
+        },
+      },
+    };
+    const row = records.create(target, candidate);
+    const captured = row.storedEntry!;
+    expect(captured).not.toBe(candidate);
+    expect(row.sharingEntry).toBe(captured);
+    expect(captured.verboseLevel).toBe("full");
+    expect(captured.authProfileOverride).toBe("synthetic-profile");
+    expect(Object.isFrozen(candidate)).toBe(false);
+    expect(
+      Object.isFrozen(candidate.conversationRecipientEnrollment!.source.snapshot.aliasBindingIds),
+    ).toBe(false);
+    candidate.conversationRecipientEnrollment!.source.snapshot.aliasBindingIds.push("caller-local");
+    expect(captured.conversationRecipientEnrollment!.source.snapshot.aliasBindingIds).toEqual([]);
+    expect(
+      Object.isFrozen(captured.conversationRecipientEnrollment!.source.snapshot.aliasBindingIds),
+    ).toBe(true);
+    const context = buildSessionListRowMetadataContext({ now: 1 });
+    const acquire = (current: records.Row, entry: SessionEntry) =>
+      records.acquireSessionRowEntry({
+        row: current,
+        rows: new Map([[records.identity(current), current]]),
+        storedEntry: entry,
+        cfg,
+        context,
+        remove: noop,
+        put: noop,
+        markRelated: noop,
+        archive,
+      })!;
+    const accepted = acquire(row, captured);
+    expect(accepted.storedEntry).toBe(captured);
+    expect(accepted.entry).toBe(captured);
+    expect(acquire(accepted, structuredClone(captured))).toBe(accepted);
+    expect(accepted.sharingEntry).toBe(captured);
+  });
+});
+
 it("shares unchanged lineage and copies only changed global aliases without mutating storage", () => {
   const stored = Object.freeze({
     ...original,

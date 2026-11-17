@@ -11,6 +11,10 @@ import {
 } from "../sessions/session-lifecycle-events.js";
 import { sessionChanges, type SessionRowChange } from "../sessions/session-row-changes.js";
 import { freezeJsonSnapshot } from "../shared/immutable-data.js";
+import {
+  alignSessionRowFactsEntry,
+  captureSessionRowEntry,
+} from "./session-row-projection-entry.js";
 import * as records from "./session-row-projection-record.js";
 import { observeSessionRowProjectionRetention } from "./session-row-projection-retention.js";
 import type { createSessionRowProjectionRevisions } from "./session-row-projection-revisions.js";
@@ -34,9 +38,10 @@ export function createSessionRowPublication(owner: {
 }) {
   function acquirePublishedEntry(
     row: records.Row,
-    entry: NonNullable<records.Row["storedEntry"]>,
+    candidate: NonNullable<records.Row["storedEntry"]>,
     databaseFacts?: records.RetainedSessionRowDatabaseFacts,
   ) {
+    const entry = captureSessionRowEntry(candidate);
     owner.markRelated(row, records.changesSessionRowDependents(row.storedEntry, entry));
     owner.runAsOwner(() => {
       if (entry.archivedAt !== undefined && !owner.registryFactsReady()) {
@@ -57,7 +62,7 @@ export function createSessionRowPublication(owner: {
       }
       const next = owner.acquireEntry(row, entry);
       if (next && databaseFacts) {
-        next.retainedDatabaseFacts = databaseFacts;
+        next.retainedDatabaseFacts = alignSessionRowFactsEntry(databaseFacts, next.storedEntry);
         next.preparedAcpMeta = databaseFacts.acpMeta;
         next.preparedRuntimeOwnership = databaseFacts.runtimeOwnership;
         next.runtimeOwnershipDependencies = databaseFacts.runtimeOwnershipDependencies;
@@ -132,7 +137,7 @@ export function createSessionRowPublication(owner: {
     }
     const previousFacts = row.retainedDatabaseFacts ?? row.pendingDatabaseFacts;
     const committed = prepared?.projection;
-    const entry = prepared?.entry;
+    const entry = prepared?.entry && captureSessionRowEntry(prepared.entry);
     const sameSession =
       entry &&
       previousFacts?.entry.sessionId === entry.sessionId &&
@@ -263,20 +268,20 @@ export function createSessionRowPublication(owner: {
     if (row.entry && change.scope !== "session-entry") {
       owner.placement.invalidate(row.entry.sessionId);
     }
-    if (prepared?.entry) {
+    if (entry) {
       acquirePublishedEntry(
         {
           ...row,
-          publishedSource: prepared.source,
+          publishedSource: source,
           unresolvedDatabaseFacts: undefined,
         },
-        prepared.entry,
+        entry,
         databaseFacts,
       );
       return;
     }
     if (prepared?.sharing) {
-      const sharing = prepared.sharing;
+      const sharing = captureSessionRowEntry(prepared.sharing);
       const next =
         row.entry?.sessionId !== sharing.sessionId ||
         row.entry.lifecycleRevision !== sharing.lifecycleRevision

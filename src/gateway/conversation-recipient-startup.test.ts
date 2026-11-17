@@ -8,11 +8,16 @@ import {
 } from "../config/runtime-snapshot.js";
 import type { ConversationRecipientEnrollment } from "../config/sessions/conversation-recipient-enrollment.js";
 import { projectSessionSharingEntry } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
+import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry-replace.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
+import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { startGatewayConversationRecipients } from "./conversation-recipient-startup.js";
 import { publishOperatorRoleConfigChange } from "./operator-role-policy.js";
 import { createContext } from "./server-plugin-in-process-dispatch.test-support.js";
+import { createSessionRowProjection } from "./session-row-projection.js";
 import { SessionMutationFactsUnavailableError } from "./session-sharing-incognito.js";
 
 const mocks = vi.hoisted(() => ({
@@ -211,6 +216,71 @@ it("reuses immutable enrollment comparisons while checking live privacy and inca
   } finally {
     await owner.close();
   }
+});
+
+it("reuses enrollment from the cold native row owner without freezing caller aliases", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const target = row("cold-recipient");
+    const database = openOpenClawAgentDatabase({ agentId: target.agentId, env: state.env });
+    const enrollment = target.entry.conversationRecipientEnrollment!;
+    enrollment.branch.storePath = database.path;
+    const scope = { agentId: target.agentId, storePath: database.path, sessionKey: target.key };
+    replaceSessionEntrySync(
+      { ...scope, sessionKey: enrollment.branch.root.sessionKey },
+      {
+        sessionId: enrollment.branch.root.sessionId,
+        lifecycleRevision: enrollment.branch.root.lifecycleRevision,
+        updatedAt: 1,
+        conversationTopology: { version: 1, role: "root" },
+      },
+    );
+    replaceSessionEntrySync(scope, target.entry);
+    await closeOpenClawAgentDatabasesAsync(state.stateDir);
+    const cfg = { agents: { entries: { main: { conversationMode: "branches" as const } } } };
+    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+    let owner: ReturnType<typeof startGatewayConversationRecipients>;
+    try {
+      mocks.projection.mockReturnValue(projection);
+      const context = createContext();
+      context.getRuntimeConfig = () => cfg;
+      context.getCommittedRuntimeConfig = () => cfg;
+      owner = startGatewayConversationRecipients({
+        context,
+        signal: new AbortController().signal,
+        log: { warn: vi.fn() },
+      });
+      expect(owner).toBeDefined();
+      await owner!.settled();
+      expect(mocks.open).toHaveBeenCalledOnce();
+      const audience = mocks.open.mock.calls[0]![0].audience as ConversationPrivateAudience;
+      const query = { agentId: target.agentId, storePath: database.path, key: target.key };
+      const current = projection.sharingTarget(query)!.entry.conversationRecipientEnrollment!;
+      expect(Object.isFrozen(enrollment.source.snapshot.aliasBindingIds)).toBe(false);
+      enrollment.source.snapshot.aliasBindingIds.push("caller-local");
+      expect(current.source.snapshot.aliasBindingIds).toEqual([]);
+      using sharingReads = vi.spyOn(projection, "sharingTarget");
+      vi.mocked(isDeepStrictEqual).mockClear();
+      for (let index = 0; index < 100; index++) {
+        audience.assertCurrent();
+      }
+      expect({
+        sharingReads: sharingReads.mock.calls.length,
+        comparisons: vi.mocked(isDeepStrictEqual).mock.calls.length,
+      }).toEqual({ sharingReads: 100, comparisons: 0 });
+      expect(Object.isFrozen(current.source.snapshot.aliasBindingIds)).toBe(true);
+      expect(projection.sharingTarget(query)!.entry.conversationRecipientEnrollment).toBe(current);
+      replaceSessionEntrySync(scope, { ...target.entry, visibility: "shared", updatedAt: 2 });
+      expect(() => audience.assertCurrent()).toThrow();
+      await owner!.settled();
+      expect(mocks.open).toHaveBeenCalledOnce();
+    } finally {
+      try {
+        await owner?.close();
+      } finally {
+        projection.dispose();
+      }
+    }
+  });
 });
 
 it.each([false, true])(

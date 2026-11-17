@@ -1,0 +1,2 @@
+# Cold native worker-to-Gateway enrollment reuse, caller isolation, and live privacy revocation.
+70

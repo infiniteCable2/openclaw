@@ -22,6 +22,7 @@ import type { SessionRepositoryWorkspaceRecord } from "../state/session-reposito
 import type { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
 import { compareSessionEntryPairs } from "./session-list-order.js";
 import { readSessionListSelectionFacts } from "./session-list-target.js";
+import { captureSessionRowEntry, create } from "./session-row-projection-entry.js";
 import { sameSelectionFacts, type SelectionRow } from "./session-row-selection-facts.js";
 import { selectStoredSessionLineage } from "./session-store-key.js";
 import { sessionTitleRequests } from "./session-title-state.js";
@@ -31,6 +32,7 @@ import type { GatewaySessionRow } from "./session-utils.types.js";
 import type { WorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 
 export type { SelectionRow } from "./session-row-selection-facts.js";
+export { create } from "./session-row-projection-entry.js";
 
 export type ProjectionOptions = {
   cfg: OpenClawConfig;
@@ -271,19 +273,6 @@ export function invalidateDatabaseFacts(row: Row, retained?: RetainedSessionRowD
   row.runtimeOwnershipDependencies = retained?.runtimeOwnershipDependencies;
 }
 
-export function create(target: RowTarget, entry?: SessionEntry): Row {
-  return {
-    ...target,
-    storedEntry: entry,
-    sharingEntry: entry,
-    selection: readSessionListSelectionFacts(target.key, entry),
-    parents: new Set(),
-    membership: new Set(),
-    generation: Symbol("row"),
-    databaseFactsRevision: 0,
-  };
-}
-
 /** Memory acquisition and prepared actor facts share one transient row constructor. */
 export function createIncognitoSessionRow(params: {
   cfg: Inputs["cfg"];
@@ -360,7 +349,7 @@ export function seedSessionRowEntries(params: {
       remove(id);
       const row = create(fields, entry);
       put(row);
-      acquisitions.push({ row, entry });
+      acquisitions.push({ row, entry: row.storedEntry! });
     }
   }
   for (const id of rows.keys()) {
@@ -684,11 +673,12 @@ export function acquireSessionRowEntry(params: {
   markRelated: (row: Row, includeChildren: boolean) => void;
   archive: { demote: (row: Row) => Row; forget: (id: string) => void };
 }) {
-  const { row, storedEntry, cfg, context, remove, put, archive } = params;
-  if (!storedEntry || storedEntry.incognito) {
+  const { row, storedEntry: candidate, cfg, context, remove, put, archive } = params;
+  if (!candidate || candidate.incognito) {
     remove(identity(row));
     return undefined;
   }
+  const storedEntry = captureSessionRowEntry(candidate);
   const lineage = readSessionRowLineage(row, storedEntry, cfg, context, params.referenced);
   const entryChanged = lineage.entry !== row.entry;
   const { entry, parents } = lineage;
