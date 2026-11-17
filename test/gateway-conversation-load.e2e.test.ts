@@ -425,6 +425,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
             }
           | undefined;
         let child: typeof gateway.child;
+        let inputReadyWaitMs = 0;
         const attach = () => {
           child = gateway.child;
           if (!child?.pid) {
@@ -491,6 +492,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
             throw new Error("Measured Gateway process absent");
           }
           meter.take();
+          inputReadyWaitMs = 0;
           const startCpu = await cpuTicks(pid);
           const startMainCpu = await cpuTicks(pid, true);
           const start = performance.now();
@@ -527,6 +529,7 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
                   phase,
                   outcome: completed ? "completed" : "failed",
                   elapsedMs: performance.now() - start,
+                  inputReadyWaitMs,
                   cpuTicks: (await cpuTicks(pid)) - startCpu,
                   mainCpuTicks: (await cpuTicks(pid, true)) - startMainCpu,
                   modelRequests: model.requests.length - requests,
@@ -581,9 +584,12 @@ it.skipIf(process.env.OPENCLAW_E2E_CONVERSATION_LOAD !== "1")(
             const ready = createDeferred();
             void ready.promise.catch(() => {});
             waiters.set(id, ready);
+            // Attribute native readiness waits without changing the measured phase.
+            const inputReadyStarted = performance.now();
             try {
               await withinTest(ready.promise, signal);
             } finally {
+              inputReadyWaitMs += performance.now() - inputReadyStarted;
               waiters.delete(id);
             }
           }
