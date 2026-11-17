@@ -34,14 +34,16 @@ switching away from Talk also detaches without cancelling accepted work. Split T
 does not offer realtime voice switching or camera input. Leaving the mode unset
 preserves realtime Talk.
 
-## Commentary text in native speech sessions
+## Generated greetings in native speech sessions
 
 When a native speech connection enables a generated greeting, it uses a separate
 prompt-only completion on the agent's configured model and account. Thinking is
 off; conversation history, workspace instructions, skills, and tools are excluded.
-Only the explicit greeting prompt, confirmed caller name, and speech-format
+Only the explicit greeting prompt, configured language, confirmed caller name, and speech-format
 instructions are supplied. The greeting enters conversation history only after
 audio is submitted for playback. Normal conversation turns keep their usual context.
+
+## Commentary text in native speech sessions
 
 Native STT/TTS sessions publish admitted spoken commentary as separate
 `output.text.delta` events before the final answer. The payload carries

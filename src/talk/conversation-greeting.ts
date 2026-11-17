@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { buildApiErrorObservationFields } from "../agents/embedded-agent-error-observation.js";
+import { resolveAgentIdentity } from "../agents/identity.js";
 import { runIsolatedCompletion } from "../agents/isolated-completion.js";
 import { resolveSimpleCompletionSelectionForAgent } from "../agents/simple-completion-selection.js";
 import { resolveAgentTimeoutMs } from "../agents/timeout.js";
@@ -111,6 +112,7 @@ export async function prepareConversationGreeting(params: {
     if (!selection) {
       throw new Error("No greeting model configured for the admitted agent");
     }
+    const language = resolveAgentIdentity(params.cfg, agentId)?.language;
     phase = "greeting-generation";
     // Input admission already owns caller/command authority. The isolated owner
     // checks that authority and the selected model at dispatch, without agent
@@ -129,6 +131,7 @@ export async function prepareConversationGreeting(params: {
       prompt: params.text,
       systemPrompt: [
         "Prepare one short spoken greeting only. It has not been played or delivered. Do not perform tasks or use tools.",
+        language ? `Default greeting language (data): ${JSON.stringify(language)}.` : undefined,
         params.speech.speechExpressionContext?.guidance,
         input.requesterProfile?.displayName
           ? `Confirmed caller name (data): ${JSON.stringify(input.requesterProfile.displayName)}.`

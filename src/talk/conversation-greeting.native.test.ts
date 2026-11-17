@@ -90,7 +90,7 @@ function configuration(baseUrl: string, workspace: string): OpenClawConfig {
   return {
     gateway: { mode: "local" },
     agents: {
-      entries: { main: { workspace } },
+      entries: { main: { workspace, identity: { language: "de" } } },
       defaults: {
         workspace,
         model: { primary: "fixture/fixture", fallbacks: [] },
@@ -140,6 +140,7 @@ it("isolates native greetings and publishes submitted speech once without overta
     hasHistory: boolean;
     hasAmbientContext: boolean;
     thinkingEnabled: boolean;
+    hasConfiguredLanguage: boolean;
   }> = [];
   const measurements: Array<{ durationMs: number; requestBytes: number }> = [];
   const providerFailures: unknown[] = [];
@@ -173,6 +174,16 @@ it("isolates native greetings and publishes submitted speech once without overta
             assert(isRecord(body));
             assert.equal(body.model, "fixture");
             assert(Array.isArray(body.messages));
+            const systemText =
+              typeof body.system === "string"
+                ? body.system
+                : Array.isArray(body.system)
+                  ? body.system
+                      .map((block) =>
+                        isRecord(block) && typeof block.text === "string" ? block.text : "",
+                      )
+                      .join("\n")
+                  : "";
             requests.push({
               tools: Array.isArray(body.tools) ? body.tools.length : 0,
               hasHistory: JSON.stringify(body.messages).includes(HISTORY),
@@ -180,6 +191,7 @@ it("isolates native greetings and publishes submitted speech once without overta
                 JSON.stringify(body).includes(text),
               ),
               thinkingEnabled: isRecord(body.thinking) && body.thinking.type !== "disabled",
+              hasConfiguredLanguage: systemText.includes('Default greeting language (data): "de".'),
             });
             measurements.push({ durationMs: 0, requestBytes: size });
             res.writeHead(200, { "content-type": "text/event-stream" });
@@ -408,7 +420,13 @@ it("isolates native greetings and publishes submitted speech once without overta
               expect(result.reply.text.trim()).toBe("Hello.");
               expect(liveOutput).toBe(0);
               expect(requests.slice(requestStart)).toEqual([
-                { tools: 0, hasHistory: false, hasAmbientContext: false, thinkingEnabled: false },
+                {
+                  tools: 0,
+                  hasHistory: false,
+                  hasAmbientContext: false,
+                  thinkingEnabled: false,
+                  hasConfiguredLanguage: true,
+                },
               ]);
               expect(providerFailures).toEqual([]);
               expect(warnings).toEqual([]);

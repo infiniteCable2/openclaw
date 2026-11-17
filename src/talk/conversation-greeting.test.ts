@@ -89,6 +89,7 @@ async function setup(existing = true) {
     context: projected,
     cfg: {
       agents: {
+        entries: { "example-agent": { identity: { language: "de" } } },
         defaults: {
           model: { primary: "example-provider/example-model@selected-profile" },
           utilityModel: "other-provider/other-model",
@@ -136,6 +137,7 @@ describe("native isolated greeting preparation", () => {
       });
       expect(run.prompt).toBe(fixture.params.text);
       expect(run.systemPrompt).toContain('Confirmed caller name (data): "Alex".');
+      expect(run.systemPrompt).toContain('Default greeting language (data): "de".');
       expect(run.systemPrompt).not.toContain(fixture.params.speech.guidance);
       expect(run.sessionKey).not.toBe(fixture.target.canonicalKey);
       expect(fixture.onSpeakableText).not.toHaveBeenCalled();
