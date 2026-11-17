@@ -233,6 +233,7 @@ it("keeps private branch identity when first-send native consent precreates the 
     const profile = ensureProfileForEmail("private-native-creator@example.test");
     using _ = { [Symbol.dispose]: (await prepareUserProfileCatalog()).release };
     const client = nativeClient(undefined, profile.id);
+    client.internal = { ...client.internal, authenticatedOperator: true };
     const native = await registerNative(state, config, "owner-agent.mjs");
     const respond = vi.fn<RespondFn>();
     const context = createDirectChatContext({ getRuntimeConfig: () => config });
