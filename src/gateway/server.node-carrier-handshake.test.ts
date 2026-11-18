@@ -3,6 +3,10 @@ import { expect, test, vi } from "vitest";
 import { buildDeviceAuthPayloadV3 } from "../../packages/gateway-client/src/device-auth.js";
 import { PROTOCOL_VERSION, type ConnectParams } from "../../packages/gateway-protocol/src/index.js";
 import { writeConfigFile } from "../config/io.js";
+import {
+  claimAgentRunDelegatedAuthority,
+  releaseAgentRunDelegatedAuthority,
+} from "../infra/agent-run-registry.js";
 import { issueDeviceBootstrapToken } from "../infra/device-bootstrap.js";
 import {
   loadOrCreateDeviceIdentity,
@@ -11,12 +15,26 @@ import {
 } from "../infra/device-identity.js";
 import { createPluginRuntime } from "../plugins/runtime/index.js";
 import { NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE } from "../shared/device-bootstrap-profile.js";
+import {
+  claimConversationInputExecution,
+  consumeConversationInputAdmission,
+  createConversationInputAdmission,
+} from "../talk/conversation-input-admission.js";
+import {
+  bindMatrixConversationInputOrigin,
+  retainMatrixConversationRunOrigin,
+} from "../talk/matrix-conversation-run-origin.js";
+import type { AgentRuntimeIdentity } from "./agent-runtime-identity-token.js";
+import { nodeInvokeHandlers } from "./server-methods/nodes.invoke.js";
 import { useAuthIdentityFixture } from "./server.auth.identity-fixture.test-support.js";
 import {
   withMatrixNodeCarrierRuntime,
   type AttachMatrixNodeCarrier,
 } from "./server/matrix-node-carrier-runtime.js";
-import { attachMatrixNodeCarrier } from "./server/matrix-node-carrier.js";
+import {
+  attachMatrixNodeCarrier,
+  type MatrixNodeCarrierOwner,
+} from "./server/matrix-node-carrier.js";
 import * as wsIngress from "./server/ws-connection.js";
 import { installGatewayTestHooks, withGatewayServer } from "./test-helpers.js";
 
@@ -51,24 +69,39 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
     });
   const identity = loadOrCreateDeviceIdentity({ path: makeIdentityPath("matrix-carrier-node") });
   const active = new Set<ReturnType<typeof attachMatrixNodeCarrier>>();
+  const releaseRunOrigins: (() => void)[] = [];
   let checkpoint = "setup";
-  function open(afterClose?: () => void) {
+  const roomId = "!fixture:example.invalid";
+  const sessionKey = "agent:main:matrix:group:fixture";
+  let activeSessionKey = sessionKey;
+  function open(overrides: Partial<MatrixNodeCarrierOwner> = {}) {
     if (!options) throw new Error("native gateway options unavailable");
     const lifetime = new AbortController();
     const events = new EventEmitter();
     const sent: NativeFrame[] = [];
-    const invokeDeadlines = new Map<string, number>();
+    const invocations = new Map<
+      string,
+      NonNullable<Parameters<MatrixNodeCarrierOwner["sendFrame"]>[1]>
+    >();
     const onClose = vi.fn(() => {
       events.emit("retired");
-      afterClose?.();
+      overrides.onClose?.();
     });
     const link = attachMatrixNodeCarrier(options, {
       peerKey: "fixture-peer",
+      accountId: "fixture",
+      agentId: "main",
+      roomId,
+      expectedNodeId: identity.deviceId,
+      assertInvokeSession(key) {
+        if (key !== activeSessionKey) throw Error("fixture RTC session retired");
+      },
+      ...overrides,
       signal: lifetime.signal,
       assertCurrent: () => lifetime.signal.throwIfAborted(),
       sendFrame: (json, invoke) => {
         const frame: NativeFrame = JSON.parse(json);
-        if (invoke && frame.payload?.id) invokeDeadlines.set(frame.payload.id, invoke.deadlineAtMs);
+        if (invoke && frame.payload?.id) invocations.set(frame.payload.id, invoke);
         sent.push(frame);
         events.emit("frame", frame);
       },
@@ -139,7 +172,7 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
       lifetime,
       onClose,
       sent,
-      invokeDeadlines,
+      invocations,
       link,
       retired: () => new Promise<void>((resolve) => events.once("retired", resolve)),
     };
@@ -150,8 +183,10 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
     await writeConfigFile({ gateway: { nodes: { commands: { allow: maps } } } });
     await withGatewayServer(async () => {
       checkpoint = "owner-close";
-      const brokenOwner = open(() => {
-        throw new Error("synthetic owner cleanup failure");
+      const brokenOwner = open({
+        onClose() {
+          throw new Error("synthetic owner cleanup failure");
+        },
       });
       expect(() => brokenOwner.link.close()).not.toThrow();
       expect(brokenOwner.onClose).toHaveBeenCalledOnce();
@@ -174,16 +209,13 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
       ).toBe(false);
 
       checkpoint = "bootstrap";
-      const first = open();
+      const first = open({ expectedNodeId: undefined, assertInvokeSession: undefined });
       const hello = await first.connect({ bootstrapToken: bootstrap.token });
       expect(hello.ok).toBe(true);
       expect(hello.payload).toMatchObject({
         type: "hello-ok",
         auth: { method: "bootstrap-token", role: "node", scopes: [] },
-        features: {
-          methods: ["node.invoke.result", "node.pluginTools.update"],
-          events: ["node.invoke.request"],
-        },
+        features: { methods: [], events: [] },
         snapshot: { presence: [], health: {} },
       });
       expect(Object.keys(hello.payload ?? {})).toEqual([
@@ -197,17 +229,51 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
       ]);
       const helloBytes = Buffer.byteLength(JSON.stringify(hello));
       expect(helloBytes).toBeLessThan(12 * 1024);
-      process.stdout.write(`carrier-hello-bytes:${helloBytes}\n`);
       const deviceToken = hello.payload?.auth?.deviceToken;
       if (!deviceToken) throw new Error("native device token unavailable");
-      first.link.close();
+      const context = options?.buildRequestContext();
+      if (!context) throw new Error("native Gateway context unavailable");
+      const registry = context.nodeRegistry;
+      expect(
+        (
+          await registry.invoke({
+            nodeId: identity.deviceId,
+            command: "maps.search",
+            isDispatchAuthorized: () => true,
+          })
+        ).ok,
+      ).toBe(false);
+      const bootstrapClosed = first.retired();
+      first.link.receive(
+        JSON.stringify({
+          type: "req",
+          id: "unpinned-tools",
+          method: "node.pluginTools.update",
+          params: { tools: [] },
+        }),
+      );
+      await bootstrapClosed;
+      expect(first.sent.some((frame) => frame.id === "unpinned-tools" && frame.ok)).toBe(false);
 
       checkpoint = "reconnect";
+      expect((await open({ expectedNodeId: undefined }).connect({ deviceToken })).ok).toBe(false);
+      expect((await open({ expectedNodeId: "0".repeat(64) }).connect({ deviceToken })).ok).toBe(
+        false,
+      );
       expect((await open().connect({ deviceToken: "invalid-device-credential" })).ok).toBe(false);
       const current = open();
       const reconnected = await current.connect({ deviceToken });
       expect(reconnected.ok).toBe(true);
       expect(reconnected.payload?.auth?.method).toBe("device-token");
+      expect(reconnected.payload).toMatchObject({
+        features: {
+          methods: ["node.invoke.result", "node.pluginTools.update"],
+          events: ["node.invoke.request"],
+        },
+      });
+      const connectedHelloBytes = Buffer.byteLength(JSON.stringify(reconnected));
+      expect(connectedHelloBytes).toBeLessThan(12 * 1024);
+      process.stdout.write(`carrier-hello-bytes:${connectedHelloBytes}\n`);
       const tools = maps.map((command) => ({
         pluginId: "fixture-maps",
         name: command.replace(".", "_"),
@@ -227,42 +293,162 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
           })
         ).ok,
       ).toBe(false);
-      const registry = options?.buildRequestContext().nodeRegistry;
-      if (!registry) throw new Error("native node registry unavailable");
-      const invoke = (deadlineAtMs = performance.now() + 3_000) =>
-        registry.invoke({
-          nodeId: identity.deviceId,
-          command: "maps.search",
-          params: { query: "fixture" },
-          timeoutMs: 30_000,
-          deadlineAtMs,
+      checkpoint = "invoke-authority";
+      const operationalRunInstance = {
+        runId: "fixture-matrix-run",
+        instanceId: "fixture-matrix-instance",
+      };
+      let sourceCurrent = true;
+      const authority = claimAgentRunDelegatedAuthority(operationalRunInstance, () => {
+        if (!sourceCurrent) throw new Error("fixture run retired");
+      });
+      const runtimeIdentity: AgentRuntimeIdentity = {
+        kind: "agentRuntime",
+        agentId: "main",
+        sessionKey,
+        operationalRunInstance,
+        delegatedAuthority: { kind: "local", ...authority },
+        turnSourceChannel: "matrix",
+        turnSourceTo: `room:${roomId}`,
+        turnSourceAccountId: "fixture",
+      };
+      let requestCount = 0;
+      const invoke = (
+        caller: AgentRuntimeIdentity | null = runtimeIdentity,
+        overrides: Record<string, unknown> = {},
+      ) => {
+        const respond = vi.fn();
+        const requestId = `fixture-matrix-invoke-${++requestCount}`;
+        return Promise.resolve(
+          nodeInvokeHandlers["node.invoke"]({
+            context,
+            respond,
+            isWebchatConnect: () => false,
+            req: { type: "req", id: requestId, method: "node.invoke" },
+            client: {
+              connect: {
+                minProtocol: PROTOCOL_VERSION,
+                maxProtocol: PROTOCOL_VERSION,
+                client: {
+                  id: "gateway-client",
+                  version: "fixture",
+                  platform: "node",
+                  mode: "backend",
+                },
+                role: "operator",
+                scopes: ["operator.write"],
+              },
+              ...(caller && { internal: { agentRuntimeIdentity: caller } }),
+            },
+            params: {
+              nodeId: identity.deviceId,
+              command: "maps.search",
+              params: { query: "fixture" },
+              timeoutMs: 3_000,
+              idempotencyKey: requestId,
+              ...overrides,
+            },
+          }),
+        ).then(() => respond.mock.calls[0]);
+      };
+      const framesBeforeRejectedInvocations = current.sent.length;
+      // A live run with the same persisted Matrix chat routing still has no native audio ingress.
+      expect((await invoke())?.[0]).toBe(false);
+      const sourceAudio = new AbortController();
+      const retainOrigin = (instance: AgentRuntimeIdentity["operationalRunInstance"]) => {
+        const scope = {
+          agentId: "main",
+          conversationId: "fixture-call",
+          inputId: instance.runId,
+          purpose: "user",
+        } as const;
+        const proof = createConversationInputAdmission({
+          scope,
+          source: {
+            channelId: "matrix",
+            accountId: "fixture",
+            nativeChannelId: roomId,
+            sessionKey,
+          },
+          assertCurrent() {},
+          assertInputCurrent() {},
         });
-      checkpoint = "invoke";
+        const input = consumeConversationInputAdmission(proof, scope);
+        claimConversationInputExecution(input);
+        const presentation = {};
+        bindMatrixConversationInputOrigin(presentation, input);
+        const release = retainMatrixConversationRunOrigin(presentation, instance, {
+          runId: instance.runId,
+          abortSignal: sourceAudio.signal,
+          assertCurrent() {},
+        });
+        if (!release) throw Error("native RTC fixture origin unavailable");
+        releaseRunOrigins.push(release);
+      };
+      retainOrigin(operationalRunInstance);
+      for (const caller of [
+        null,
+        { ...runtimeIdentity, agentId: "other" },
+        { ...runtimeIdentity, sessionKey: "agent:main:matrix:group:other-thread" },
+        {
+          ...runtimeIdentity,
+          operationalRunInstance: { ...operationalRunInstance, instanceId: "unbound-instance" },
+        },
+      ]) {
+        expect(
+          (
+            await invoke(caller, {
+              sessionKey,
+              turnSourceTo: `room:${roomId}`,
+              turnSourceAccountId: "fixture",
+            })
+          )?.[0],
+        ).toBe(false);
+      }
+      expect(
+        (
+          await invoke(runtimeIdentity, { sessionKey: "agent:main:matrix:group:other-thread" })
+        )?.[0],
+      ).toBe(false);
+      expect(
+        (
+          await registry.invoke({
+            nodeId: identity.deviceId,
+            command: "maps.search",
+            isDispatchAuthorized: () => true,
+          })
+        ).ok,
+      ).toBe(false);
       expect(
         registry.sendEvent(identity.deviceId, "node.invoke.request", { command: "maps.search" }),
       ).toBe(false);
+      expect(current.sent).toHaveLength(framesBeforeRejectedInvocations);
       const transport = registry.get(identity.deviceId)?.client.socket;
       if (!transport?.sendNodeInvoke) throw new Error("native Matrix transport unavailable");
-      const sentBeforeExpiredInvoke = current.sent.length;
       const expiredFrame = Buffer.from(
         JSON.stringify({
           type: "event",
           event: "node.invoke.request",
-          payload: { command: "maps.search" },
+          payload: { nodeId: identity.deviceId, command: "maps.search" },
         }),
       );
-      expect(() => transport.sendNodeInvoke?.(expiredFrame, performance.now() - 1)).toThrow(
-        "Matrix node invoke deadline elapsed",
-      );
-      expect(current.sent).toHaveLength(sentBeforeExpiredInvoke);
       const dispatched = current.next((frame) => frame.event === "node.invoke.request");
-      const nativeDeadline = performance.now() + 3_000;
-      const result = invoke(nativeDeadline);
+      const captureInvoke = vi.spyOn(registry, "invoke");
+      const result = invoke();
       const frame = await Promise.race([dispatched, result.then(() => undefined)]);
       if (!frame?.payload?.id) throw new Error("native Maps invoke not delivered");
       expect(frame.payload.command).toBe("maps.search");
-      expect(current.invokeDeadlines.get(frame.payload.id)).toBe(nativeDeadline);
+      const pendingDispatch = current.invocations.get(frame.payload.id);
+      const nativeDeadline = captureInvoke.mock.lastCall?.[0].deadlineAtMs;
       expect(nativeDeadline).toBeGreaterThan(performance.now());
+      expect(pendingDispatch?.deadlineAtMs).toBe(nativeDeadline);
+      expect(() => pendingDispatch?.assertCurrent()).not.toThrow();
+      const sentBeforeExpiredInvoke = current.sent.length;
+      const isDispatchAuthorized = captureInvoke.mock.lastCall?.[0].isDispatchAuthorized;
+      expect(() =>
+        transport.sendNodeInvoke?.(expiredFrame, performance.now() - 1, isDispatchAuthorized),
+      ).toThrow("Matrix node invoke deadline elapsed");
+      expect(current.sent).toHaveLength(sentBeforeExpiredInvoke);
       expect(frame.payload).not.toHaveProperty("expires_at_ms");
       expect(frame.payload).not.toHaveProperty("deadlineAtMs");
       expect(
@@ -275,25 +461,70 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
           })
         ).ok,
       ).toBe(true);
-      expect(await result).toMatchObject({ ok: true, payload: { delivered: true } });
+      expect((await result)?.slice(0, 2)).toMatchObject([
+        true,
+        { ok: true, payload: { delivered: true } },
+      ]);
 
-      checkpoint = "revoke";
-      const afterDispatch = current.next((frame) => frame.event === "node.invoke.request");
-      const pending = invoke();
-      const secondFrame = await Promise.race([afterDispatch, pending.then(() => undefined)]);
-      if (!secondFrame?.payload?.id) throw new Error("native pending Maps invoke not delivered");
-      current.lifetime.abort();
-      expect(current.onClose).toHaveBeenCalledOnce();
-      current.link.receive(
-        JSON.stringify({
-          type: "req",
-          id: "late",
-          method: "node.invoke.result",
-          params: { id: secondFrame.payload.id, nodeId: identity.deviceId, ok: true },
-        }),
+      checkpoint = "revoke-session";
+      const dispatchedBeforeSessionRetirement = current.next(
+        (frame) => frame.event === "node.invoke.request",
       );
-      expect((await pending).ok).toBe(false);
-      expect(current.sent.some((frame) => frame.id === "late")).toBe(false);
+      const retiredSessionResult = invoke();
+      const retiredSessionFrame = await Promise.race([
+        dispatchedBeforeSessionRetirement,
+        retiredSessionResult.then(() => undefined),
+      ]);
+      if (!retiredSessionFrame?.payload?.id) throw Error("fixture retirement invoke missing");
+      activeSessionKey = "agent:main:matrix:group:another-rtc";
+      expect(() => pendingDispatch?.assertCurrent()).toThrow("Matrix node invoke authority closed");
+      expect((await invoke())?.[0]).toBe(false);
+      await current.request("node.invoke.result", {
+        id: retiredSessionFrame.payload.id,
+        nodeId: identity.deviceId,
+        ok: true,
+        payload: { stale: true },
+      });
+      expect((await retiredSessionResult)?.[0]).toBe(false);
+      activeSessionKey = sessionKey;
+
+      checkpoint = "revoke-run";
+      sourceCurrent = false;
+      expect(() => pendingDispatch?.assertCurrent()).toThrow("Matrix node invoke authority closed");
+      expect((await invoke())?.[0]).toBe(false);
+      releaseAgentRunDelegatedAuthority(authority);
+      const successorRun = {
+        runId: "fixture-successor-run",
+        instanceId: "fixture-successor-instance",
+      };
+      const successorAuthority = claimAgentRunDelegatedAuthority(successorRun);
+      retainOrigin(successorRun);
+      try {
+        checkpoint = "revoke";
+        const afterDispatch = current.next((frame) => frame.event === "node.invoke.request");
+        const pending = invoke({
+          ...runtimeIdentity,
+          operationalRunInstance: successorRun,
+          delegatedAuthority: { kind: "local", ...successorAuthority },
+        });
+        const secondFrame = await Promise.race([afterDispatch, pending.then(() => undefined)]);
+        if (!secondFrame?.payload?.id) throw new Error("native pending Maps invoke not delivered");
+        current.lifetime.abort();
+        expect(current.onClose).toHaveBeenCalledOnce();
+        current.link.receive(
+          JSON.stringify({
+            type: "req",
+            id: "late",
+            method: "node.invoke.result",
+            params: { id: secondFrame.payload.id, nodeId: identity.deviceId, ok: true },
+          }),
+        );
+        expect((await pending)?.[0]).toBe(false);
+        expect(current.sent.some((frame) => frame.id === "late")).toBe(false);
+      } finally {
+        releaseAgentRunDelegatedAuthority(successorAuthority);
+        captureInvoke.mockRestore();
+      }
 
       checkpoint = "bad-catalog";
       const bad = open();
@@ -314,6 +545,7 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
   } finally {
     process.stdout.write(`carrier-checkpoint:${checkpoint}\n`);
     for (const link of active) link.close();
+    for (const release of releaseRunOrigins) release();
     capture.mockRestore();
   }
 });
@@ -334,17 +566,24 @@ test("keeps the Matrix attachment capability private to its current account runt
   expect(runtime.runtimeContexts.get(key)).toBeUndefined();
   expect(scoped.runtimeContexts.get({ ...key, accountId: "other" })).toBeUndefined();
   expect(scoped.runtimeContexts.get({ ...key, channelId: "telegram" })).toBeUndefined();
-  const capability = scoped.runtimeContexts.get<{ attachGateway: AttachMatrixNodeCarrier }>(key);
+  const capability = scoped.runtimeContexts.get<{
+    attachGateway: (owner: MatrixNodeCarrierOwner) => unknown;
+  }>(key);
   if (!capability) throw Error("scoped context unavailable");
   const owner = {
     peerKey: "synthetic",
+    agentId: "main",
+    roomId: "!fixture:example.invalid",
     signal: peer.signal,
     assertCurrent() {},
     sendFrame() {},
     onClose() {},
   };
   capability.attachGateway(owner);
-  expect(attach.mock.calls[0]?.[0].peerKey).toBe("fixture:synthetic");
+  expect(attach.mock.calls[0]?.[0]).toMatchObject({
+    peerKey: "fixture:synthetic",
+    accountId: "fixture",
+  });
   account.abort();
   expect(attach.mock.calls[0]?.[0].signal.aborted).toBe(true);
   expect(scoped.runtimeContexts.get(key)).toBeUndefined();

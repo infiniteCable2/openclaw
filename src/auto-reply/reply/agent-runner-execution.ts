@@ -643,6 +643,7 @@ async function executeAgentTurnOutcome(
                   execution.scheduledMessageActionTurnCapability,
                   scheduledInference,
                 ),
+              execution.preparedRunAdmission.operationalRunInstance,
             );
           const result = await (conversationKnowledge
             ? conversationKnowledge.withPublication(runWithSpeech)

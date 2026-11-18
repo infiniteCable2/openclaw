@@ -49,7 +49,12 @@ function validateAdmission(value: MatrixRtcAdmission, index: number): MatrixRtcA
   if (roomId.includes("*") || userId.includes("*") || agentId.includes("*")) {
     throw new Error(`MatrixRTC admissions[${index}] cannot contain wildcards`);
   }
-  return { roomId, userId, agentId };
+  return {
+    roomId,
+    userId,
+    agentId,
+    ...(value.nodeDevices ? { nodeDevices: value.nodeDevices } : {}),
+  };
 }
 
 export function resolveMatrixRtcConfig(

@@ -244,6 +244,28 @@ const matrixRtcSchema = z
             roomId: z.string().min(1),
             userId: z.string().min(1),
             agentId: z.string().min(1),
+            nodeDevices: z
+              .array(
+                z
+                  .object({
+                    deviceId: z.string().regex(/^[^\s*\p{Cc}]{1,255}$/u),
+                    nodeId: z
+                      .string()
+                      .regex(/^[0-9a-f]{64}$/u)
+                      .optional(),
+                  })
+                  .strict(),
+              )
+              .min(1)
+              .max(16)
+              .refine(
+                (devices) =>
+                  new Set(devices.map(({ deviceId }) => deviceId)).size === devices.length,
+                {
+                  message: "Matrix Node device IDs must be unique within an admission",
+                },
+              )
+              .optional(),
           })
           .strict(),
       )

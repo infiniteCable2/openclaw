@@ -47,6 +47,7 @@ import type { GatewayRequestEntry } from "../../server-request-entry.js";
 import { SharedGatewaySessionGenerationState } from "../../server-shared-auth-generation.js";
 import { classifyGatewayStaleInstall } from "../../stale-install.js";
 import { formatForLog, logWs, summarizeSessionListForWsLog } from "../../ws-log.js";
+import { isMatrixNodeCarrierRequest } from "../matrix-node-carrier-policy.js";
 import {
   hasCurrentGatewayPolicyClientSource,
   invalidateGatewayPolicyClient,
@@ -124,6 +125,14 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
     admission?: "continuation",
     sendResponse: (frame: ResponseFrame) => ReturnType<typeof send> = send,
   ): Promise<void> => {
+    const carrier = params.handler.ingressAttribution;
+    if (
+      carrier.kind === "matrix-node-carrier" &&
+      (!carrier.binding.expectedNodeId || !isMatrixNodeCarrierRequest(parsed))
+    ) {
+      close(1008, "Matrix node carrier request not allowed");
+      return;
+    }
     if (!validateRequestFrame(parsed)) {
       send({
         type: "res",

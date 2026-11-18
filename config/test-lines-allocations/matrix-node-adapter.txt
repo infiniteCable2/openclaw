@@ -1,0 +1,2 @@
+# Matrix Node adapter tests for verified device binding, deadline and live Assistant admission.
+245

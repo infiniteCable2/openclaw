@@ -57,10 +57,6 @@ import {
 import { formatForLog, logWs } from "../../ws-log.js";
 import { truncateCloseReason } from "../close-reason.js";
 import type { GatewayConnectionFrame } from "../connection-transport.js";
-import {
-  isMatrixNodeCarrierConnect,
-  isMatrixNodeCarrierRequest,
-} from "../matrix-node-carrier-policy.js";
 import { resolveGatewayWsBrowserOrigin } from "../ws-origin-policy.js";
 import { createGatewayAuthenticatedRequestDispatcher } from "./authenticated-request-dispatch.js";
 import { claimsWorkerConnectionIdentity, isStartupNodeConnect } from "./connect-admission.js";
@@ -366,24 +362,6 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
           recordHandshakeResponse(response.ok, bytes, performance.now() - sendStartedAt);
         };
         const connectParams = frame.params as ConnectParams;
-        if (
-          ingressAttribution.kind === "matrix-node-carrier" &&
-          !isMatrixNodeCarrierConnect(connectParams)
-        ) {
-          setHandshakeState("failed");
-          setCloseCause("matrix-node-carrier-connect-invalid");
-          await writeHandshakeResponse({
-            type: "res",
-            id: frame.id,
-            ok: false,
-            error: errorShape(
-              ErrorCodes.FORBIDDEN,
-              "Matrix node carrier requires explicit Node device authentication",
-            ),
-          }).catch(() => {});
-          close(1008, "invalid Matrix node carrier connect");
-          return;
-        }
         const clientLabel = connectParams.client.displayName ?? connectParams.client.id;
         const clientMeta = {
           client: connectParams.client.id,
@@ -517,13 +495,6 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
             }),
           diagnostics,
         );
-        return;
-      }
-      if (
-        ingressAttribution.kind === "matrix-node-carrier" &&
-        !isMatrixNodeCarrierRequest(parsed)
-      ) {
-        close(1008, "Matrix node carrier request not allowed");
         return;
       }
       await authenticatedRequestDispatcher.dispatch(

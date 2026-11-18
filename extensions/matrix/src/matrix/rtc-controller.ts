@@ -30,6 +30,7 @@ import {
 } from "./rtc-assistant.js";
 import { requestMatrixRtcCredentials, type MatrixRtcMembershipIdentity } from "./rtc-auth.js";
 import {
+  bindMatrixRtcNodeInvocation,
   stopCall,
   waitForCallCleanup,
   type ActiveCall,
@@ -101,7 +102,7 @@ export function registerMatrixRtcController(params: {
     typeof createMatrixRtcConversationBindings
   >[0]["source"]["preparePrivateAudience"];
   abortSignal?: AbortSignal;
-}): { startExisting(): void; stop(options?: MatrixRtcStopOptions): Promise<void> } {
+}) {
   const calls = new Map<string, ActiveCall>();
   const failedRemoteMemberships = new Map<string, string>();
   const incomingKeys = new Map<string, MatrixRtcIncomingMediaKey[]>();
@@ -308,7 +309,7 @@ export function registerMatrixRtcController(params: {
         const meetingSessionId = randomUUID();
         const agentProfile = resolveMatrixRtcAgentProfile(params.config, admission.agentId);
         const speechProfile = resolveTalkSpeechAgentProfile(cfg, admission.agentId);
-        const { bindings } = createMatrixRtcConversationBindings({
+        const { bindings, nodeInvokeScope } = createMatrixRtcConversationBindings({
           source: {
             runtime: params.runtime,
             runtimeEnv: params.runtimeEnv,
@@ -335,6 +336,7 @@ export function registerMatrixRtcController(params: {
           assistantVoice: conversationRequest?.purpose === "assistant-voice",
           logger: params.logger,
         });
+        call.nodeInvokeScope = nodeInvokeScope;
 
         call.connectionPreparation = bindings.connectionPreparation;
         const ttsContext = {
@@ -740,6 +742,7 @@ export function registerMatrixRtcController(params: {
   };
 
   return {
+    assertNodeInvocation: bindMatrixRtcNodeInvocation(calls),
     startExisting() {
       for (const admission of params.config.admissions) {
         // Pin and observe the canonical room session. matrix-js-sdk can update a

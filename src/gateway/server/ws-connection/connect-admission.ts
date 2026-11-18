@@ -47,6 +47,7 @@ import { parseGatewayRole } from "../../role-policy.js";
 import { authenticatedProfileUnavailableError } from "../../server-methods/gateway-client-identity.js";
 import { formatForLog, formatPeerTextForLog } from "../../ws-log.js";
 import { truncateCloseReason } from "../close-reason.js";
+import { isMatrixNodeCarrierConnect } from "../matrix-node-carrier-policy.js";
 import type {
   AuthenticatedGatewayConnect,
   GatewayConnectPhaseContext,
@@ -208,6 +209,26 @@ export function resolveGatewayConnectPolicyFailure(
 }
 
 export async function admitGatewayConnect(context: GatewayConnectPhaseContext) {
+  const carrier = context.handler.ingressAttribution;
+  if (
+    carrier.kind === "matrix-node-carrier" &&
+    !isMatrixNodeCarrierConnect(context.connectParams, carrier.binding.expectedNodeId)
+  ) {
+    context.markHandshakeFailure("matrix-node-carrier-connect-invalid");
+    await context
+      .sendFrame({
+        type: "res",
+        id: context.frame.id,
+        ok: false,
+        error: errorShape(
+          ErrorCodes.FORBIDDEN,
+          "Matrix node carrier requires explicit Node device authentication",
+        ),
+      })
+      .catch(() => {});
+    context.handler.close(1008, "invalid Matrix node carrier connect");
+    return undefined;
+  }
   const {
     connId,
     remoteAddr,

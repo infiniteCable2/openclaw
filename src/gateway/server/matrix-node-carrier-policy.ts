@@ -16,7 +16,10 @@ export function isMatrixNodeCarrierCommand(value: unknown): boolean {
   return MAPS_COMMANDS.has(value);
 }
 
-export function isMatrixNodeCarrierConnect(params: ConnectParams): boolean {
+export function isMatrixNodeCarrierConnect(
+  params: ConnectParams,
+  expectedNodeId: string | undefined,
+): boolean {
   const auth = params.auth;
   return (
     params.role === "node" &&
@@ -24,6 +27,7 @@ export function isMatrixNodeCarrierConnect(params: ConnectParams): boolean {
     params.client.id === "node-host" &&
     params.scopes?.length === 0 &&
     Boolean(params.device) &&
+    (expectedNodeId === undefined || params.device?.id === expectedNodeId) &&
     (!params.caps || params.caps.length === 0) &&
     (!params.permissions || Object.keys(params.permissions).length === 0) &&
     (params.commands ?? []).length <= MAPS_COMMANDS.size &&
@@ -31,7 +35,7 @@ export function isMatrixNodeCarrierConnect(params: ConnectParams): boolean {
     Boolean(
       auth &&
       Object.keys(auth).length === 1 &&
-      (auth.bootstrapToken?.trim() || auth.deviceToken?.trim()),
+      (auth.bootstrapToken?.trim() || (expectedNodeId !== undefined && auth.deviceToken?.trim())),
     )
   );
 }

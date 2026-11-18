@@ -1,6 +1,8 @@
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
+import type { OperationalRunInstanceRef } from "../../agents/operational-run-instance.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import { logVerbose } from "../../globals.js";
+import { retainMatrixConversationRunOrigin } from "../../talk/matrix-conversation-run-origin.js";
 import {
   getReplyPayloadMetadata,
   setReplyPayloadMetadata,
@@ -115,6 +117,7 @@ export async function withReplySpeechPresentation(
   source: ReplySpeechPresentationSource | undefined,
   binding: ReplySpeechRunBinding,
   run: (speech: ReplySpeechPresentationRun | undefined) => Promise<AgentTurnInternalResult>,
+  operationalRunInstance?: OperationalRunInstanceRef,
 ): Promise<AgentTurnInternalResult> {
   if (!source) {
     return run(undefined);
@@ -136,9 +139,13 @@ export async function withReplySpeechPresentation(
       return false;
     }
   };
+  let releaseRunOrigin: (() => void) | undefined;
   try {
     binding.assertCurrent();
     binding.abortSignal.throwIfAborted();
+    if (operationalRunInstance) {
+      releaseRunOrigin = retainMatrixConversationRunOrigin(source, operationalRunInstance, binding);
+    }
     const result = await run(speech);
     const outputSettled = await settleOutput(() =>
       result.kind === "settled" && result.status === "ok" && !binding.abortSignal.aborted
@@ -153,6 +160,7 @@ export async function withReplySpeechPresentation(
     await settleOutput(() => speech.abort());
     throw error;
   } finally {
+    releaseRunOrigin?.();
     await settleOutput(() => speech.close());
   }
 }

@@ -8,6 +8,10 @@ import type { SerializedGatewayFrame } from "../serialized-json.js";
 import type { GatewayConnectionTransport } from "./connection-transport.js";
 import { attachGatewayConnection, type GatewayConnectionOptions } from "./connection.js";
 import {
+  assertMatrixNodeCarrierDispatch,
+  type MatrixNodeCarrierBinding,
+} from "./matrix-node-carrier-authority.js";
+import {
   isMatrixNodeCarrierCommand,
   MATRIX_NODE_CARRIER_MAX_BYTES,
 } from "./matrix-node-carrier-policy.js";
@@ -15,21 +19,49 @@ import {
 /** Host-only handoff for a live, verified Matrix owner and its already authenticated peer. */
 export type MatrixNodeCarrierOwner = {
   peerKey: string;
+  agentId: string;
+  expectedNodeId?: string;
+  /** Throws unless the Gateway-verified session still owns this live RTC admission. */
+  assertInvokeSession?(sessionKey: string): void;
+  roomId: string;
   signal: AbortSignal;
   assertCurrent(): void;
-  sendFrame(nativeJson: string, invoke?: { deadlineAtMs: number }): void | Promise<void>;
+  sendFrame(
+    nativeJson: string,
+    invoke?: { deadlineAtMs: number; assertCurrent(): void },
+  ): void | Promise<void>;
   onClose(): void;
 };
 
 export function attachMatrixNodeCarrier(
   options: GatewayConnectionOptions,
-  owner: MatrixNodeCarrierOwner,
+  owner: MatrixNodeCarrierOwner & { accountId: string },
 ) {
+  if (
+    !owner.agentId.trim() ||
+    !owner.accountId.trim() ||
+    !/^![^\s]+$/u.test(owner.roomId) ||
+    (owner.expectedNodeId !== undefined &&
+      (!/^[a-f0-9]{64}$/u.test(owner.expectedNodeId) ||
+        typeof owner.assertInvokeSession !== "function"))
+  )
+    throw Error("Invalid Matrix node carrier binding");
   const current = () => {
     if (owner.signal.aborted) throw Error("Matrix node carrier revoked");
     owner.assertCurrent();
   };
   current();
+  const binding: MatrixNodeCarrierBinding = Object.freeze({
+    agentId: owner.agentId,
+    roomId: owner.roomId,
+    accountId: owner.accountId,
+    expectedNodeId: owner.expectedNodeId,
+    assertInvokeSession: owner.assertInvokeSession?.bind(owner),
+    isCurrent: () => {
+      current();
+      return true;
+    },
+  });
   class Transport extends EventEmitter implements GatewayConnectionTransport {
     readyState = 1;
     bufferedAmount = 0;
@@ -42,16 +74,23 @@ export function attachMatrixNodeCarrier(
       return this.write(frame, typeof options === "function" ? options : callback);
     }
 
-    sendNodeInvoke(frame: Buffer, dispatchDeadlineAtMs: number) {
+    sendNodeInvoke(
+      frame: Buffer,
+      dispatchDeadlineAtMs: number,
+      isDispatchAuthorized?: () => boolean,
+    ) {
       // The adapter owns translation from this process-monotonic deadline to
       // its Matrix envelope, including the original challenge time anchor.
-      return this.write(frame, undefined, { deadlineAtMs: dispatchDeadlineAtMs });
+      return this.write(frame, undefined, {
+        deadlineAtMs: dispatchDeadlineAtMs,
+        isDispatchAuthorized,
+      });
     }
 
     private write(
       frame: string | Buffer | SerializedGatewayFrame,
       settled?: (error?: Error) => void,
-      invoke?: { deadlineAtMs: number },
+      invoke?: { deadlineAtMs: number; isDispatchAuthorized?: () => boolean },
     ) {
       const json = frame.toString();
       const bytes = Buffer.byteLength(json);
@@ -76,15 +115,28 @@ export function attachMatrixNodeCarrier(
         this.close(1009, "Matrix node carrier frame limit");
         throw Error("Matrix node carrier frame limit");
       }
-      if (
-        invoke &&
-        (!Number.isFinite(invoke.deadlineAtMs) || invoke.deadlineAtMs <= performance.now())
-      )
-        throw Error("Matrix node invoke deadline elapsed");
+      const invokeMetadata = invoke && {
+        deadlineAtMs: invoke.deadlineAtMs,
+        assertCurrent: () => {
+          const payload = asOptionalObjectRecord(message?.payload);
+          assertMatrixNodeCarrierDispatch(
+            binding,
+            payload?.nodeId,
+            payload?.command,
+            invoke.isDispatchAuthorized,
+          );
+          current();
+          if (owner.signal.aborted || this.readyState !== 1)
+            throw Error("Matrix node carrier closed");
+          if (!Number.isFinite(invoke.deadlineAtMs) || invoke.deadlineAtMs <= performance.now())
+            throw Error("Matrix node invoke deadline elapsed");
+        },
+      };
+      invokeMetadata?.assertCurrent();
       this.bufferedAmount += bytes;
       let delivery;
       try {
-        delivery = owner.sendFrame(json, invoke);
+        delivery = owner.sendFrame(json, invokeMetadata);
       } catch {
         this.bufferedAmount -= bytes;
         throw Error("Matrix node carrier delivery failed");
@@ -128,6 +180,7 @@ export function attachMatrixNodeCarrier(
     request: new IncomingMessage(new Socket()),
     ingressAttribution: {
       kind: "matrix-node-carrier",
+      binding,
       clientIp: "",
       signal: owner.signal,
       assertCurrent: current,

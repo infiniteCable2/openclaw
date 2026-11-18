@@ -76,5 +76,14 @@ export function createMatrixRtcConversationBindings(params: {
     runtime: source.runtime,
     logger: params.logger,
   });
-  return { conversation, bindings };
+  const nodeInvokeScope = params.assistantVoice
+    ? {
+        agentId: source.agentId,
+        userId: source.remoteMembership.userId,
+        deviceId: source.remoteMembership.deviceId,
+        sessionKey: conversation.sessionKey,
+        assertCurrent: source.assertCurrent,
+      }
+    : undefined;
+  return { conversation, bindings, nodeInvokeScope };
 }

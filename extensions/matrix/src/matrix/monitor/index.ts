@@ -220,8 +220,8 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   let clientLease: SharedMatrixClientLease | null = null;
   let monitorLifecycleSignal = opts.abortSignal;
   let threadBindingManager: { accountId: string; stop: () => Promise<void> } | null = null;
-  let rtcController: ReturnType<
-    typeof import("../rtc-controller.js").registerMatrixRtcController
+  let rtcController: Awaited<
+    ReturnType<typeof import("../rtc-monitor-runtime.js").registerMatrixRtcMonitor>
   > | null = null;
   const monitorTaskRunner = createMatrixMonitorTaskRunner({
     logger,
@@ -441,7 +441,10 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       isCurrent: () =>
         !cleanedUp && !monitorSetupClosed && monitorLifecycleSignal?.aborted !== true,
       isAudienceCurrent: () => healthySyncSinceMs !== undefined,
-      onAudienceInvalidated: (roomId) => requestRootPreparation(roomId),
+      onAudienceInvalidated: (roomId) => {
+        rtcController?.invalidateNodeRoom(roomId);
+        requestRootPreparation(roomId);
+      },
       isExplicitlyConfiguredRoom,
       canPromoteRecentInvite,
       canPromoteUnmappedStrictRoom:
@@ -608,8 +611,8 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       if (!runInBackgroundContext) {
         throw new Error("MatrixRTC requires an instance-bound background runtime");
       }
-      const { registerMatrixRtcController } = await import("../rtc-controller.js");
-      rtcController = registerMatrixRtcController({
+      const { registerMatrixRtcMonitor } = await import("../rtc-monitor-runtime.js");
+      rtcController = await registerMatrixRtcMonitor({
         client,
         accountConfig,
         accountId: effectiveAccountId,
@@ -620,6 +623,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
         logger,
         abortSignal: monitorLifecycleSignal,
         preparePrivateAudience: directTracker.preparePrivateAudience,
+        channelRuntime: opts.channelRuntime,
       });
     }
     ingress = createMatrixIngressMonitor({

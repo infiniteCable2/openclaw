@@ -21,14 +21,10 @@ import {
 } from "../channels/status/account-state.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withGatewayNativeApprovalRuntime } from "../infra/approval-gateway-runtime-context.js";
-import type { GatewayNativeApprovalMethod } from "../infra/approval-gateway-runtime-methods.js";
 import type { GatewayNativeApprovalRuntime } from "../infra/approval-gateway-runtime.types.js";
 import { startChannelApprovalHandlerBootstrap } from "../infra/approval-handler-bootstrap.js";
 import { type BackoffPolicy, sleepWithAbort } from "../infra/backoff.js";
-import {
-  createTaskScopedChannelRuntime,
-  registerChannelRuntimeContext,
-} from "../infra/channel-runtime-context.js";
+import { createTaskScopedChannelRuntime } from "../infra/channel-runtime-context.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { formatGatewayCrashLoopManualChannelStartHint } from "../infra/gateway-boot-lifecycle.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
@@ -72,6 +68,7 @@ import {
   createChannelAccountLifetime,
   runChannelAccountStop,
 } from "./server-channel-account-lifetime.js";
+import { prepareGatewayChannelAccountRuntime } from "./server-channel-account-runtime.js";
 import { createChannelAutostartRecovery } from "./server-channel-autostart-recovery.js";
 import type { ChannelRuntimeStore } from "./server-channel-runtime-store.js";
 import type {
@@ -92,10 +89,7 @@ import {
   waitForDeferredAccountStart,
 } from "./server-channel-startup.js";
 import type { GatewayContextResolver } from "./server-methods/types.js";
-import {
-  withMatrixNodeCarrierRuntime,
-  type AttachMatrixNodeCarrier,
-} from "./server/matrix-node-carrier-runtime.js";
+import type { AttachMatrixNodeCarrier } from "./server/matrix-node-carrier-runtime.js";
 
 const RESTART_POLICY: BackoffPolicy = {
   initialMs: 5_000,
@@ -108,7 +102,6 @@ const CHANNEL_STABLE_RUN_MS = RESTART_POLICY.maxMs;
 const CHANNEL_STOP_ABORT_TIMEOUT_MS = 5_000;
 // Private context key carried through the generic Plugin SDK registry. This is
 // not a new public capability surface; only the host installs its authority.
-const CHANNEL_APPROVAL_GATEWAY_RUNTIME_CONTEXT_CAPABILITY = "approval.gateway";
 
 export type ChannelAutostartSuppression = {
   reason: "crash-loop-breaker";
@@ -718,33 +711,21 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
             if (startCancelled()) {
               return;
             }
-            const gatewayApprovalRuntime = opts.getNativeApprovalRuntime?.();
-            if (channelRuntimeForTask && gatewayApprovalRuntime) {
-              const approvalRuntime: Pick<GatewayNativeApprovalRuntime, "request"> = {
-                request: async <T>(
-                  method: GatewayNativeApprovalMethod,
-                  requestParams: Record<string, unknown>,
-                  requestOptions?: { clientDisplayName?: string },
-                ): Promise<T> => {
-                  if (method !== "approval.resolve") {
-                    throw new Error(`channel approval runtime cannot dispatch ${method}`);
-                  }
-                  return await gatewayApprovalRuntime.request<T>(
-                    "approval.resolve",
-                    requestParams,
-                    requestOptions,
-                  );
-                },
-              };
-              registerChannelRuntimeContext({
-                channelRuntime: channelRuntimeForTask,
-                channelId,
-                accountId: id,
-                capability: CHANNEL_APPROVAL_GATEWAY_RUNTIME_CONTEXT_CAPABILITY,
-                context: approvalRuntime,
-                abortSignal: abort.signal,
-              });
-            }
+            const accountRuntime = prepareGatewayChannelAccountRuntime({
+              runtime: channelRuntimeForTask,
+              channelId,
+              accountId: id,
+              signal: abort.signal,
+              approvalRuntime: opts.getNativeApprovalRuntime?.(),
+              registration,
+              attachMatrixNodeCarrier,
+              assertCurrent: () => {
+                capabilityLease.assertActive("Matrix node carrier");
+                if (!isCurrentTask()) {
+                  throw new Error("Matrix account retired");
+                }
+              },
+            });
             let startAccountTask: ReturnType<typeof startAccount> | undefined;
             await measureStartup(`channels.${channelId}.start-account-handoff`, () => {
               if (startCancelled()) {
@@ -753,23 +734,6 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
               log.info(
                 `[${id}] starting account (reason: ${optsValue.reason ?? (optsValue.manual ? "manual" : "requested")})`,
               );
-              const accountRuntime =
-                channelRuntimeForTask &&
-                attachMatrixNodeCarrier &&
-                channelId === "matrix" &&
-                registration?.pluginId === "matrix" &&
-                registration.origin === "bundled"
-                  ? withMatrixNodeCarrierRuntime({
-                      runtime: channelRuntimeForTask,
-                      accountId: id,
-                      accountSignal: abort.signal,
-                      assertAccountCurrent: () => {
-                        capabilityLease.assertActive("Matrix node carrier");
-                        if (!isCurrentTask()) throw new Error("Matrix account retired");
-                      },
-                      attach: attachMatrixNodeCarrier,
-                    })
-                  : channelRuntimeForTask;
               const runStartAccount = async () => {
                 const startedAt = Date.now();
                 try {

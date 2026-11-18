@@ -10,8 +10,16 @@ const CLEANUP_WAIT_TIMEOUT_MS = 5_000;
 
 export type MatrixRtcStopOptions = { waitForCleanup?: boolean };
 
+type MatrixRtcNodeInvokeSource = {
+  agentId: string;
+  userId: string;
+  deviceId: string;
+  sessionKey: string;
+};
+
 export type ActiveCall = {
   abort: AbortController;
+  nodeInvokeScope?: MatrixRtcNodeInvokeSource & { assertCurrent(): void };
   engine?: MeetingRealtimeAudioEngineHandle;
   preparation?: MeetingAgentRealtimePreparation;
   greetingPreparation?: MeetingAgentRealtimePreparation;
@@ -26,6 +34,26 @@ export type ActiveCall = {
   cleanupError?: unknown;
   disposeListeners: () => void;
 };
+
+export function bindMatrixRtcNodeInvocation(calls: ReadonlyMap<string, ActiveCall>) {
+  return (source: MatrixRtcNodeInvokeSource & { roomId: string }) => {
+    const call = calls.get(source.roomId);
+    const scope = call?.nodeInvokeScope;
+    if (
+      !call?.joined ||
+      call.stopping ||
+      call.abort.signal.aborted ||
+      !scope ||
+      scope.agentId !== source.agentId ||
+      scope.userId !== source.userId ||
+      scope.deviceId !== source.deviceId ||
+      scope.sessionKey !== source.sessionKey
+    ) {
+      throw new Error("Matrix Node requires the current Assistant Voice session");
+    }
+    scope.assertCurrent();
+  };
+}
 
 export async function waitForCallCleanup(
   cleanup: Promise<unknown>,

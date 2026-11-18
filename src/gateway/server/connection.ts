@@ -555,7 +555,10 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
     }
     releasePreauthBudget();
     next.connectionSignal = connectionController.signal;
-    if (carrier) next.isMatrixNodeCarrierCurrent = isCurrent;
+    if (carrier) {
+      next.isMatrixNodeCarrierCurrent = isCurrent;
+      next.matrixNodeCarrier = carrier.binding;
+    }
     client = next;
     clients.add(next);
     if (next.internal?.openclawIdPeerKey) {

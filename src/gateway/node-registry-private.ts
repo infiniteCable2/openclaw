@@ -21,6 +21,7 @@ import {
 } from "../infra/node-runner-inventory.js";
 import { ABSOLUTE_DEADLINE_EXPIRED, awaitWithinDeadline } from "../utils/absolute-deadline.js";
 import { sameWorkerProtocolFeatures } from "../worker/worker-build-identity.js";
+import type { NodeRegistryEventSender } from "./node-event-send.js";
 import { prepareNodeInvokeRequest, serializeNodeEvent } from "./node-invoke-request.js";
 import type { NodeInvokeParams, NodeInvokeResult } from "./node-invoke.types.js";
 import type { NodePairingLeaseResolution } from "./node-registry-pairing.js";
@@ -101,12 +102,7 @@ type NodeRegistryPrivateContext = {
   ) => Promise<NodePairingLeaseResolution<PairingBoundNodeSession>>;
   pendingInvokes: Map<string, PendingInvoke>;
   invokeStreams: NodeInvokeStreamController;
-  sendEventToSession: (
-    node: NodeRunnerRegistrySession,
-    event: string,
-    payload: unknown,
-    dispatchDeadlineAtMs?: number,
-  ) => boolean;
+  sendEventToSession: NodeRegistryEventSender;
   setLocalMcpAvailable: (node: NodeRunnerRegistrySession, available: boolean) => void;
   rememberAuthorizedSystemRunEvent: NodeSystemRunEvents["remember"];
   publishActiveNodeContext: () => void;
@@ -353,19 +349,12 @@ async function invokeNodeRegistryCore(
           return { result };
         }
         const dispatchDeadlineAtMs = pendingAtDispatch.deadlineAtMs;
-        const ok = state.context.sendEventToSession(
-          dispatchNode,
-          "node.invoke.request",
-          payload,
-          dispatchDeadlineAtMs,
-        );
+        const ok = state.context.sendEventToSession(dispatchNode, "node.invoke.request", payload, {
+          deadlineAtMs: dispatchDeadlineAtMs,
+          isAuthorized: params.isDispatchAuthorized,
+        });
         if (!ok) {
-          const pending = state.context.pendingInvokes.get(requestId);
-          if (pending) {
-            state.context.invokeStreams.clearTimers(pending);
-            state.context.pendingInvokes.delete(requestId);
-            pending.resolve(nodeInvokeError("UNAVAILABLE", "failed to send invoke to node"));
-          }
+          state.context.invokeStreams.rejectUndelivered(requestId);
           return { result };
         }
         if (systemRunEvent) {

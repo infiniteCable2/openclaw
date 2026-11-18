@@ -141,6 +141,12 @@ Room allowlist keys (`groups`, legacy `rooms`) should be room IDs or aliases. Pl
 - `startupVerification`: `"if-unverified"` (default when E2EE is on) or `"off"`. Auto-requests self-verification on startup when this device is unverified.
 - `startupVerificationCooldownHours`: cooldown before the next automatic startup request. Default: `24`.
 - `rtc`: optional fail-closed MatrixRTC audio-call configuration. It requires a pinned `authServiceUrl`, an absolute `mediaBridgeCommand`, a registered `transcriptionProvider`, provider settings, and exact `{ roomId, userId, agentId }` admissions. Default: disabled.
+  An admission can opt a verified Matrix device into native Node pairing with
+  `nodeDevices: [{ deviceId: "MATRIXDEVICE" }]`. After pairing, add the public
+  OpenClaw `nodeId` to that same entry to allow Maps requests during that
+  device's active Assistant Voice session. The exact Matrix device, native Node,
+  agent and active session must match. This requires a client that supports the
+  encrypted Matrix Node carrier.
 
 ### Access and policy
 

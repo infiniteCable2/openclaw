@@ -48,6 +48,7 @@ export type GatewayWsClient = PluginNodeCapabilityClient & {
   connectionSignal?: AbortSignal;
   /** Current Matrix-owner authority for effects admitted before transport retirement. */
   isMatrixNodeCarrierCurrent?: () => boolean;
+  matrixNodeCarrier?: import("./matrix-node-carrier-authority.js").MatrixNodeCarrierBinding;
   /** Service grant lifetime, independent of individual socket retirement. */
   remoteControlUiIngress?: RemoteControlUiIngressContext;
   connectionKind?: GatewayWsConnectionKind;

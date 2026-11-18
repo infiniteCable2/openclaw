@@ -14,6 +14,7 @@ import {
   resolveRequestClientIpFromHeaders,
 } from "./net.js";
 import type { RemoteControlUiIngressContext } from "./server/client-identity-types.js";
+import type { MatrixNodeCarrierBinding } from "./server/matrix-node-carrier-authority.js";
 
 export const PROXY_ATTRIBUTION_REQUIRED_REASON = "proxy_attribution_required";
 export const PROXY_ATTRIBUTION_GUIDANCE =
@@ -85,6 +86,7 @@ export type GatewayIngressAttribution =
   | (AttributedGatewayIngress & { kind: "openclaw-id-tunnel"; peerKey: string })
   | (AttributedGatewayIngress & {
       kind: "matrix-node-carrier";
+      binding: MatrixNodeCarrierBinding;
       signal: AbortSignal;
       assertCurrent: () => void;
     })

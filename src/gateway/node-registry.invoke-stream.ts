@@ -133,6 +133,16 @@ export class NodeInvokeStreamController {
     }
   }
 
+  rejectUndelivered(requestId: string): void {
+    const pending = this.options.pendingInvokes.get(requestId);
+    if (pending && this.takePending(requestId, pending)) {
+      pending.resolve({
+        ok: false,
+        error: { code: "UNAVAILABLE", message: "failed to send invoke to node" },
+      });
+    }
+  }
+
   handleResult(params: NodeInvokeResultParams): boolean {
     const pending = this.getPending(params.id, params.nodeId, params.connId);
     if (!pending || !this.takePending(params.id, pending)) {

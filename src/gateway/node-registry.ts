@@ -30,9 +30,12 @@ import {
   retainFulfilledNodeCapabilities,
 } from "./node-command-policy.js";
 import { resolveEffectiveComputerUseDescriptor } from "./node-computer-use-descriptor.js";
-import { isSerializedEventPayload, type SerializedEventPayload } from "./node-event-payload.js";
-import { sendNodeWebSocketEvent } from "./node-event-send.js";
-import { serializeNodeEvent } from "./node-invoke-request.js";
+import type { SerializedEventPayload } from "./node-event-payload.js";
+import {
+  sendNodeSessionEvent,
+  sendNodeSessionRawEvent,
+  type NodeInvokeDispatch,
+} from "./node-event-send.js";
 import type { NodeInvokeParams, NodeInvokeResult } from "./node-invoke.types.js";
 import { NodeMcpPolicy } from "./node-mcp-policy.js";
 import {
@@ -43,7 +46,6 @@ import {
 import {
   pairingBindingForSession,
   pairingStateMatchesBinding,
-  isPublishedPairingCurrent,
   type NodePairingLease,
   type NodePairingLeaseResolution,
 } from "./node-registry-pairing.js";
@@ -244,10 +246,10 @@ export class NodeRegistry {
       },
       pendingInvokes: this.pendingInvokes,
       invokeStreams: this.invokeStreams,
-      sendEventToSession: (node, event, payload, dispatchDeadlineAtMs) => {
+      sendEventToSession: (node, event, payload, invoke) => {
         const current = this.nodesById.get(node.nodeId);
         return current?.connId === node.connId
-          ? this.sendEventToSession(current, event, payload, dispatchDeadlineAtMs)
+          ? this.sendEventToSession(current, event, payload, invoke)
           : false;
       },
       setLocalMcpAvailable: this.mcpPolicy.setAvailableForConnection,
@@ -1177,55 +1179,17 @@ export class NodeRegistry {
     });
   }
 
-  private sendEventInternal(
-    node: NodeSession,
-    event: string,
-    payload: unknown,
-    dispatchDeadlineAtMs?: number,
-  ): boolean {
-    if (
-      node.client.invalidated === true ||
-      !isPublishedPairingCurrent(node, this.options.isPairingStateCurrent)
-    ) {
-      return false;
-    }
-    const eventTransport = this.eventTransportsByConn.get(node.connId);
-    if (eventTransport) {
-      return eventTransport.send(event, payload);
-    }
-    return sendNodeWebSocketEvent(
-      node.client.socket,
-      event,
-      () => serializeNodeEvent(event, payload),
-      dispatchDeadlineAtMs,
-    );
-  }
-
   private sendEventRawInternal(
     node: NodeSession,
     event: string,
     payloadJSON?: SerializedEventPayload | null,
   ): boolean {
-    if (
-      node.client.invalidated === true ||
-      !isPublishedPairingCurrent(node, this.options.isPairingStateCurrent)
-    ) {
-      return false;
-    }
-    if (
-      payloadJSON !== null &&
-      payloadJSON !== undefined &&
-      !isSerializedEventPayload(payloadJSON)
-    ) {
-      return false;
-    }
-    const eventTransport = this.eventTransportsByConn.get(node.connId);
-    if (eventTransport) {
-      return eventTransport.sendRaw(event, payloadJSON);
-    }
-    return sendNodeWebSocketEvent(node.client.socket, event, () => {
-      const payloadFragment = payloadJSON ? `,"payload":${payloadJSON.json}` : "";
-      return `{"type":"event","event":${JSON.stringify(event)}${payloadFragment}}`;
+    return sendNodeSessionRawEvent({
+      node,
+      event,
+      payloadJSON,
+      eventTransport: this.eventTransportsByConn.get(node.connId),
+      isPairingStateCurrent: this.options.isPairingStateCurrent,
     });
   }
 
@@ -1233,13 +1197,17 @@ export class NodeRegistry {
     node: NodeSession,
     event: string,
     payload: unknown,
-    dispatchDeadlineAtMs?: number,
+    invoke?: NodeInvokeDispatch,
   ): boolean {
-    return this.observeEventSend(
+    const sent = sendNodeSessionEvent({
       node,
       event,
-      this.sendEventInternal(node, event, payload, dispatchDeadlineAtMs),
-    );
+      payload,
+      eventTransport: this.eventTransportsByConn.get(node.connId),
+      isPairingStateCurrent: this.options.isPairingStateCurrent,
+      invoke,
+    });
+    return this.observeEventSend(node, event, sent);
   }
 
   private observeEventSend(node: NodeSession, event: string, sent: boolean): boolean {

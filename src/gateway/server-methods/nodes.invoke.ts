@@ -20,6 +20,7 @@ import { sanitizeNodeInvokeParamsForForwarding } from "../node-invoke-sanitize.j
 import { enqueuePendingNodeAction, removePendingNodeAction } from "../node-runtime-state.js";
 import { captureNodeWakeLifecycle, releaseNodeWakeLifecycle } from "../node-wake-state.js";
 import { ADMIN_SCOPE, hasGatewayAdminScope } from "../operator-scopes.js";
+import { captureMatrixNodeCarrierDispatch } from "../server/matrix-node-carrier-authority.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import {
   captureGatewayClientUploadCommitGuard,
@@ -70,10 +71,10 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
     const p = params;
     const nodeId = normalizeOptionalString(p.nodeId) ?? "";
     const command = normalizeOptionalString(p.command) ?? "";
-    const sessionKey = normalizeOptionalString(p.sessionKey);
+    let sessionKey = normalizeOptionalString(p.sessionKey);
     // Only the authenticated agent bridge can bind completion delivery. Payload
     // route hints are approval replay metadata, not source-conversation authority.
-    const turnSource = client?.internal?.agentRuntimeIdentity
+    let turnSource = client?.internal?.agentRuntimeIdentity
       ? {
           channel: p.turnSourceChannel,
           to: p.turnSourceTo,
@@ -167,7 +168,12 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
     const respondWithInvocationResult = (
       result: { payload?: unknown; payloadJSON?: string | null },
       responsePayload: "original" | "decoded",
+      isMatrixDispatchCurrent?: () => boolean,
     ) => {
+      if (isMatrixDispatchCurrent?.() === false) {
+        respondError(respond, ErrorCodes.FORBIDDEN, "Matrix node invoke authority closed");
+        return;
+      }
       const payload = result.payloadJSON ? parseGatewayPayload(result.payloadJSON) : result.payload;
       emitTalkPttNodeEvent({ context, nodeId, command, payload });
       respond(
@@ -317,6 +323,44 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
             `node wake done node=${nodeId} req=${wakeReqId} connected=true totalMs=${totalDurationMs}`,
           );
         }
+        const matrixBinding = nodeSession.client?.matrixNodeCarrier;
+        const connId = nodeSession.connId;
+        let isNativeDispatchCurrent = () => isUploadAllowed();
+        const identity = client?.internal?.agentRuntimeIdentity;
+        const matrixDispatch =
+          matrixBinding &&
+          captureMatrixNodeCarrierDispatch({
+            binding: matrixBinding,
+            identity,
+            validate: context.validateAgentRuntimeApprovalAuthority,
+            nodeId,
+            command,
+            sessionKey,
+            isRequestCurrent: () =>
+              !invocationLifecycle.aborted &&
+              (invokeDeadlineAtMs === undefined || performance.now() < invokeDeadlineAtMs) &&
+              hasCurrentClientAuthority?.() !== false &&
+              context.nodeRegistry.getForPairingGeneration(nodeId, generation.key)?.connId ===
+                connId &&
+              isNativeDispatchCurrent(),
+          });
+        if (matrixBinding) {
+          if (!matrixDispatch || !identity) {
+            respondError(
+              respond,
+              ErrorCodes.FORBIDDEN,
+              "Matrix node invoke requires a current admitted agent run for this room and node",
+            );
+            return;
+          }
+          sessionKey = identity.sessionKey;
+          turnSource = {
+            channel: identity.turnSourceChannel,
+            to: identity.turnSourceTo,
+            accountId: identity.turnSourceAccountId,
+            threadId: identity.turnSourceThreadId,
+          };
+        }
         const authorizeNodeCommand = (
           session: NonNullable<typeof nodeSession>,
           authorizationCfg: typeof cfg,
@@ -389,6 +433,10 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
             client,
             approvalAuthority: forwardedParams.approvalAuthority,
           });
+        isNativeDispatchCurrent = () =>
+          isUploadAllowed() &&
+          (nodeInvokeStream?.isRuntimeCurrent() ?? true) &&
+          runtimeAuthorityError() === undefined;
         const isForwardedApprovalAuthorityActive = () =>
           isUploadAllowed() &&
           isForwardedNodeInvokeApprovalAuthorityActive({
@@ -406,12 +454,14 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
             command,
             params: forwardedParams.params,
             ...(sessionKey ? { sessionKey } : {}),
-            turnSource: {
-              channel: p.turnSourceChannel,
-              to: p.turnSourceTo,
-              accountId: p.turnSourceAccountId,
-              threadId: p.turnSourceThreadId,
-            },
+            turnSource: matrixBinding
+              ? turnSource
+              : {
+                  channel: p.turnSourceChannel,
+                  to: p.turnSourceTo,
+                  accountId: p.turnSourceAccountId,
+                  threadId: p.turnSourceThreadId,
+                },
             timeoutMs: p.timeoutMs,
             deadlineAtMs: invokeDeadlineAtMs,
             signal: invocationLifecycle,
@@ -463,7 +513,7 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
             });
             return;
           }
-          respondWithInvocationResult(policyResult, "original");
+          respondWithInvocationResult(policyResult, "original", matrixDispatch);
           return;
         }
         const dispatchSession = resolveDispatchableNodeSession(
@@ -514,10 +564,7 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
             onProgress: nodeInvokeStream.onProgress,
             idleTimeoutMs: nodeInvokeStream.idleTimeoutMs,
           }),
-          isDispatchAuthorized: () =>
-            isUploadAllowed() &&
-            (nodeInvokeStream?.isRuntimeCurrent() ?? true) &&
-            runtimeAuthorityError() === undefined,
+          isDispatchAuthorized: matrixDispatch ?? isNativeDispatchCurrent,
           onDispatchReady: (invokeId) => {
             nodeCommandDispatched = true;
             nodeInvokeStream?.onDispatchReady(invokeId);
@@ -612,7 +659,7 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
           });
           return;
         }
-        respondWithInvocationResult(res, "decoded");
+        respondWithInvocationResult(res, "decoded", matrixDispatch);
       } finally {
         releaseApprovalHandoff?.();
         releaseNodeWakeLifecycle(nodeId, wakeLifecycle);

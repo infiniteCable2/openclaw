@@ -3,7 +3,7 @@ import type { PluginRuntimeChannel } from "../../plugins/runtime/types-channel.j
 import type { attachMatrixNodeCarrier, MatrixNodeCarrierOwner } from "./matrix-node-carrier.js";
 
 export type AttachMatrixNodeCarrier = (
-  owner: MatrixNodeCarrierOwner,
+  owner: MatrixNodeCarrierOwner & { accountId: string },
 ) => ReturnType<typeof attachMatrixNodeCarrier>;
 
 export function withMatrixNodeCarrierRuntime(params: {
@@ -23,6 +23,7 @@ export function withMatrixNodeCarrierRuntime(params: {
       assertAccount();
       return attach({
         ...owner,
+        accountId,
         peerKey: `${accountId}:${owner.peerKey}`,
         signal: AbortSignal.any([accountSignal, owner.signal]),
         assertCurrent: () => {

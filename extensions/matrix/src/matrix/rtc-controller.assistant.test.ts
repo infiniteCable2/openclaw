@@ -133,6 +133,33 @@ function assistantHarness(
   return { ...h, start, syncOwn, event, ready };
 }
 
+it("authorizes Node delivery only for the current Assistant Voice session and device", async () => {
+  const h = assistantHarness();
+  try {
+    h.start();
+    await flushPromises();
+    await h.ready();
+    const sessionKey =
+      mocks.createMeetingRealtimeEngineBindingsV2.mock.calls[0]?.[0].connectionPresentation
+        ?.readTarget?.sessionKey;
+    expect(sessionKey).toBeTruthy();
+    const source = {
+      roomId,
+      userId: ownerId,
+      deviceId: "OWNERDEVICE",
+      agentId: "example_owner",
+      sessionKey: sessionKey ?? "",
+    };
+    expect(() => h.controller.assertNodeInvocation(source)).not.toThrow();
+    expect(() => h.controller.assertNodeInvocation({ ...source, sessionKey: "old" })).toThrow();
+    expect(() => h.controller.assertNodeInvocation({ ...source, deviceId: "OTHER" })).toThrow();
+    h.session.memberships = [];
+    expect(() => h.controller.assertNodeInvocation(source)).toThrow();
+  } finally {
+    await h.controller.stop();
+  }
+});
+
 it.each(["compatibility", "matrix_2_0"] as const)(
   "publishes %s ready only after real speech readiness, successful startup and own membership sync",
   async (mode) => {

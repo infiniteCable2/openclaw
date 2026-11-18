@@ -409,8 +409,12 @@ export async function sendGatewayHello(
             protocol: helloOk.protocol,
             server: { version: helloOk.server.version, connId },
             features: {
-              methods: [...MATRIX_NODE_CARRIER_METHODS],
-              events: ["node.invoke.request"],
+              methods: context.handler.ingressAttribution.binding.expectedNodeId
+                ? [...MATRIX_NODE_CARRIER_METHODS]
+                : [],
+              events: context.handler.ingressAttribution.binding.expectedNodeId
+                ? ["node.invoke.request"]
+                : [],
             },
             snapshot: {
               presence: [],

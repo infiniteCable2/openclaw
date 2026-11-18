@@ -48,6 +48,7 @@ import { MATRIX_IDB_PERSIST_INTERVAL_MS } from "./idb-persistence-lock.js";
 import type { MatrixSdkIndexedDbSession } from "./indexeddb-session.js";
 import { withMatrixLiveEncryptedRoom } from "./live-room-readiness.js";
 import { LogService, noop } from "./logger.js";
+import { createMatrixNodeCarrierFacade } from "./matrix-node-carrier.js";
 import { createMatrixRtcClientFacade, type MatrixRtcClientFacade } from "./matrix-rtc.js";
 import { MatrixMessageWireDispatchGuards } from "./message-wire-dispatch.js";
 import { MatrixRecoveryKeyStore } from "./recovery-key-store.js";
@@ -171,6 +172,10 @@ export abstract class MatrixClientBase {
   };
 
   readonly matrixRtc: MatrixRtcClientFacade;
+
+  createNodeCarrier() {
+    return createMatrixNodeCarrierFacade(this.client, this);
+  }
 
   crypto?: MatrixCryptoFacade;
 

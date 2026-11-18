@@ -32,6 +32,7 @@ import type {
   ConversationInputAdmissionV1,
   ConversationInputScopeV1,
 } from "./conversation-input.types.js";
+import { bindMatrixConversationInputOrigin } from "./matrix-conversation-run-origin.js";
 import { createReplySpeechPresentation } from "./reply-speech-presentation.js";
 
 const loadReply = createLazyRuntimeModule(async () => {
@@ -272,6 +273,7 @@ async function executeConversationReply(
       }
     },
   });
+  bindMatrixConversationInputOrigin(speechPresentation, input);
   const options: InternalGetReplyOptions = {
     assertSourceCurrent: assertWorkCurrent,
     assertConversationTarget(target) {
