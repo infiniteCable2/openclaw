@@ -244,10 +244,10 @@ export class NodeRegistry {
       },
       pendingInvokes: this.pendingInvokes,
       invokeStreams: this.invokeStreams,
-      sendEventToSession: (node, event, payload) => {
+      sendEventToSession: (node, event, payload, dispatchDeadlineAtMs) => {
         const current = this.nodesById.get(node.nodeId);
         return current?.connId === node.connId
-          ? this.sendEventToSession(current, event, payload)
+          ? this.sendEventToSession(current, event, payload, dispatchDeadlineAtMs)
           : false;
       },
       setLocalMcpAvailable: this.mcpPolicy.setAvailableForConnection,
@@ -1177,7 +1177,12 @@ export class NodeRegistry {
     });
   }
 
-  private sendEventInternal(node: NodeSession, event: string, payload: unknown): boolean {
+  private sendEventInternal(
+    node: NodeSession,
+    event: string,
+    payload: unknown,
+    dispatchDeadlineAtMs?: number,
+  ): boolean {
     if (
       node.client.invalidated === true ||
       !isPublishedPairingCurrent(node, this.options.isPairingStateCurrent)
@@ -1188,8 +1193,11 @@ export class NodeRegistry {
     if (eventTransport) {
       return eventTransport.send(event, payload);
     }
-    return sendNodeWebSocketEvent(node.client.socket, event, () =>
-      serializeNodeEvent(event, payload),
+    return sendNodeWebSocketEvent(
+      node.client.socket,
+      event,
+      () => serializeNodeEvent(event, payload),
+      dispatchDeadlineAtMs,
     );
   }
 
@@ -1221,8 +1229,17 @@ export class NodeRegistry {
     });
   }
 
-  private sendEventToSession(node: NodeSession, event: string, payload: unknown): boolean {
-    return this.observeEventSend(node, event, this.sendEventInternal(node, event, payload));
+  private sendEventToSession(
+    node: NodeSession,
+    event: string,
+    payload: unknown,
+    dispatchDeadlineAtMs?: number,
+  ): boolean {
+    return this.observeEventSend(
+      node,
+      event,
+      this.sendEventInternal(node, event, payload, dispatchDeadlineAtMs),
+    );
   }
 
   private observeEventSend(node: NodeSession, event: string, sent: boolean): boolean {

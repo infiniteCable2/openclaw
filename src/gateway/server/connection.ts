@@ -147,7 +147,18 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
     logWsControl,
     buildRequestContext,
   } = params;
-  if (connectionWork.isClosing || !hasCurrentRemoteControlUiIngress(remoteIngress)) {
+  const carrier =
+    ingressAttribution?.kind === "matrix-node-carrier" ? ingressAttribution : undefined;
+  const isCurrent = () => {
+    if (!hasCurrentRemoteControlUiIngress(remoteIngress) || carrier?.signal.aborted) return false;
+    try {
+      carrier?.assertCurrent();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (connectionWork.isClosing || !isCurrent()) {
     socket.terminate();
     return;
   }
@@ -266,6 +277,9 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
   const close = closeWithGrace;
   const closeRemoteIngress = () => closeWithGrace(1008, "remote Control UI ingress closed");
   remoteIngress?.signal.addEventListener("abort", closeRemoteIngress, { once: true });
+  const closeCarrier = () => closeWithGrace(1008, "Matrix node carrier revoked");
+  carrier?.signal.addEventListener("abort", closeCarrier, { once: true });
+  socket.once("close", () => carrier?.signal.removeEventListener("abort", closeCarrier));
   socket.once("close", () =>
     remoteIngress?.signal.removeEventListener("abort", closeRemoteIngress),
   );
@@ -513,7 +527,7 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
 
   const setClient = (next: GatewayWsClient) => {
     // Keep one socket owner when concurrent connect frames finish out of order.
-    if (closed || client || !hasCurrentRemoteControlUiIngress(remoteIngress)) {
+    if (closed || client || !isCurrent()) {
       return false;
     }
     if (
@@ -541,6 +555,7 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
     }
     releasePreauthBudget();
     next.connectionSignal = connectionController.signal;
+    if (carrier) next.isMatrixNodeCarrierCurrent = isCurrent;
     client = next;
     clients.add(next);
     if (next.internal?.openclawIdPeerKey) {
@@ -578,7 +593,7 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
     isStartupPending,
     send,
     close,
-    isClosed: () => closed || !hasCurrentRemoteControlUiIngress(remoteIngress),
+    isClosed: () => closed || !isCurrent(),
     clearHandshakeTimer: () => clearTimeout(handshakeTimer),
     getClient: () => client,
     setClient,

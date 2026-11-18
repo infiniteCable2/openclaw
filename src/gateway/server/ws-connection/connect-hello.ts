@@ -69,6 +69,10 @@ import { allowedSessionVisibilities } from "../../session-sharing.js";
 import { formatForLog, logWs } from "../../ws-log.js";
 import { shouldScheduleBackgroundHealthRefresh } from "../health-refresh-admission.js";
 import { buildGatewaySnapshot, getHealthCache, getHealthVersion } from "../health-state.js";
+import {
+  MATRIX_NODE_CARRIER_MAX_BYTES,
+  MATRIX_NODE_CARRIER_METHODS,
+} from "../matrix-node-carrier-policy.js";
 import { emitGatewayAuthSecurityEvent } from "./connect-auth-security.js";
 import type {
   DeviceAuthorizedGatewayConnect,
@@ -398,7 +402,41 @@ export async function sendGatewayHello(
     }
     snapshot.suspension = { phase: getGatewaySuspendAdmissionPhase() };
     helloWriteStarted = true;
-    await sendFrame({ type: "res", id: frame.id, ok: true, payload: helloOk });
+    const payload =
+      context.handler.ingressAttribution.kind === "matrix-node-carrier"
+        ? {
+            type: helloOk.type,
+            protocol: helloOk.protocol,
+            server: { version: helloOk.server.version, connId },
+            features: {
+              methods: [...MATRIX_NODE_CARRIER_METHODS],
+              events: ["node.invoke.request"],
+            },
+            snapshot: {
+              presence: [],
+              health: {},
+              stateVersion: snapshot.stateVersion,
+              uptimeMs: snapshot.uptimeMs,
+            },
+            auth: {
+              method: authMethod,
+              role,
+              scopes,
+              ...(deviceToken
+                ? {
+                    deviceToken: deviceToken.token,
+                    issuedAtMs: deviceToken.rotatedAtMs ?? deviceToken.createdAtMs,
+                  }
+                : {}),
+            },
+            policy: {
+              maxPayload: MATRIX_NODE_CARRIER_MAX_BYTES,
+              maxBufferedBytes: MATRIX_NODE_CARRIER_MAX_BYTES,
+              tickIntervalMs: TICK_INTERVAL_MS,
+            },
+          }
+        : helloOk;
+    await sendFrame({ type: "res", id: frame.id, ok: true, payload });
   } catch (err) {
     if (bootstrapHandoff) {
       if (bootstrapHandoff.completion) {

@@ -38,6 +38,8 @@ export type GatewayConnectionTransport = {
     options: { binary: false },
     callback?: (error?: Error) => void,
   ): number | void;
+  /** Carriers with delayed delivery require the pending invocation's monotonic deadline. */
+  sendNodeInvoke?(frame: Buffer, dispatchDeadlineAtMs: number): number | void;
   close(code?: number, reason?: string): void;
   terminate(): void;
   on(event: "message", listener: (data: GatewayConnectionFrame) => void): unknown;

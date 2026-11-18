@@ -101,7 +101,12 @@ type NodeRegistryPrivateContext = {
   ) => Promise<NodePairingLeaseResolution<PairingBoundNodeSession>>;
   pendingInvokes: Map<string, PendingInvoke>;
   invokeStreams: NodeInvokeStreamController;
-  sendEventToSession: (node: NodeRunnerRegistrySession, event: string, payload: unknown) => boolean;
+  sendEventToSession: (
+    node: NodeRunnerRegistrySession,
+    event: string,
+    payload: unknown,
+    dispatchDeadlineAtMs?: number,
+  ) => boolean;
   setLocalMcpAvailable: (node: NodeRunnerRegistrySession, available: boolean) => void;
   rememberAuthorizedSystemRunEvent: NodeSystemRunEvents["remember"];
   publishActiveNodeContext: () => void;
@@ -348,7 +353,12 @@ async function invokeNodeRegistryCore(
           return { result };
         }
         const dispatchDeadlineAtMs = pendingAtDispatch.deadlineAtMs;
-        const ok = state.context.sendEventToSession(dispatchNode, "node.invoke.request", payload);
+        const ok = state.context.sendEventToSession(
+          dispatchNode,
+          "node.invoke.request",
+          payload,
+          dispatchDeadlineAtMs,
+        );
         if (!ok) {
           const pending = state.context.pendingInvokes.get(requestId);
           if (pending) {

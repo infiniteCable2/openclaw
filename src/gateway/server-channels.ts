@@ -92,6 +92,10 @@ import {
   waitForDeferredAccountStart,
 } from "./server-channel-startup.js";
 import type { GatewayContextResolver } from "./server-methods/types.js";
+import {
+  withMatrixNodeCarrierRuntime,
+  type AttachMatrixNodeCarrier,
+} from "./server/matrix-node-carrier-runtime.js";
 
 const RESTART_POLICY: BackoffPolicy = {
   initialMs: 5_000,
@@ -140,6 +144,7 @@ export type ChannelManager = ChannelAccountLifecycle & {
     channelIds: Iterable<ChannelId>,
   ) => (outcome: "published" | "rollback" | "failed", channelIds?: ReadonlySet<ChannelId>) => void;
   startChannels: () => Promise<void>;
+  setMatrixNodeCarrierAttach: (attach: AttachMatrixNodeCarrier) => void;
   releaseChannelRouteHandoffs: (channel: ChannelId, accountId?: string) => void;
   setAutostartSuppression: (suppression: ChannelAutostartSuppression | null) => void;
   getAutostartSuppression: () => ChannelAutostartSuppression | null;
@@ -185,6 +190,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
   // this: a timed-out stop also publishes pending recovery.
   const pendingAutoRestarts = new Set<string>();
   let autostartSuppression: ChannelAutostartSuppression | null = null;
+  let attachMatrixNodeCarrier: AttachMatrixNodeCarrier | undefined;
   let ambientAutostartSuppressedChannelIds = new Set(
     opts.ambientAutostartSuppressedChannelIds ?? [],
   );
@@ -747,6 +753,23 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
               log.info(
                 `[${id}] starting account (reason: ${optsValue.reason ?? (optsValue.manual ? "manual" : "requested")})`,
               );
+              const accountRuntime =
+                channelRuntimeForTask &&
+                attachMatrixNodeCarrier &&
+                channelId === "matrix" &&
+                registration?.pluginId === "matrix" &&
+                registration.origin === "bundled"
+                  ? withMatrixNodeCarrierRuntime({
+                      runtime: channelRuntimeForTask,
+                      accountId: id,
+                      accountSignal: abort.signal,
+                      assertAccountCurrent: () => {
+                        capabilityLease.assertActive("Matrix node carrier");
+                        if (!isCurrentTask()) throw new Error("Matrix account retired");
+                      },
+                      attach: attachMatrixNodeCarrier,
+                    })
+                  : channelRuntimeForTask;
               const runStartAccount = async () => {
                 const startedAt = Date.now();
                 try {
@@ -761,7 +784,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
                             : getRuntime(channelId, id),
                         invalidateDirectoryCache: () =>
                           resetDirectoryCache({ cfg, channel: channelId, accountId: id }),
-                        ...(channelRuntimeForTask ? { channelRuntime: channelRuntimeForTask } : {}),
+                        ...(accountRuntime ? { channelRuntime: accountRuntime } : {}),
                       }),
                   );
                 } finally {
@@ -1466,6 +1489,9 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
         return plugin ? captureChannelSnapshot(plugin) : undefined;
       }),
     startChannels: () => startChannelsWithOptions(),
+    setMatrixNodeCarrierAttach: (attach) => {
+      attachMatrixNodeCarrier = attach;
+    },
     startChannel: startChannelInternal,
     stopChannel,
     captureAccountRestart: (channelId, accountId, reason, options) =>

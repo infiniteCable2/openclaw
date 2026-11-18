@@ -42,6 +42,10 @@ export const handleNodeInvokeResult: GatewayRequestHandler = async ({
   ) {
     return;
   }
+  if (client?.isMatrixNodeCarrierCurrent?.() === false) {
+    respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, "Matrix node carrier revoked"));
+    return;
+  }
   const p = normalizedParams;
   const callerNodeId = client?.connect?.device?.id ?? client?.connect?.client?.id;
   if (callerNodeId && callerNodeId !== p.nodeId) {

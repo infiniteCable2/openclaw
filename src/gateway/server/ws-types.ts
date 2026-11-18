@@ -46,6 +46,8 @@ export type GatewayWsClient = PluginNodeCapabilityClient & {
   connId: string;
   /** Host-owned transport retirement notification; never accepted from wire params. */
   connectionSignal?: AbortSignal;
+  /** Current Matrix-owner authority for effects admitted before transport retirement. */
+  isMatrixNodeCarrierCurrent?: () => boolean;
   /** Service grant lifetime, independent of individual socket retirement. */
   remoteControlUiIngress?: RemoteControlUiIngressContext;
   connectionKind?: GatewayWsConnectionKind;

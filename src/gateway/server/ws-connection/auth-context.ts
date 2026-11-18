@@ -57,6 +57,7 @@ export async function resolveConnectAuthState(params: {
   resolvedAuth: ResolvedGatewayAuth;
   connectAuth: ConnectParams["auth"] | null;
   hasDeviceIdentity: boolean;
+  nodeCarrier?: boolean;
   req: IncomingMessage;
   trustedProxies: string[];
   allowRealIpFallback: boolean;
@@ -72,6 +73,18 @@ export async function resolveConnectAuthState(params: {
   const explicitDeviceToken = params.hasDeviceIdentity
     ? normalizeOptionalString(params.connectAuth?.deviceToken)
     : undefined;
+  if (params.nodeCarrier) {
+    return {
+      authResult: { ok: false, reason: "token_missing" },
+      authOk: false,
+      authMethod: "token",
+      sharedAuthOk: false,
+      pendingSharedAuthFailure: false,
+      bootstrapTokenCandidate,
+      deviceTokenCandidate: explicitDeviceToken,
+      deviceTokenCandidateSource: explicitDeviceToken ? "explicit-device-token" : undefined,
+    };
+  }
   const deviceCredential = params.hasDeviceIdentity ? (explicitDeviceToken ?? token) : undefined;
   const deferRateLimitFailure = Boolean(deviceCredential);
 

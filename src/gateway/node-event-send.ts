@@ -7,6 +7,7 @@ export function sendNodeWebSocketEvent(
   socket: GatewayConnectionTransport,
   event: string,
   serialize: () => string,
+  dispatchDeadlineAtMs?: number,
 ): boolean {
   // ws.send() does not throw after entering CLOSING; it only accounts unsent bytes.
   if (socket.readyState !== WEBSOCKET_OPEN_READY_STATE) {
@@ -24,7 +25,14 @@ export function sendNodeWebSocketEvent(
   }
   try {
     const frame = Buffer.from(serialize());
-    const wireBytes = socket.send(frame, { binary: false });
+    let wireBytes: number | void;
+    if (event === "node.invoke.request" && socket.sendNodeInvoke) {
+      if (dispatchDeadlineAtMs === undefined || !Number.isFinite(dispatchDeadlineAtMs))
+        return false;
+      wireBytes = socket.sendNodeInvoke(frame, dispatchDeadlineAtMs);
+    } else {
+      wireBytes = socket.send(frame, { binary: false });
+    }
     socket.recordEventSent?.(event, frame, undefined, undefined, wireBytes);
     return true;
   } catch {

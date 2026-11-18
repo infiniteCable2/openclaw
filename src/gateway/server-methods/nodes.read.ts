@@ -244,6 +244,10 @@ export const nodeReadHandlers: GatewayRequestHandlers = {
     "node.pluginTools.update",
     validateNodePluginToolsUpdateParams,
     async ({ params, respond, client, context }) => {
+      if (client?.isMatrixNodeCarrierCurrent?.() === false) {
+        respondError(respond, ErrorCodes.FORBIDDEN, "Matrix node carrier revoked");
+        return;
+      }
       const nodeId = normalizeOptionalString(
         client?.connect?.device?.id ?? client?.connect?.client?.id,
       );

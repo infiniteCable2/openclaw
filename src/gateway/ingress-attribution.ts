@@ -83,6 +83,11 @@ export type GatewayIngressAttribution =
     })
   | (AttributedGatewayIngress & { kind: "tailscale-funnel" })
   | (AttributedGatewayIngress & { kind: "openclaw-id-tunnel"; peerKey: string })
+  | (AttributedGatewayIngress & {
+      kind: "matrix-node-carrier";
+      signal: AbortSignal;
+      assertCurrent: () => void;
+    })
   | {
       kind: "unattributable-proxy";
       reason: typeof PROXY_ATTRIBUTION_REQUIRED_REASON;

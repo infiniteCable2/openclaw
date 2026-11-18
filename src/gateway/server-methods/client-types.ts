@@ -39,6 +39,7 @@ export type GatewayClient = Pick<
   | "authPolicy"
   | "invalidated"
   | "connectionSignal"
+  | "isMatrixNodeCarrierCurrent"
   | "remoteControlUiIngress"
   | "browserOrigin"
   | "presenceKey"

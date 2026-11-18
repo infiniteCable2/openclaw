@@ -140,6 +140,7 @@ async function authenticateGatewayConnectCore(
   const connectAuthState = await resolveConnectAuthState({
     resolvedAuth,
     connectAuth: connectParams.auth,
+    nodeCarrier: context.handler.ingressAttribution.kind === "matrix-node-carrier",
     hasDeviceIdentity: Boolean(device),
     req: upgradeReq,
     trustedProxies,

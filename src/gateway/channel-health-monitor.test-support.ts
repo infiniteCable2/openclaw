@@ -8,6 +8,7 @@ export function createMockChannelManager(overrides?: Partial<ChannelManager>): C
     getRuntimeSnapshot: vi.fn(() => ({ channels: {}, channelAccounts: {} })),
     pauseChannelStarts: vi.fn(() => () => {}),
     startChannels: vi.fn(async () => {}),
+    setMatrixNodeCarrierAttach: vi.fn(),
     startChannel: vi.fn(async () => new Map()),
     stopChannel: vi.fn(async () => {}),
     captureAccountRestart: vi.fn(

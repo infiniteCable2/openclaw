@@ -130,44 +130,48 @@ export async function finishGatewayStartup(params: {
   const databaseStartupAdmission = getAgentDatabaseStartupAdmission();
   const databasePreparationReady = createDeferredCore();
   const getReadiness = runtime.createHttpTransportOptions().getReadiness;
-  const { attachGatewayWsConnectionHandler } = await startupTrace.measure(
-    "gateway.ws-imports",
-    () => import("./server/ws-connection.js"),
+  const [{ attachGatewayWsConnectionHandler }, { attachMatrixNodeCarrier }] =
+    await startupTrace.measure("gateway.ws-imports", () =>
+      Promise.all([import("./server/ws-connection.js"), import("./server/matrix-node-carrier.js")]),
+    );
+  const connectionOptions = {
+    wss: runtime.wss,
+    clients,
+    connectionWork: runtime.connectionWork,
+    bootId: params.bootId,
+    preauthConnectionBudget: runtime.preauthConnectionBudget,
+    port,
+    gatewayHost: bindHost ?? undefined,
+    pluginSurfaceScheme: gatewayTls.enabled ? "https" : "http",
+    getPluginNodeCapabilities,
+    getResolvedAuth,
+    gatewayExposure: { bindHost, tailscaleMode: runtime.tailscaleMode },
+    getRequiredSharedGatewaySessionGeneration: sharedGatewaySessionGenerationState.reader,
+    rateLimiter: authRateLimiter,
+    browserRateLimiter: browserAuthRateLimiter,
+    nodeReapprovalCoordinator,
+    isConnectPending: () => !startupState.dispatchReady,
+    startupMethodsReady: kernel.startupMethodsReady,
+    isStartupPending: runtime.isGatewayStartupPending,
+    isPendingWorkerNodeSetup: workerEnvironmentService?.hasPendingNodeEnrollmentSetup,
+    admitsNodeSetupCompletion: workerEnvironmentService?.admitsNodeSetupCompletion,
+    gatewayMethods: runtimeState.gatewayMethods,
+    events: GATEWAY_EVENTS,
+    logGateway: log,
+    logHealth,
+    logWsControl,
+    extraHandlers: runtime.attachedGatewayExtraHandlers,
+    getMethodRegistry: () => runtime.getAttachedGatewayMethodRegistry(),
+    ...(workerEnvironmentService ? { workerConnectionService: workerEnvironmentService } : {}),
+    broadcast,
+    refreshHealthSnapshot: gatewayRequestContext.refreshHealthSnapshot,
+    buildRequestContext: () => gatewayRequestContext,
+  } satisfies Parameters<typeof attachGatewayWsConnectionHandler>[0];
+  channelManager.setMatrixNodeCarrierAttach((owner) =>
+    attachMatrixNodeCarrier(connectionOptions, owner),
   );
   await startupTrace.measure("gateway.ws-attach", () =>
-    attachGatewayWsConnectionHandler({
-      wss: runtime.wss,
-      clients,
-      connectionWork: runtime.connectionWork,
-      bootId: params.bootId,
-      preauthConnectionBudget: runtime.preauthConnectionBudget,
-      port,
-      gatewayHost: bindHost ?? undefined,
-      pluginSurfaceScheme: gatewayTls.enabled ? "https" : "http",
-      getPluginNodeCapabilities,
-      getResolvedAuth,
-      gatewayExposure: { bindHost, tailscaleMode: runtime.tailscaleMode },
-      getRequiredSharedGatewaySessionGeneration: sharedGatewaySessionGenerationState.reader,
-      rateLimiter: authRateLimiter,
-      browserRateLimiter: browserAuthRateLimiter,
-      nodeReapprovalCoordinator,
-      isConnectPending: () => !startupState.dispatchReady,
-      startupMethodsReady: kernel.startupMethodsReady,
-      isStartupPending: runtime.isGatewayStartupPending,
-      isPendingWorkerNodeSetup: workerEnvironmentService?.hasPendingNodeEnrollmentSetup,
-      admitsNodeSetupCompletion: workerEnvironmentService?.admitsNodeSetupCompletion,
-      gatewayMethods: runtimeState.gatewayMethods,
-      events: GATEWAY_EVENTS,
-      logGateway: log,
-      logHealth,
-      logWsControl,
-      extraHandlers: runtime.attachedGatewayExtraHandlers,
-      getMethodRegistry: () => runtime.getAttachedGatewayMethodRegistry(),
-      ...(workerEnvironmentService ? { workerConnectionService: workerEnvironmentService } : {}),
-      broadcast,
-      refreshHealthSnapshot: gatewayRequestContext.refreshHealthSnapshot,
-      buildRequestContext: () => gatewayRequestContext,
-    }),
+    attachGatewayWsConnectionHandler(connectionOptions),
   );
   await startupTrace.measure("http.listen", () => runtime.startListening());
   startupTrace.mark("http.bound");
