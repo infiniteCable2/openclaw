@@ -1,4 +1,4 @@
-import type { ChannelRuntimeContextKey } from "../../channels/plugins/channel-runtime-surface.types.js";
+import { createChannelRuntimeContextRegistry } from "../../plugins/runtime/channel-runtime-contexts.js";
 import type { PluginRuntimeChannel } from "../../plugins/runtime/types-channel.js";
 import type { attachMatrixNodeCarrier, MatrixNodeCarrierOwner } from "./matrix-node-carrier.js";
 
@@ -18,6 +18,7 @@ export function withMatrixNodeCarrierRuntime(params: {
     accountSignal.throwIfAborted();
     assertAccountCurrent();
   };
+  const capability = "matrix.node-carrier";
   const context = {
     attachGateway(owner: MatrixNodeCarrierOwner) {
       assertAccount();
@@ -35,16 +36,20 @@ export function withMatrixNodeCarrierRuntime(params: {
   };
   // This capability belongs to this Account start context. Registration in the
   // shared registry would let other plugin runtimes look it up by channel ID.
+  const privateContexts = createChannelRuntimeContextRegistry();
+  privateContexts.register({
+    channelId: "matrix",
+    accountId,
+    capability,
+    context,
+    abortSignal: accountSignal,
+  });
   return {
     ...runtime,
     runtimeContexts: {
       ...runtime.runtimeContexts,
-      get: <T>(key: ChannelRuntimeContextKey): T | undefined => {
-        if (key.capability !== "matrix.node-carrier") return runtime.runtimeContexts.get<T>(key);
-        if (key.channelId !== "matrix" || key.accountId !== accountId || accountSignal.aborted)
-          return undefined;
-        return context as T;
-      },
+      get: (key) =>
+        key.capability === capability ? privateContexts.get(key) : runtime.runtimeContexts.get(key),
     },
   };
 }

@@ -249,9 +249,9 @@ export function registerMatrixNodeCarrier(params: {
   }
   return {
     stop,
-    invalidateRoom(roomId: string) {
+    invalidateRoom(roomId?: string) {
       for (const link of links.values()) {
-        if (link.address.room_id === roomId) {
+        if (roomId === undefined || link.address.room_id === roomId) {
           retire(link, false);
         }
       }

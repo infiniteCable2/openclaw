@@ -46,17 +46,22 @@ export function captureMatrixNodeCarrierDispatch(params: {
   const sessionKey = identity.sessionKey;
   const isCurrent = () => {
     try {
-      if (!binding.isCurrent() || !params.isRequestCurrent() || validate?.(identity) !== true)
+      if (!binding.isCurrent() || !params.isRequestCurrent() || validate?.(identity) !== true) {
         return false;
+      }
       origin.assertCurrent();
       const outcome: unknown = assertInvokeSession(sessionKey);
-      if (outcome instanceof Promise) void outcome.catch(() => {});
+      if (outcome instanceof Promise) {
+        void outcome.catch(() => {});
+      }
       return outcome === undefined;
     } catch {
       return false;
     }
   };
-  if (!isCurrent()) return undefined;
+  if (!isCurrent()) {
+    return undefined;
+  }
   dispatchBindings.set(isCurrent, { binding, command });
   return isCurrent;
 }
@@ -76,6 +81,6 @@ export function assertMatrixNodeCarrierDispatch(
     binding.expectedNodeId !== nodeId ||
     !guard?.()
   ) {
-    throw Error("Matrix node invoke authority closed");
+    throw new Error("Matrix node invoke authority closed");
   }
 }

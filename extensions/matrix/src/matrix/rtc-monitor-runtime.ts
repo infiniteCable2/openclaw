@@ -1,5 +1,6 @@
 import type { ChannelRuntimeSurface } from "openclaw/plugin-sdk/channel-contract";
 import { getChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
+import type { CoreConfig } from "../types.js";
 import { createMatrixNodeCarrierAdmission } from "./node-carrier-admission.js";
 import { registerMatrixNodeCarrier, type MatrixNodeCarrierAttach } from "./node-carrier.js";
 import { registerMatrixRtcController } from "./rtc-controller.js";
@@ -32,7 +33,7 @@ export async function registerMatrixRtcMonitor(
             signal: params.abortSignal,
             attachGateway: host.attachGateway,
             admit: createMatrixNodeCarrierAdmission({
-              currentConfig: () => params.runtime.config.current(),
+              currentConfig: () => params.runtime.config.current() as CoreConfig,
               accountId: params.accountId,
               client,
               signal: params.abortSignal,
@@ -50,7 +51,7 @@ export async function registerMatrixRtcMonitor(
         : undefined;
     return {
       startExisting: rtc.startExisting,
-      invalidateNodeRoom: (roomId: string) => node?.invalidateRoom(roomId),
+      invalidateNodeRoom: (roomId?: string) => node?.invalidateRoom(roomId),
       stop(options?: Parameters<typeof rtc.stop>[0]) {
         node?.stop();
         return rtc.stop(options);

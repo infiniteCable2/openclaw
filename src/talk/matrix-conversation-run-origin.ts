@@ -48,15 +48,18 @@ export function retainMatrixConversationRunOrigin(
   binding: { runId: string; abortSignal: AbortSignal; assertCurrent(): void },
 ): (() => void) | undefined {
   const input = origins.inputs.get(presentation);
-  if (!input) return undefined;
+  if (!input) {
+    return undefined;
+  }
   if (binding.runId !== instance.runId || origins.runs.has(instance.instanceId)) {
-    throw Error("Matrix conversation origin does not own this run");
+    throw new Error("Matrix conversation origin does not own this run");
   }
   const origin: MatrixConversationRunOrigin = Object.freeze({
     ...input,
     assertCurrent() {
-      if (origins.runs.get(instance.instanceId)?.origin !== origin)
-        throw Error("Matrix conversation run retired");
+      if (origins.runs.get(instance.instanceId)?.origin !== origin) {
+        throw new Error("Matrix conversation run retired");
+      }
       binding.abortSignal.throwIfAborted();
       binding.assertCurrent();
       input.assertCurrent();
@@ -64,8 +67,9 @@ export function retainMatrixConversationRunOrigin(
   });
   origins.runs.set(instance.instanceId, { runId: instance.runId, origin });
   return () => {
-    if (origins.runs.get(instance.instanceId)?.origin === origin)
+    if (origins.runs.get(instance.instanceId)?.origin === origin) {
       origins.runs.delete(instance.instanceId);
+    }
   };
 }
 

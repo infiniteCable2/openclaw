@@ -42,11 +42,19 @@ export function isMatrixNodeCarrierConnect(
 
 export function isMatrixNodeCarrierRequest(value: unknown): boolean {
   const frame = asOptionalObjectRecord(value);
-  if (frame?.type !== "req") return false;
-  if (frame.method === "node.invoke.result") return true;
-  if (frame.method !== "node.pluginTools.update") return false;
+  if (frame?.type !== "req") {
+    return false;
+  }
+  if (frame.method === "node.invoke.result") {
+    return true;
+  }
+  if (frame.method !== "node.pluginTools.update") {
+    return false;
+  }
   const tools = asOptionalObjectRecord(frame.params)?.tools;
-  if (!Array.isArray(tools) || tools.length > MAPS_COMMANDS.size) return false;
+  if (!Array.isArray(tools) || tools.length > MAPS_COMMANDS.size) {
+    return false;
+  }
   const commands = new Set();
   return tools.every((entry) => {
     const tool = asOptionalObjectRecord(entry);
@@ -55,8 +63,9 @@ export function isMatrixNodeCarrierRequest(value: unknown): boolean {
       tool.mcp !== undefined ||
       !isMatrixNodeCarrierCommand(tool.command) ||
       commands.has(tool.command)
-    )
+    ) {
       return false;
+    }
     commands.add(tool.command);
     return true;
   });

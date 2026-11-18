@@ -1,6 +1,7 @@
 import type { GatewayNativeApprovalMethod } from "../infra/approval-gateway-runtime-methods.js";
 import type { GatewayNativeApprovalRuntime } from "../infra/approval-gateway-runtime.types.js";
 import { registerChannelRuntimeContext } from "../infra/channel-runtime-context.js";
+import type { ActivePluginChannelRegistration } from "../plugins/channel-registry-state.types.js";
 import type { PluginRuntimeChannel } from "../plugins/runtime/types-channel.js";
 import {
   withMatrixNodeCarrierRuntime,
@@ -13,7 +14,7 @@ export function prepareGatewayChannelAccountRuntime(params: {
   accountId: string;
   signal: AbortSignal;
   approvalRuntime?: GatewayNativeApprovalRuntime;
-  registration?: { pluginId: string; origin: string };
+  registration?: Pick<ActivePluginChannelRegistration, "pluginId" | "origin">;
   attachMatrixNodeCarrier?: AttachMatrixNodeCarrier;
   assertCurrent(): void;
 }): PluginRuntimeChannel | undefined {
@@ -59,7 +60,7 @@ export function prepareGatewayChannelAccountRuntime(params: {
         runtime,
         accountId,
         accountSignal: signal,
-        assertAccountCurrent: params.assertCurrent,
+        assertAccountCurrent: () => params.assertCurrent(),
         attach: attachMatrixNodeCarrier,
       })
     : runtime;

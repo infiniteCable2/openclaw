@@ -34,7 +34,7 @@ export type MatrixNodeCarrierOwner = {
 };
 
 export function attachMatrixNodeCarrier(
-  options: GatewayConnectionOptions,
+  connectionOptions: GatewayConnectionOptions,
   owner: MatrixNodeCarrierOwner & { accountId: string },
 ) {
   if (
@@ -44,10 +44,13 @@ export function attachMatrixNodeCarrier(
     (owner.expectedNodeId !== undefined &&
       (!/^[a-f0-9]{64}$/u.test(owner.expectedNodeId) ||
         typeof owner.assertInvokeSession !== "function"))
-  )
-    throw Error("Invalid Matrix node carrier binding");
+  ) {
+    throw new Error("Invalid Matrix node carrier binding");
+  }
   const current = () => {
-    if (owner.signal.aborted) throw Error("Matrix node carrier revoked");
+    if (owner.signal.aborted) {
+      throw new Error("Matrix node carrier revoked");
+    }
     owner.assertCurrent();
   };
   current();
@@ -91,29 +94,33 @@ export function attachMatrixNodeCarrier(
       frame: string | Buffer | SerializedGatewayFrame,
       settled?: (error?: Error) => void,
       invoke?: { deadlineAtMs: number; isDispatchAuthorized?: () => boolean },
-    ) {
+    ): number | undefined {
       const json = frame.toString();
       const bytes = Buffer.byteLength(json);
       current();
-      if (this.readyState !== 1) throw Error("Matrix node carrier closed");
+      if (this.readyState !== 1) {
+        throw new Error("Matrix node carrier closed");
+      }
       const message = asOptionalObjectRecord(JSON.parse(json));
       const isInvoke = message?.type === "event" && message.event === "node.invoke.request";
-      if (isInvoke !== Boolean(invoke))
-        throw Error("Matrix node invoke requires dispatch deadline");
+      if (isInvoke !== Boolean(invoke)) {
+        throw new Error("Matrix node invoke requires dispatch deadline");
+      }
       if (message?.type === "event" && message.event !== "connect.challenge") {
         if (message.event !== "node.invoke.request") {
           settled?.();
-          return;
+          return undefined;
         }
-        if (!isMatrixNodeCarrierCommand(asOptionalObjectRecord(message.payload)?.command))
-          throw Error("Matrix node command not allowed");
+        if (!isMatrixNodeCarrierCommand(asOptionalObjectRecord(message.payload)?.command)) {
+          throw new Error("Matrix node command not allowed");
+        }
       }
       if (
         bytes > MATRIX_NODE_CARRIER_MAX_BYTES ||
         this.bufferedAmount + bytes > MATRIX_NODE_CARRIER_MAX_BYTES
       ) {
         this.close(1009, "Matrix node carrier frame limit");
-        throw Error("Matrix node carrier frame limit");
+        throw new Error("Matrix node carrier frame limit");
       }
       const invokeMetadata = invoke && {
         deadlineAtMs: invoke.deadlineAtMs,
@@ -126,10 +133,12 @@ export function attachMatrixNodeCarrier(
             invoke.isDispatchAuthorized,
           );
           current();
-          if (owner.signal.aborted || this.readyState !== 1)
-            throw Error("Matrix node carrier closed");
-          if (!Number.isFinite(invoke.deadlineAtMs) || invoke.deadlineAtMs <= performance.now())
-            throw Error("Matrix node invoke deadline elapsed");
+          if (owner.signal.aborted || this.readyState !== 1) {
+            throw new Error("Matrix node carrier closed");
+          }
+          if (!Number.isFinite(invoke.deadlineAtMs) || invoke.deadlineAtMs <= performance.now()) {
+            throw new Error("Matrix node invoke deadline elapsed");
+          }
         },
       };
       invokeMetadata?.assertCurrent();
@@ -139,7 +148,7 @@ export function attachMatrixNodeCarrier(
         delivery = owner.sendFrame(json, invokeMetadata);
       } catch {
         this.bufferedAmount -= bytes;
-        throw Error("Matrix node carrier delivery failed");
+        throw new Error("Matrix node carrier delivery failed");
       }
       void Promise.resolve(delivery).then(
         () => {
@@ -148,7 +157,7 @@ export function attachMatrixNodeCarrier(
         },
         () => {
           this.bufferedAmount -= bytes;
-          settled?.(Error("Matrix node carrier delivery failed"));
+          settled?.(new Error("Matrix node carrier delivery failed"));
           this.close(1011, "Matrix node carrier delivery failed");
         },
       );
@@ -156,7 +165,9 @@ export function attachMatrixNodeCarrier(
     }
 
     close(code = 1000, reason = "") {
-      if (this.readyState !== 1) return;
+      if (this.readyState !== 1) {
+        return;
+      }
       this.readyState = 3;
       this.emit("close", code, Buffer.from(reason));
       try {
@@ -172,7 +183,7 @@ export function attachMatrixNodeCarrier(
   }
   const socket = new Transport();
   attachGatewayConnection({
-    ...options,
+    ...connectionOptions,
     socket,
     connectionKind: "gateway",
     // Only an empty header view is needed by the existing handshake contract.
@@ -203,7 +214,9 @@ export function attachMatrixNodeCarrier(
         socket.close(1008, "Matrix node carrier revoked");
         return;
       }
-      if (socket.readyState !== 1) return;
+      if (socket.readyState !== 1) {
+        return;
+      }
       if (Buffer.byteLength(rawJson) > MATRIX_NODE_CARRIER_MAX_BYTES) {
         socket.close(1009, "Matrix node carrier frame limit");
         return;
