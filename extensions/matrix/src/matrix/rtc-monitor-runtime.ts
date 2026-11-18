@@ -50,7 +50,7 @@ export async function registerMatrixRtcMonitor(
           })
         : undefined;
     return {
-      startExisting: rtc.startExisting,
+      startExisting: () => rtc.startExisting(),
       invalidateNodeRoom: (roomId?: string) => node?.invalidateRoom(roomId),
       stop(options?: Parameters<typeof rtc.stop>[0]) {
         node?.stop();

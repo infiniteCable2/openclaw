@@ -177,10 +177,10 @@ describe("Matrix Node carrier", () => {
       carrier.dispatch(peer, open);
       await vi.waitFor(() => expect(carrier.attachGateway).toHaveBeenCalledOnce());
       await Promise.resolve();
-      const { agentId, roomId, sendFrame } = carrier.attachGateway.mock.calls[0]![0];
-      expect({ agentId, roomId }).toEqual({ agentId: "example", roomId: address.room_id });
+      const owner = carrier.attachGateway.mock.calls[0]![0];
+      expect(owner).toMatchObject({ agentId: "example", roomId: address.room_id });
       const challengeTime = 1_900_000_000_000;
-      await sendFrame(
+      await owner.sendFrame(
         JSON.stringify({
           type: "event",
           event: "connect.challenge",
@@ -192,7 +192,7 @@ describe("Matrix Node carrier", () => {
         expect.objectContaining({ kind: "frame", seq: 0 }),
         expect.any(Function),
       );
-      await sendFrame(JSON.stringify({ type: "event", event: "node.invoke.request" }), {
+      await owner.sendFrame(JSON.stringify({ type: "event", event: "node.invoke.request" }), {
         deadlineAtMs: performance.now() + 60_000,
         assertCurrent: vi.fn(),
       });

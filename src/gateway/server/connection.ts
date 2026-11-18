@@ -150,7 +150,9 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
   const carrier =
     ingressAttribution?.kind === "matrix-node-carrier" ? ingressAttribution : undefined;
   const isCurrent = () => {
-    if (!hasCurrentRemoteControlUiIngress(remoteIngress) || carrier?.signal.aborted) return false;
+    if (!hasCurrentRemoteControlUiIngress(remoteIngress) || carrier?.signal.aborted) {
+      return false;
+    }
     try {
       carrier?.assertCurrent();
       return true;
