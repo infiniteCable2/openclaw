@@ -3,6 +3,7 @@ import type { FollowupRun } from "./queue/types.js";
 
 export type ReplyToolAuthorityInput = {
   operatorAuthority?: AdmittedRunOperatorAuthority;
+  conversationAudience?: FollowupRun["conversationAudience"];
   originatingChannel?: FollowupRun["originatingChannel"];
   toolsAllow?: string[];
   disableTools?: boolean;

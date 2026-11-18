@@ -18,6 +18,7 @@ import type { ImageContent } from "../llm/types.js";
 import type { MediaFact } from "../media/media-facts.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
 import type { RuntimePluginToolGrant } from "../plugins/runtime/tool-grant.js";
+import type { ConversationPrivateAudience } from "./conversation-private-audience.js";
 import type { InputProvenance } from "./input-provenance.js";
 import type { ReplyBackendTurnStatus } from "./session-controller.turn-status.types.js";
 import type { UserTurnTranscriptRecorder } from "./user-turn-transcript.types.js";
@@ -137,7 +138,10 @@ export type ReplyToolAuthorityRequester = Readonly<{
 export type ReplyTurnParticipantInput = Pick<
   ReplyToolAuthorityOverlay,
   "operatorAuthority" | "senderId" | "senderName" | "gatewayUiCommandTarget"
-> & { requesterOrigin?: RequesterOrigin };
+> & {
+  requesterOrigin?: RequesterOrigin;
+  privateAudience?: ConversationPrivateAudience;
+};
 
 export type ReplyToolAuthoritySnapshot = Readonly<{
   /** Authenticated requester identity, independent of permissions and client reconnections. */
@@ -175,6 +179,7 @@ export type ReplyTurnParticipant = Readonly<{
 
 export type ReplyTurnParticipants = {
   accept(participant: ReplyTurnParticipantInput): void;
+  isPrivateRequesterProfile(profileId: string): boolean;
   resolve(
     this: void,
     user?: string,

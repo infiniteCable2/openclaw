@@ -396,6 +396,7 @@ export async function runActiveReplySteer(
         senderId: followupRun.run.senderId,
         senderName: followupRun.run.senderName,
         gatewayUiCommandTarget: followupRun.run.gatewayUiCommandTarget,
+        privateAudience: followupRun.conversationAudience,
       },
       ...(steeringAuthority.pendingInputAuthorityFingerprint
         ? { pendingInputAuthorityFingerprint: steeringAuthority.pendingInputAuthorityFingerprint }

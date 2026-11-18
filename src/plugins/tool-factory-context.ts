@@ -1,5 +1,6 @@
 import { assertPluginToolInvocationSourceCurrent } from "../agents/agent-tool-source-execution-guard.js";
 import type { PluginToolExecutionCapabilities } from "../agents/plugin-tool-execution.js";
+import { getGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
 import { assertMemoryAudienceSession } from "./memory-audience.js";
 import { resolveMemoryCapabilityRegistration } from "./memory-state.js";
 import { getPluginInstance } from "./plugin-instance-scope.js";
@@ -56,6 +57,9 @@ export function createPluginToolFactoryContext(params: {
     continuation?.assertCurrent();
     assertMemoryAudienceCurrent?.();
   };
+  const caller = params.assertInvocationCurrent ? getGatewayToolCallerIdentity() : undefined;
+  const runInstance = caller?.operationalRunInstance;
+  const participants = caller?.personalToolParticipants;
   return {
     ...context,
     ...(entry.contextVersion === 2
@@ -74,6 +78,24 @@ export function createPluginToolFactoryContext(params: {
     get senderIsOwner() {
       return continuation ? continuation.isCurrent() : context.senderIsOwner;
     },
+    isPrivateRequesterProfile:
+      runInstance && participants
+        ? (profileId) => {
+            const active = getGatewayToolCallerIdentity();
+            if (
+              active?.operationalRunInstance !== runInstance ||
+              active?.personalToolParticipants !== participants
+            ) {
+              return false;
+            }
+            try {
+              assertInvocationCurrent();
+              return participants.isPrivateRequesterProfile(profileId);
+            } catch {
+              return false;
+            }
+          }
+        : undefined,
     // V1 callers may inspect metadata or run one-shot tools without an admitted
     // invocation. Do not present a lifecycle-only check as host authority.
     assertInvocationCurrent:

@@ -563,6 +563,7 @@ async function beginPreparedReplyMessageInjectionTarget(
     const participant = incomingOverlay
       ? {
           ...incomingOverlay,
+          privateAudience: personalToolParticipant?.privateAudience,
           requesterOrigin: captureRequesterOrigin({
             ...incomingOverlay,
             messageChannel: incomingOverlay.originatingChannel,
@@ -570,10 +571,8 @@ async function beginPreparedReplyMessageInjectionTarget(
           }),
         }
       : personalToolParticipant;
-    if (participant) {
-      participantRecorded = true;
-      owner.acceptParticipant?.(participant);
-    }
+    participantRecorded = true;
+    owner.acceptParticipant?.(participant ?? {});
   };
   const settleAcceptance = (accepted: boolean) => {
     if (acceptanceSettled) {

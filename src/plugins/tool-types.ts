@@ -132,6 +132,8 @@ type OpenClawPluginToolContextBase = {
   requesterSenderId?: string;
   /** Trusted owner bit from inbound context (runtime-provided, not tool args). */
   senderIsOwner?: boolean;
+  /** Whether the active native turn has a current private audience for this exact requester. */
+  isPrivateRequesterProfile?: (profileId: string) => boolean;
   /** Host-resolved memory partition for this turn. Providers must not reconstruct it. */
   memoryAudience?: MemoryAudience;
   /** Stable identity for one provider-owned pre-compaction flush cycle. */

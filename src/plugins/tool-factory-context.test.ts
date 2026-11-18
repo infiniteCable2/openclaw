@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { expect, expectTypeOf, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { createOperationalRunInstanceRef } from "../agents/admitted-run-context.js";
+import {
+  createAdmittedRunOperatorAuthority,
+  createOperationalRunInstanceRef,
+} from "../agents/admitted-run-context.js";
 import {
   captureGatewayToolCallerAssertion,
   withGatewayToolCallerIdentity,
 } from "../agents/tools/gateway-caller-context.js";
 import { createPluginRuntimeMock } from "../plugin-sdk/test-helpers/plugin-runtime-mock.js";
+import { createReplyTurnParticipants } from "../sessions/session-controller.tool-authority.js";
 import { InvocationFrame } from "./plugin-instance-invocation.js";
 import { markPluginRegistryRetired } from "./registry-lifecycle.js";
 import { createTestPluginRegistry } from "./registry-runtime.test-helpers.js";
@@ -85,6 +89,55 @@ const continuation = (isCurrent: () => boolean) => ({
   senderId: "original-owner",
   channel: "discord",
   accountId: "original-account",
+});
+
+it("keeps private requester grants on the exact live turn and fences unverified inputs", async () => {
+  const agentId = "fixture";
+  const sessionKey = "agent:fixture:private";
+  let audienceCurrent = true;
+  const operatorAuthority = createAdmittedRunOperatorAuthority({
+    profileId: "fixture-person",
+    scopes: ["operator.read"],
+    assertCurrent() {},
+  });
+  const privateAudience = {
+    agentId,
+    sessionKey,
+    channelId: "fixture-channel",
+    accountId: "default",
+    nativeChannelId: "private",
+    participant: { type: "profile" as const, id: operatorAuthority.profileId },
+    assertCurrent: () => assert(audienceCurrent),
+  };
+  const personalToolParticipants = createReplyTurnParticipants({
+    operatorAuthority,
+    privateAudience,
+  });
+  const caller = {
+    agentId,
+    sessionKey,
+    personalToolParticipants,
+    operationalRunInstance: createOperationalRunInstanceRef("fixture-run"),
+  };
+  await withGatewayToolCallerIdentity(caller, async () => {
+    const check = register(() => null, { assertInvocationCurrent() {} }).context
+      .isPrivateRequesterProfile!;
+    expect(check("fixture-person")).toBe(true);
+    expect(check("other-person")).toBe(false);
+    await withGatewayToolCallerIdentity(
+      { ...caller, operationalRunInstance: createOperationalRunInstanceRef("another-run") },
+      async () => expect(check("fixture-person")).toBe(false),
+    );
+    personalToolParticipants.accept({ operatorAuthority, privateAudience });
+    expect(check("fixture-person")).toBe(true);
+    audienceCurrent = false;
+    expect(check("fixture-person")).toBe(false);
+    audienceCurrent = true;
+    personalToolParticipants.accept({ operatorAuthority });
+    personalToolParticipants.accept({ operatorAuthority, privateAudience });
+    expect(check("fixture-person")).toBe(false);
+  });
+  personalToolParticipants.close();
 });
 
 it("enters the registered owner's scopes and retains the execution cancellation scope", async () => {

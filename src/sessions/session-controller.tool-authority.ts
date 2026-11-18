@@ -34,6 +34,8 @@ export function createReplyTurnParticipants(
   const participants = new Map<string, ReplyTurnParticipant>();
   const releases = new Map<string, () => void>();
   let closed = false;
+  const originalAudience = owner?.privateAudience;
+  let currentAudience = originalAudience;
   const add = (input: NonNullable<typeof owner>) => {
     const authority = input.operatorAuthority;
     if (!authority) {
@@ -121,12 +123,50 @@ export function createReplyTurnParticipants(
   }
   return {
     accept(overlay) {
+      const next = overlay.privateAudience;
+      if (
+        currentAudience &&
+        next?.agentId === currentAudience.agentId &&
+        next.sessionKey === currentAudience.sessionKey &&
+        next.participant.type === "profile" &&
+        next.participant.id === owner?.operatorAuthority?.profileId &&
+        next.participant.id === overlay.operatorAuthority?.profileId
+      ) {
+        currentAudience = next;
+      } else {
+        currentAudience = undefined;
+      }
       if (
         !closed &&
         owner?.operatorAuthority &&
         overlay.operatorAuthority?.profileId !== owner.operatorAuthority.profileId
       ) {
         add(overlay);
+      }
+    },
+    isPrivateRequesterProfile(profileId) {
+      const requester = participants.get(profileId);
+      if (
+        closed ||
+        !requester ||
+        !originalAudience ||
+        !currentAudience ||
+        originalAudience.participant.type !== "profile" ||
+        originalAudience.participant.id !== profileId ||
+        owner?.operatorAuthority?.profileId !== profileId ||
+        participants.size !== 1
+      ) {
+        return false;
+      }
+      try {
+        requester.assertCurrent();
+        originalAudience.assertCurrent();
+        if (originalAudience !== currentAudience) {
+          currentAudience.assertCurrent();
+        }
+        return true;
+      } catch {
+        return false;
       }
     },
     resolve,

@@ -539,6 +539,14 @@ export function prepareReplyToolAuthority(
       senderId: snapshot.run.senderId,
       senderName: snapshot.run.senderName,
       gatewayUiCommandTarget: snapshot.run.gatewayUiCommandTarget,
+      privateAudience:
+        (!snapshot.run.inputProvenance || snapshot.run.inputProvenance.kind === "external_user") &&
+        !snapshot.run.scheduledToolPolicy &&
+        !snapshot.run.trustedInternalHandoff &&
+        run.conversationAudience?.agentId === snapshot.run.agentId &&
+        run.conversationAudience?.sessionKey === snapshot.run.sessionKey
+          ? run.conversationAudience
+          : undefined,
     },
     requestedRoute: Object.freeze({ provider: snapshot.run.provider, model: snapshot.run.model }),
     fingerprint: (route?: ReplyToolAuthorityRoute) => {
