@@ -389,6 +389,85 @@ it.each(["close", "caller-change", "captions-removed"] as const)(
   },
 );
 
+it("relays native Talk status to the offered device and coalesces snapshots while sending", async () => {
+  const h = assistantHarness();
+  const first = Promise.withResolvers<void>();
+  h.sdkClient.encryptAndSendToDevice.mockReturnValueOnce(first.promise);
+  h.remoteMembership.applicationData = {
+    [MATRIX_RTC_CONVERSATION_KEY]: { ...request, talk_events: true },
+  };
+  try {
+    h.start();
+    await flushPromises();
+    const engine = mocks.startMeetingAgentRealtimeEngine.mock.calls[0]![0];
+    const makeActivity = (seq: number, sessionId = engine.meetingSessionId) => ({
+      id: `activity:${seq}`,
+      type: "session.activity" as const,
+      sessionId,
+      seq,
+      timestamp: "2026-01-01T00:00:00Z",
+      mode: "stt-tts" as const,
+      transport: "managed-room" as const,
+      brain: "agent-consult" as const,
+      payload: {
+        version: 1,
+        connection: "ready",
+        input: { phase: "listening", available: true, pending: 0 },
+        work: { pending: 0, queued: 0, running: 0 },
+        output: { generation: 0, state: "idle" },
+      },
+    });
+    const initial = makeActivity(2);
+    engine.onTalkEvent?.(initial);
+    expect(h.sdkClient.encryptAndSendToDevice).not.toHaveBeenCalled();
+    await h.ready();
+    expect(
+      h.session.updateApplicationData.mock.calls[0]?.[0][MATRIX_RTC_CONVERSATION_KEY],
+    ).toMatchObject({
+      talk_events: true,
+      talk_session_id: engine.meetingSessionId,
+    });
+    const expectRelay = (event: object) => [
+      "io.openclaw.conversation.talk",
+      [{ userId: ownerId, deviceId: "OWNERDEVICE" }],
+      { version: 1, room_id: roomId, request_id: request.request_id, event },
+    ];
+    expect(h.sdkClient.encryptAndSendToDevice.mock.calls).toEqual([expectRelay(initial)]);
+    engine.onTalkEvent?.(makeActivity(3));
+    const latest = makeActivity(4);
+    engine.onTalkEvent?.(latest);
+    const outcome = (seq: number) => ({
+      ...makeActivity(seq),
+      type: "input.outcome" as const,
+      captureId: "capture",
+      final: true,
+      payload: { version: 1, scope: "capture", outcome: "transcribed" },
+    });
+    for (let seq = 5; seq <= 14; seq++) {
+      engine.onTalkEvent?.(outcome(seq));
+    }
+    engine.onTalkEvent?.(makeActivity(15, "other-session"));
+    first.resolve();
+    await flushPromises();
+    expect(h.sdkClient.encryptAndSendToDevice.mock.calls).toEqual([
+      expectRelay(initial),
+      expectRelay(latest),
+      ...Array.from({ length: 8 }, (_, index) => expectRelay(outcome(index + 7))),
+    ]);
+    const sending = Promise.withResolvers<void>();
+    h.sdkClient.encryptAndSendToDevice.mockReturnValueOnce(sending.promise);
+    engine.onTalkEvent?.(makeActivity(16));
+    engine.onTalkEvent?.(outcome(17));
+    h.remoteMembership.applicationData = marker;
+    sending.resolve();
+    await flushPromises();
+    expect(h.sdkClient.encryptAndSendToDevice).toHaveBeenCalledTimes(11);
+  } finally {
+    first.resolve();
+    await h.controller.stop();
+  }
+});
+
 it.each([undefined, false, "true"])(
   "does not send or advertise captions without strict true offer (%s)",
   async (offer) => {

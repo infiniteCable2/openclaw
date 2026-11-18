@@ -211,6 +211,8 @@ Room allowlist keys (`groups`, legacy `rooms`) should be room IDs or aliases. Pl
 
 MatrixRTC call handling is an explicit opt-in. It uses the shared OpenClaw meeting audio engine for streaming transcription, agent turns, and queued speech output, while a separately installed native media bridge handles LiveKit audio and per-participant MatrixRTC encryption keys.
 
+Assistant Voice clients that offer `talk_events: true` in the version 1 `io.openclaw.conversation` membership receive the native Talk session ID with the ready response. OpenClaw sends activity and input outcomes as encrypted `io.openclaw.conversation.talk` events to the admitted caller device, scoped to the current room and call request. The SDK queues this optional display information independently of audio. Clients without the offer continue using the existing readiness behavior.
+
 ```json5
 {
   channels: {
