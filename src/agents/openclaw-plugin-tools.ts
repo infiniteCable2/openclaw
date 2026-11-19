@@ -734,5 +734,5 @@ function* resolveOpenClawPluginToolSteps(
     pluginTools.push(inventory);
   }
 
-  return pluginTools;
+  return pluginTools.map((tool) => connectedDevices.extendManagedTool(tool));
 }

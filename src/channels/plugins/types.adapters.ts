@@ -80,6 +80,11 @@ export type ChannelAccountLinkState = "linked" | "not-linked" | "unknown";
 export type ChannelConfigAdapter<ResolvedAccount> = {
   listAccountIds: (cfg: OpenClawConfig) => string[];
   resolveAccount: (cfg: OpenClawConfig, accountId?: string | null) => ResolvedAccount;
+  /** Pinned personal node assignments for inventory. They carry no command authority. */
+  listPersonalNodeBindings?: (
+    cfg: OpenClawConfig,
+    agentId: string,
+  ) => readonly { accountId: string; senderId: string; nodeId: string }[];
   /** Operational account preparation; preferred over the synchronous compatibility hook. */
   resolveAccountAsync?: (
     cfg: OpenClawConfig,

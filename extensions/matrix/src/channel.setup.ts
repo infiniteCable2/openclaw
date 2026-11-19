@@ -14,6 +14,7 @@ import {
   type ResolvedMatrixAccount,
 } from "./matrix/accounts.js";
 import { normalizeMatrixAllowList } from "./matrix/monitor/allowlist.js";
+import { listMatrixPersonalNodeBindings } from "./matrix/node-carrier-admission.js";
 import { createMatrixSetupWizardProxy, matrixSetupContract } from "./setup-core.js";
 
 const matrixSetupWizard = createMatrixSetupWizardProxy(async () => ({
@@ -79,6 +80,8 @@ export const matrixPluginBase = {
       formatAllowFrom: normalizeMatrixAllowList,
     }),
     resolveAccountAsync: adaptScopedAccountAccessor(resolveMatrixAccountAsync),
+    listPersonalNodeBindings: (cfg, agentId) =>
+      listMatrixPersonalNodeBindings(cfg, agentId, listMatrixAccountIds(cfg)),
     isConfigured: (account) => account.configured,
     describeAccount: (account) =>
       describeAccountSnapshot({

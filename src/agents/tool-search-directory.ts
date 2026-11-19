@@ -190,6 +190,16 @@ function formatToolSearchCatalogDirectory(
         !entry.requiresExactId &&
         isAgentToolExecutionAvailable(entry.tool),
     );
+  const canListDeviceInventory =
+    nameCounts.get("device_inventory") === 1 &&
+    entries.some(
+      (entry) =>
+        entry.name === "device_inventory" &&
+        entry.source === "openclaw" &&
+        entry.sourceName === "device-management" &&
+        !entry.requiresExactId &&
+        isAgentToolExecutionAvailable(entry.tool),
+    );
   // Count collisions before excluding native tools: their lookalikes remain ambiguous.
   const listedEntries = deferredEntries
     .filter((entry) => !entry.requiresExactId && nameCounts.get(entry.name) === 1)
@@ -224,7 +234,9 @@ function formatToolSearchCatalogDirectory(
       guidance +=
         " Call a unique deferred tool name directly, or use dispatch_action with its id and args.";
     }
-    if (canDiscoverConnectedDevices) {
+    if (canListDeviceInventory) {
+      guidance += " Use device_inventory for the complete device list and permitted actions.";
+    } else if (canDiscoverConnectedDevices) {
       guidance += " Use connected_device_inventory to find paired devices and their action tools.";
     }
     const footerChars =

@@ -40,22 +40,21 @@ function catalogRef(tools: ReturnType<typeof localCatalog>): ToolSearchCatalogRe
 }
 
 describe("lean Tool Search directory", () => {
-  it("points to scoped connected device discovery when offered", () => {
-    const hint = "Use connected_device_inventory to find paired devices";
-    const options = { toolSearchDirectoryLean: true };
-    const other = createStubTool("other_inventory");
-    expect(
+  it("uses the complete inventory when available and otherwise points to paired devices", () => {
+    const managed = createStubTool("device_inventory");
+    setPluginToolMeta(managed, { pluginId: "device-management", optional: true });
+    const paired = createStubTool("connected_device_inventory");
+    const render = (tools: ReturnType<typeof localCatalog>) =>
       buildToolSchemaDirectoryPrompt(
-        { catalogRef: catalogRef([other, createStubTool("connected_device_inventory")]) },
-        options,
-      ),
-    ).toContain(hint);
-    expect(
-      buildToolSchemaDirectoryPrompt(
-        { catalogRef: catalogRef([other, createStubTool("nodes")]) },
-        options,
-      ),
-    ).not.toContain(hint);
+        { catalogRef: catalogRef(tools) },
+        { toolSearchDirectoryLean: true },
+      );
+    expect(render([paired, managed])).toContain(
+      "Use device_inventory for the complete device list",
+    );
+    expect(render([paired, managed])).not.toContain("Use connected_device_inventory");
+    expect(render([paired])).toContain("Use connected_device_inventory");
+    expect(render([createStubTool("nodes")])).not.toContain("Use connected_device_inventory");
   });
 
   it("does not spend removed tools' prompt savings on longer descriptions", () => {

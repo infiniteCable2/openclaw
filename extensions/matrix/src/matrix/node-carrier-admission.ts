@@ -4,6 +4,45 @@ import { resolveMatrixAccountConfig } from "./account-config.js";
 import type { createDirectRoomTracker } from "./monitor/direct.js";
 import type { MatrixNodeCarrierFacade, MatrixNodePeer } from "./sdk/matrix-node-carrier.js";
 
+function resolveEnabledCarrierAccount(cfg: CoreConfig, accountId: string) {
+  if (
+    cfg.channels?.matrix?.enabled === false ||
+    (!findMatrixAccountEntry(cfg, accountId) && !hasImplicitMatrixAccountConfig(cfg, accountId))
+  ) {
+    return undefined;
+  }
+  const account = resolveMatrixAccountConfig({ cfg, accountId });
+  return account.enabled !== false &&
+    account.dm?.enabled !== false &&
+    account.dm?.policy !== "disabled" &&
+    account.rtc?.enabled === true
+    ? account
+    : undefined;
+}
+
+export function listMatrixPersonalNodeBindings(
+  cfg: CoreConfig,
+  agentId: string,
+  accountIds: readonly string[],
+) {
+  return accountIds.flatMap((accountId) => {
+    const account = resolveEnabledCarrierAccount(cfg, accountId);
+    const rooms = new Set<string>();
+    return (account?.rtc?.admissions ?? []).flatMap((row) => {
+      // The live carrier selects the first admission for a room.
+      if (rooms.has(row.roomId)) {
+        return [];
+      }
+      rooms.add(row.roomId);
+      return row.agentId === agentId
+        ? (row.nodeDevices ?? []).flatMap(({ nodeId }) =>
+            nodeId ? [{ accountId, senderId: row.userId, nodeId }] : [],
+          )
+        : [];
+    });
+  });
+}
+
 export function createMatrixNodeCarrierAdmission(params: {
   currentConfig(): CoreConfig;
   accountId: string;
@@ -21,24 +60,8 @@ export function createMatrixNodeCarrierAdmission(params: {
     if (params.signal.aborted || !params.client.isEncryptedDirectRoom(roomId, peer.userId)) {
       return undefined;
     }
-    const cfg = params.currentConfig();
-    if (
-      cfg.channels?.matrix?.enabled === false ||
-      (!findMatrixAccountEntry(cfg, params.accountId) &&
-        !hasImplicitMatrixAccountConfig(cfg, params.accountId))
-    ) {
-      return undefined;
-    }
-    const account = resolveMatrixAccountConfig({ cfg, accountId: params.accountId });
-    if (
-      account.enabled === false ||
-      account.dm?.enabled === false ||
-      account.dm?.policy === "disabled" ||
-      account.rtc?.enabled !== true
-    ) {
-      return undefined;
-    }
-    const row = account.rtc.admissions?.find((entry) => entry.roomId === roomId);
+    const account = resolveEnabledCarrierAccount(params.currentConfig(), params.accountId);
+    const row = account?.rtc?.admissions?.find((entry) => entry.roomId === roomId);
     const device = row?.nodeDevices?.find((entry) => entry.deviceId === peer.deviceId);
     return row?.userId === peer.userId && device
       ? { agentId: row.agentId, expectedNodeId: device.nodeId }

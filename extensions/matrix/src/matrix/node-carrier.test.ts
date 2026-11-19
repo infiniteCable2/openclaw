@@ -1,7 +1,10 @@
 import type { MatrixClient } from "matrix-js-sdk/lib/client.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CoreConfig } from "../types.js";
-import { createMatrixNodeCarrierAdmission } from "./node-carrier-admission.js";
+import {
+  createMatrixNodeCarrierAdmission,
+  listMatrixPersonalNodeBindings,
+} from "./node-carrier-admission.js";
 import {
   MATRIX_NODE_CARRIER_EVENT,
   readMatrixNodeCarrierMessage,
@@ -150,7 +153,12 @@ describe("Matrix Node carrier", () => {
     const bootstrap = await admission(peer, address.room_id);
     expect(bootstrap?.expectedNodeId).toBeUndefined();
     expect(bootstrap?.agentId).toBe("example");
+    expect(listMatrixPersonalNodeBindings(cfg, "example", ["default"])).toEqual([]);
     device.nodeId = "a".repeat(64);
+    expect(listMatrixPersonalNodeBindings(cfg, "example", ["default"])).toEqual([
+      { accountId: "default", senderId: peer.userId, nodeId: device.nodeId },
+    ]);
+    expect(listMatrixPersonalNodeBindings(cfg, "unrelated", ["default"])).toEqual([]);
     expect(() => bootstrap?.assertCurrent()).toThrow("admission changed");
     expect((await admission(peer, address.room_id))?.expectedNodeId).toBe(device.nodeId);
   });

@@ -180,6 +180,7 @@ export type ReplyTurnParticipant = Readonly<{
 export type ReplyTurnParticipants = {
   accept(participant: ReplyTurnParticipantInput): void;
   isPrivateRequesterProfile(profileId: string): boolean;
+  readPrivateRequesterProfile(): string | undefined;
   resolve(
     this: void,
     user?: string,

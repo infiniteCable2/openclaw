@@ -124,6 +124,29 @@ export function createReplyTurnParticipants(
         }
       : undefined;
   }
+  const readPrivateRequesterProfile = () => {
+    if (
+      closed ||
+      !originalAudience ||
+      !currentAudience ||
+      !privateProfileId ||
+      (operatorProfileId !== undefined && operatorProfileId !== privateProfileId) ||
+      participants.size > 1
+    ) {
+      return undefined;
+    }
+    try {
+      // This proof is independent of the requester's Gateway operator role.
+      participants.get(privateProfileId)?.assertCurrent();
+      originalAudience.assertCurrent();
+      if (originalAudience !== currentAudience) {
+        currentAudience.assertCurrent();
+      }
+      return privateProfileId;
+    } catch {
+      return undefined;
+    }
+  };
   return {
     accept(overlay) {
       const next = overlay.privateAudience;
@@ -148,30 +171,9 @@ export function createReplyTurnParticipants(
       }
     },
     isPrivateRequesterProfile(profileId) {
-      if (
-        closed ||
-        !originalAudience ||
-        !currentAudience ||
-        !privateProfileId ||
-        privateProfileId !== profileId ||
-        (operatorProfileId !== undefined && operatorProfileId !== profileId) ||
-        participants.size > 1
-      ) {
-        return false;
-      }
-      try {
-        // Channel ingress already binds this audience to a verified profile. That
-        // profile can be entitled to a plugin resource without a Gateway role.
-        participants.get(profileId)?.assertCurrent();
-        originalAudience.assertCurrent();
-        if (originalAudience !== currentAudience) {
-          currentAudience.assertCurrent();
-        }
-        return true;
-      } catch {
-        return false;
-      }
+      return Boolean(profileId) && readPrivateRequesterProfile() === profileId;
     },
+    readPrivateRequesterProfile,
     resolve,
     close() {
       if (closed) {
