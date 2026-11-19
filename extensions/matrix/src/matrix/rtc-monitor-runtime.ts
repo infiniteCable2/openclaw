@@ -38,13 +38,12 @@ export async function registerMatrixRtcMonitor(
               client,
               signal: params.abortSignal,
               preparePrivateAudience: params.preparePrivateAudience,
-              assertInvokeSession: (peer, roomId, agentId, sessionKey) =>
-                rtc.assertNodeInvocation({
+              bindNodeConnection: (peer, roomId, agentId) =>
+                rtc.bindNodeConnection({
                   roomId,
                   agentId,
                   userId: peer.userId,
                   deviceId: peer.deviceId,
-                  sessionKey,
                 }),
             }),
           })

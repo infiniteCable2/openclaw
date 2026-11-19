@@ -35,8 +35,8 @@ export type ActiveCall = {
   disposeListeners: () => void;
 };
 
-export function bindMatrixRtcNodeInvocation(calls: ReadonlyMap<string, ActiveCall>) {
-  return (source: MatrixRtcNodeInvokeSource & { roomId: string }) => {
+export function bindMatrixRtcNodeConnection(calls: ReadonlyMap<string, ActiveCall>) {
+  return (source: Omit<MatrixRtcNodeInvokeSource, "sessionKey"> & { roomId: string }) => {
     const call = calls.get(source.roomId);
     const scope = call?.nodeInvokeScope;
     if (
@@ -46,12 +46,20 @@ export function bindMatrixRtcNodeInvocation(calls: ReadonlyMap<string, ActiveCal
       !scope ||
       scope.agentId !== source.agentId ||
       scope.userId !== source.userId ||
-      scope.deviceId !== source.deviceId ||
-      scope.sessionKey !== source.sessionKey
+      scope.deviceId !== source.deviceId
     ) {
-      throw new Error("Matrix Node requires the current Assistant Voice session");
+      return undefined;
     }
-    scope.assertCurrent();
+    return {
+      signal: call.abort.signal,
+      assertInvokeSession(sessionKey: string) {
+        call.abort.signal.throwIfAborted();
+        if (sessionKey !== scope.sessionKey) {
+          throw new Error("Matrix Node requires the current Assistant Voice session");
+        }
+        scope.assertCurrent();
+      },
+    };
   };
 }
 

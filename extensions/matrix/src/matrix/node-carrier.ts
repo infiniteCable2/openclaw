@@ -19,6 +19,7 @@ type GatewayLink = {
 type MatrixNodeAdmission = {
   agentId: string;
   expectedNodeId?: string;
+  signal?: AbortSignal;
   assertCurrent(): void;
   assertInvokeSession(sessionKey: string): void;
 };
@@ -44,6 +45,7 @@ type Link = {
   controller: AbortController;
   deadline: ReturnType<typeof setTimeout>;
   assertCurrent?: () => void;
+  disposeLifetime?: () => void;
   gateway?: GatewayLink;
   clock?: { utcMs: number; monotonicMs: number };
   inbound: number;
@@ -76,6 +78,7 @@ export function registerMatrixNodeCarrier(params: {
       return;
     }
     links.delete(link.address.link_id);
+    link.disposeLifetime?.();
     link.controller.abort();
     clearTimeout(link.deadline);
     link.gateway?.close();
@@ -91,17 +94,26 @@ export function registerMatrixNodeCarrier(params: {
   }
 
   async function open(peer: MatrixNodePeer, address: MatrixNodeCarrierAddress) {
-    if (
-      params.signal.aborted ||
-      links.has(address.link_id) ||
-      links.size >= MAX_LINKS ||
-      [...links.values()].some(
-        (link) =>
-          link.address.room_id === address.room_id &&
-          link.peer.userId === peer.userId &&
-          link.peer.deviceId === peer.deviceId,
-      )
-    ) {
+    if (params.signal.aborted || links.has(address.link_id)) {
+      return;
+    }
+    for (const previous of links.values()) {
+      if (
+        previous.address.room_id !== address.room_id ||
+        previous.peer.userId !== peer.userId ||
+        previous.peer.deviceId !== peer.deviceId
+      ) {
+        continue;
+      }
+      try {
+        previous.assertCurrent?.();
+        return;
+      } catch {
+        // A previous unpinned bootstrap can become invalid when the node is pinned.
+        retire(previous, false);
+      }
+    }
+    if (links.size >= MAX_LINKS) {
       return;
     }
     const link: Link = {
@@ -126,6 +138,13 @@ export function registerMatrixNodeCarrier(params: {
         return;
       }
       link.assertCurrent = () => admission.assertCurrent();
+      const lifetime = admission.signal;
+      lifetime?.throwIfAborted();
+      if (lifetime) {
+        const end = () => retire(link, false);
+        lifetime.addEventListener("abort", end, { once: true });
+        link.disposeLifetime = () => lifetime.removeEventListener("abort", end);
+      }
       const assertCurrent = () => {
         if (!isCurrent(link)) {
           throw new Error("Matrix node transport link is closed");

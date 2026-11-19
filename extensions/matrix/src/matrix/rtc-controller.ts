@@ -30,7 +30,7 @@ import {
 } from "./rtc-assistant.js";
 import { requestMatrixRtcCredentials, type MatrixRtcMembershipIdentity } from "./rtc-auth.js";
 import {
-  bindMatrixRtcNodeInvocation,
+  bindMatrixRtcNodeConnection,
   stopCall,
   waitForCallCleanup,
   type ActiveCall,
@@ -742,7 +742,7 @@ export function registerMatrixRtcController(params: {
   };
 
   return {
-    assertNodeInvocation: bindMatrixRtcNodeInvocation(calls),
+    bindNodeConnection: bindMatrixRtcNodeConnection(calls),
     startExisting() {
       for (const admission of params.config.admissions) {
         // Pin and observe the canonical room session. matrix-js-sdk can update a

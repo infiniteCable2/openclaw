@@ -48,12 +48,11 @@ export function createMatrixNodeCarrierAdmission(params: {
   accountId: string;
   client: Pick<MatrixNodeCarrierFacade, "isEncryptedDirectRoom">;
   signal: AbortSignal;
-  assertInvokeSession(
+  bindNodeConnection(
     peer: MatrixNodePeer,
     roomId: string,
     agentId: string,
-    sessionKey: string,
-  ): void;
+  ): { signal: AbortSignal; assertInvokeSession(sessionKey: string): void } | undefined;
   preparePrivateAudience: ReturnType<typeof createDirectRoomTracker>["preparePrivateAudience"];
 }) {
   const choose = (peer: MatrixNodePeer, roomId: string) => {
@@ -72,6 +71,14 @@ export function createMatrixNodeCarrierAdmission(params: {
     if (!original) {
       return undefined;
     }
+    // Bootstrap pairs the node outside a call. A pinned node belongs to the
+    // specific Assistant Voice attempt that was active when its carrier opened.
+    const connection = original.expectedNodeId
+      ? params.bindNodeConnection(peer, roomId, original.agentId)
+      : undefined;
+    if (original.expectedNodeId && !connection) {
+      return undefined;
+    }
     const audience = await params.preparePrivateAudience({ roomId, senderId: peer.userId });
     const isSameAdmission = () => {
       const current = choose(peer, roomId);
@@ -79,15 +86,20 @@ export function createMatrixNodeCarrierAdmission(params: {
         current?.agentId === original.agentId && current.expectedNodeId === original.expectedNodeId
       );
     };
-    if (!audience || !isSameAdmission()) {
+    if (!audience || connection?.signal.aborted || !isSameAdmission()) {
       return undefined;
     }
     return {
       ...original,
+      signal: connection?.signal,
       assertInvokeSession(sessionKey: string) {
-        params.assertInvokeSession(peer, roomId, original.agentId, sessionKey);
+        if (!connection) {
+          throw new Error("Matrix Node requires the current Assistant Voice session");
+        }
+        connection.assertInvokeSession(sessionKey);
       },
       assertCurrent() {
+        connection?.signal.throwIfAborted();
         audience.assertCurrent();
         if (!isSameAdmission()) {
           throw new Error("Matrix Node room or device admission changed");

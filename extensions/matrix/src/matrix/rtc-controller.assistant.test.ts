@@ -148,13 +148,16 @@ it("authorizes Node delivery only for the current Assistant Voice session and de
       userId: ownerId,
       deviceId: "OWNERDEVICE",
       agentId: "example_owner",
-      sessionKey: sessionKey ?? "",
     };
-    expect(() => h.controller.assertNodeInvocation(source)).not.toThrow();
-    expect(() => h.controller.assertNodeInvocation({ ...source, sessionKey: "old" })).toThrow();
-    expect(() => h.controller.assertNodeInvocation({ ...source, deviceId: "OTHER" })).toThrow();
+    const connection = h.controller.bindNodeConnection(source);
+    expect(connection?.signal.aborted).toBe(false);
+    expect(() => connection?.assertInvokeSession(sessionKey ?? "")).not.toThrow();
+    expect(() => connection?.assertInvokeSession("old")).toThrow();
+    expect(h.controller.bindNodeConnection({ ...source, deviceId: "OTHER" })).toBeUndefined();
     h.session.memberships = [];
-    expect(() => h.controller.assertNodeInvocation(source)).toThrow();
+    expect(() => connection?.assertInvokeSession(sessionKey ?? "")).toThrow();
+    h.emitter.emit(MatrixRTCSessionEvent.MembershipsChanged);
+    expect(connection?.signal.aborted).toBe(true);
   } finally {
     await h.controller.stop();
   }

@@ -1,3 +1,4 @@
+import { setImmediate as nextTask } from "node:timers/promises";
 import type { MatrixClient } from "matrix-js-sdk/lib/client.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CoreConfig } from "../types.js";
@@ -48,7 +49,7 @@ describe("Matrix Node carrier", () => {
   const send = vi.fn<MatrixNodeCarrierFacade["send"]>(async () => {});
   beforeEach(() => vi.clearAllMocks());
 
-  function start() {
+  function start(admitOpen: Parameters<typeof registerMatrixNodeCarrier>[0]["admit"] = admit) {
     const abort = new AbortController();
     let receive: ((peer: MatrixNodePeer, message: MatrixNodeCarrierMessage) => void) | undefined;
     const attachGateway = vi.fn<Parameters<typeof registerMatrixNodeCarrier>[0]["attachGateway"]>(
@@ -65,7 +66,7 @@ describe("Matrix Node carrier", () => {
         send,
       },
       signal: abort.signal,
-      admit,
+      admit: admitOpen,
       attachGateway,
     });
     return {
@@ -147,7 +148,10 @@ describe("Matrix Node carrier", () => {
       client: { isEncryptedDirectRoom: () => true },
       signal: new AbortController().signal,
       preparePrivateAudience: async () => ({ assertCurrent: () => {} }),
-      assertInvokeSession: () => {},
+      bindNodeConnection: () => ({
+        signal: new AbortController().signal,
+        assertInvokeSession: () => {},
+      }),
     });
     expect(await admission({ ...peer, deviceId: "OTHER" }, address.room_id)).toBeUndefined();
     const bootstrap = await admission(peer, address.room_id);
@@ -176,6 +180,33 @@ describe("Matrix Node carrier", () => {
     expect(
       readMatrixNodeCarrierMessage({ ...open, expires_at_ms: 1_900_000_000_000 }),
     ).toBeUndefined();
+  });
+
+  it("reconnects the same device after an Assistant Voice call ends without a Matrix close", async () => {
+    let call = new AbortController();
+    const carrier = start(async () => ({ ...(await admit()), signal: call.signal }));
+    const next = { ...open, link_id: "ad6d9ac5-2b12-428c-8e5b-e06c6a48fdbc" };
+    try {
+      carrier.dispatch(peer, open);
+      await nextTask();
+      expect(carrier.attachGateway).toHaveBeenCalledTimes(1);
+      carrier.dispatch(peer, next);
+      expect(admit).toHaveBeenCalledTimes(1);
+
+      call.abort();
+      expect(gateway.close).toHaveBeenCalledOnce();
+      call = new AbortController();
+      carrier.dispatch(peer, next);
+      await nextTask();
+      expect(carrier.attachGateway).toHaveBeenCalledTimes(2);
+
+      carrier.dispatch(peer, { ...open, kind: "close" });
+      carrier.dispatch(peer, { ...next, kind: "frame", seq: 0, frame: { type: "req" } });
+      expect(gateway.receive).toHaveBeenCalledExactlyOnceWith('{"type":"req"}');
+      expect(gateway.close).toHaveBeenCalledOnce();
+    } finally {
+      carrier.abort.abort();
+    }
   });
 
   it("holds the link to one verified device, discards replay and retires a sequence gap", async () => {
