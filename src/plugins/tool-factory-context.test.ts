@@ -91,22 +91,25 @@ const continuation = (isCurrent: () => boolean) => ({
   accountId: "original-account",
 });
 
-it("keeps private requester grants on the exact live turn and fences unverified inputs", async () => {
+it.each([false, true])("fences private tool grants (Gateway role: %s)", async (hasRole) => {
   const agentId = "fixture";
   const sessionKey = "agent:fixture:private";
+  const profileId = "fixture-person";
   let audienceCurrent = true;
-  const operatorAuthority = createAdmittedRunOperatorAuthority({
-    profileId: "fixture-person",
-    scopes: ["operator.read"],
-    assertCurrent() {},
-  });
+  const operatorAuthority = hasRole
+    ? createAdmittedRunOperatorAuthority({
+        profileId,
+        scopes: ["operator.read"],
+        assertCurrent() {},
+      })
+    : undefined;
   const privateAudience = {
     agentId,
     sessionKey,
     channelId: "fixture-channel",
     accountId: "default",
     nativeChannelId: "private",
-    participant: { type: "profile" as const, id: operatorAuthority.profileId },
+    participant: { type: "profile" as const, id: profileId },
     assertCurrent: () => assert(audienceCurrent),
   };
   const personalToolParticipants = createReplyTurnParticipants({
@@ -122,6 +125,7 @@ it("keeps private requester grants on the exact live turn and fences unverified 
   await withGatewayToolCallerIdentity(caller, async () => {
     const check = register(() => null, { assertInvocationCurrent() {} }).context
       .isPrivateRequesterProfile!;
+    expect(personalToolParticipants.resolve()?.profileId).toBe(hasRole ? profileId : undefined);
     expect(check("fixture-person")).toBe(true);
     expect(check("other-person")).toBe(false);
     await withGatewayToolCallerIdentity(

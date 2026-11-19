@@ -5,6 +5,7 @@ import type { MsgContext } from "../../auto-reply/templating.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/shared-types.js";
 import { readConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import { createReplyTurnParticipants } from "../../sessions/session-controller.tool-authority.js";
 import { recordAcceptedSessionParticipantInput } from "../../sessions/session-participant-input-recording.js";
 import {
   readSessionConversationParticipant,
@@ -232,11 +233,16 @@ it("uses the same current person for conversation metadata and audience without 
   ).toEqual([remoteIdentity, person]);
   const audience = readConversationPrivateAudience(context);
   expect(audience?.participant).toEqual(person);
+  expect(getRequesterProfile(context)?.operatorAuthority).toBeUndefined();
+  const turn = createReplyTurnParticipants({ privateAudience: audience });
+  expect(turn.isPrivateRequesterProfile(person.id)).toBe(true);
   expect(input.identity).toEqual(remoteIdentity);
   expect(context.SenderId).toBe("remote-alpha");
   expect(context.InputProvenance).toEqual({ kind: "external_user", sourceChannel: "example" });
   closeOutput();
   expect(() => audience?.assertCurrent()).toThrow("Private output closed");
+  expect(turn.isPrivateRequesterProfile(person.id)).toBe(false);
+  turn.close();
   expect(selectChannelConversationParticipant(input)).toEqual(person);
   revoke();
   expect(getRequesterProfile(context)).toBeUndefined();

@@ -35,6 +35,9 @@ export function createReplyTurnParticipants(
   const releases = new Map<string, () => void>();
   let closed = false;
   const originalAudience = owner?.privateAudience;
+  const privateProfileId =
+    originalAudience?.participant.type === "profile" ? originalAudience.participant.id : undefined;
+  const operatorProfileId = owner?.operatorAuthority?.profileId;
   let currentAudience = originalAudience;
   const add = (input: NonNullable<typeof owner>) => {
     const authority = input.operatorAuthority;
@@ -129,8 +132,8 @@ export function createReplyTurnParticipants(
         next?.agentId === currentAudience.agentId &&
         next.sessionKey === currentAudience.sessionKey &&
         next.participant.type === "profile" &&
-        next.participant.id === owner?.operatorAuthority?.profileId &&
-        next.participant.id === overlay.operatorAuthority?.profileId
+        next.participant.id === privateProfileId &&
+        (!overlay.operatorAuthority || overlay.operatorAuthority.profileId === privateProfileId)
       ) {
         currentAudience = next;
       } else {
@@ -145,21 +148,21 @@ export function createReplyTurnParticipants(
       }
     },
     isPrivateRequesterProfile(profileId) {
-      const requester = participants.get(profileId);
       if (
         closed ||
-        !requester ||
         !originalAudience ||
         !currentAudience ||
-        originalAudience.participant.type !== "profile" ||
-        originalAudience.participant.id !== profileId ||
-        owner?.operatorAuthority?.profileId !== profileId ||
-        participants.size !== 1
+        !privateProfileId ||
+        privateProfileId !== profileId ||
+        (operatorProfileId !== undefined && operatorProfileId !== profileId) ||
+        participants.size > 1
       ) {
         return false;
       }
       try {
-        requester.assertCurrent();
+        // Channel ingress already binds this audience to a verified profile. That
+        // profile can be entitled to a plugin resource without a Gateway role.
+        participants.get(profileId)?.assertCurrent();
         originalAudience.assertCurrent();
         if (originalAudience !== currentAudience) {
           currentAudience.assertCurrent();

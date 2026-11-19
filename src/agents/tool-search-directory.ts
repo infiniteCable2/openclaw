@@ -1,6 +1,7 @@
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
+import { isAgentToolExecutionAvailable } from "./agent-tool-availability.js";
 import { isLocalModelLeanEnabled } from "./local-model-lean.js";
 import {
   applyToolCatalogCompaction,
@@ -179,6 +180,16 @@ function formatToolSearchCatalogDirectory(
   for (const entry of entries) {
     nameCounts.set(entry.name, (nameCounts.get(entry.name) ?? 0) + 1);
   }
+  const canDiscoverConnectedDevices =
+    nameCounts.get("connected_device_inventory") === 1 &&
+    entries.some(
+      (entry) =>
+        entry.name === "connected_device_inventory" &&
+        entry.source === "openclaw" &&
+        entry.sourceName === "core" &&
+        !entry.requiresExactId &&
+        isAgentToolExecutionAvailable(entry.tool),
+    );
   // Count collisions before excluding native tools: their lookalikes remain ambiguous.
   const listedEntries = deferredEntries
     .filter((entry) => !entry.requiresExactId && nameCounts.get(entry.name) === 1)
@@ -212,6 +223,9 @@ function formatToolSearchCatalogDirectory(
     } else if (mode === "directory") {
       guidance +=
         " Call a unique deferred tool name directly, or use dispatch_action with its id and args.";
+    }
+    if (canDiscoverConnectedDevices) {
+      guidance += " Use connected_device_inventory to find paired devices and their action tools.";
     }
     const footerChars =
       guidance.length + (omitted > 0 ? String(omitted).length + omittedLabel.length : 0);

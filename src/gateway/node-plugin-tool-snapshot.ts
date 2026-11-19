@@ -6,10 +6,13 @@ import { NODE_MCP_TOOLS_CALL_COMMAND } from "../infra/node-commands.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { dedupeByKey } from "../shared/dedupe-by-key.js";
 import type { NodeSession } from "./node-session.types.js";
+import type { MatrixNodeCarrierBinding } from "./server/matrix-node-carrier-authority.js";
 
 type ConnectedNodePluginTool = {
   nodeId: string;
   displayName?: string;
+  modelIdentifier?: string;
+  matrixCarrier?: MatrixNodeCarrierBinding;
   descriptor: NodePluginToolDescriptor;
   /** See NormalizedNodePluginTool.registered. */
   registered: boolean;
@@ -163,6 +166,8 @@ function normalizeNodePluginToolDescriptors(params: {
 function replaceConnectedNodePluginTools(params: {
   nodeId: string;
   displayName?: string;
+  modelIdentifier?: string;
+  matrixCarrier?: MatrixNodeCarrierBinding;
   tools: readonly NormalizedNodePluginTool[];
 }): void {
   if (params.tools.length === 0) {
@@ -174,6 +179,8 @@ function replaceConnectedNodePluginTools(params: {
     params.tools.map((entry) => ({
       nodeId: params.nodeId,
       displayName: params.displayName,
+      modelIdentifier: params.modelIdentifier,
+      matrixCarrier: params.matrixCarrier,
       descriptor: entry.descriptor,
       registered: entry.registered,
     })),
@@ -223,6 +230,8 @@ export function publishNodeSessionPluginTools(
   replaceConnectedNodePluginTools({
     nodeId: node.nodeId,
     displayName: node.displayName,
+    modelIdentifier: node.modelIdentifier,
+    matrixCarrier: node.client?.matrixNodeCarrier,
     tools: normalized,
   });
 }

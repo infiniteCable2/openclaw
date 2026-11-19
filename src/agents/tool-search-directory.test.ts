@@ -40,6 +40,24 @@ function catalogRef(tools: ReturnType<typeof localCatalog>): ToolSearchCatalogRe
 }
 
 describe("lean Tool Search directory", () => {
+  it("points to scoped connected device discovery when offered", () => {
+    const hint = "Use connected_device_inventory to find paired devices";
+    const options = { toolSearchDirectoryLean: true };
+    const other = createStubTool("other_inventory");
+    expect(
+      buildToolSchemaDirectoryPrompt(
+        { catalogRef: catalogRef([other, createStubTool("connected_device_inventory")]) },
+        options,
+      ),
+    ).toContain(hint);
+    expect(
+      buildToolSchemaDirectoryPrompt(
+        { catalogRef: catalogRef([other, createStubTool("nodes")]) },
+        options,
+      ),
+    ).not.toContain(hint);
+  });
+
   it("does not spend removed tools' prompt savings on longer descriptions", () => {
     const tools = localCatalog();
     const config: OpenClawConfig = {

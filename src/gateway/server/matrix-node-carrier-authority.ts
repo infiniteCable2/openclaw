@@ -16,16 +16,13 @@ const dispatchBindings = new WeakMap<
   { binding: MatrixNodeCarrierBinding; command: string }
 >();
 
-export function captureMatrixNodeCarrierDispatch(params: {
+export function captureMatrixNodeCarrierRunScope(params: {
   binding: MatrixNodeCarrierBinding;
-  identity?: AgentRuntimeIdentity;
-  validate?: AgentRuntimeApprovalAuthorityValidator;
+  identity?: Pick<AgentRuntimeIdentity, "agentId" | "sessionKey" | "operationalRunInstance">;
   nodeId: string;
-  command: string;
   sessionKey?: string;
-  isRequestCurrent: () => boolean;
 }): (() => boolean) | undefined {
-  const { binding, identity, validate, command } = params;
+  const { binding, identity } = params;
   const { assertInvokeSession } = binding;
   const origin = identity && readMatrixConversationRunOrigin(identity.operationalRunInstance);
   if (
@@ -44,9 +41,9 @@ export function captureMatrixNodeCarrierDispatch(params: {
     return undefined;
   }
   const sessionKey = identity.sessionKey;
-  const isCurrent = () => {
+  return () => {
     try {
-      if (!binding.isCurrent() || !params.isRequestCurrent() || validate?.(identity) !== true) {
+      if (!binding.isCurrent()) {
         return false;
       }
       origin.assertCurrent();
@@ -55,6 +52,29 @@ export function captureMatrixNodeCarrierDispatch(params: {
         void outcome.catch(() => {});
       }
       return outcome === undefined;
+    } catch {
+      return false;
+    }
+  };
+}
+
+export function captureMatrixNodeCarrierDispatch(params: {
+  binding: MatrixNodeCarrierBinding;
+  identity?: AgentRuntimeIdentity;
+  validate?: AgentRuntimeApprovalAuthorityValidator;
+  nodeId: string;
+  command: string;
+  sessionKey?: string;
+  isRequestCurrent: () => boolean;
+}): (() => boolean) | undefined {
+  const { binding, identity, validate, command } = params;
+  const scope = captureMatrixNodeCarrierRunScope(params);
+  if (!identity || !scope) {
+    return undefined;
+  }
+  const isCurrent = () => {
+    try {
+      return params.isRequestCurrent() && validate?.(identity) === true && scope();
     } catch {
       return false;
     }

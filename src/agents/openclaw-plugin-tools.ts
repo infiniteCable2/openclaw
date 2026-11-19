@@ -42,6 +42,7 @@ import { sanitizeNodeIdFragment, sanitizeServerName } from "./agent-bundle-mcp-n
 import { bindAgentToolExecutionLocation } from "./agent-tool-metadata.js";
 import { resolveApiKeyForProfile, resolveAuthProfileOrder } from "./auth-profiles.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
+import { prepareConnectedDeviceInventory } from "./connected-device-inventory.js";
 import { bindRequesterOwnerIdentity } from "./cron-creator-authority-context.js";
 import { compileGlobPatterns, matchesAnyGlobPattern } from "./glob-pattern.js";
 import {
@@ -560,12 +561,19 @@ function* resolveOpenClawPluginToolSteps(
     normalize: normalizeToolPolicyName,
   });
   const entries: MaterializedNodeToolEntry[] = [];
+  const connectedDevices = prepareConnectedDeviceInventory(
+    nodeAgentSessionKey,
+    assertCallerCurrent,
+  );
   const nameCounts = new Map<string, number>();
   for (const entry of listConnectedNodePluginTools()) {
     const descriptor = entry.descriptor;
     const command = descriptor.command?.trim();
     const normalizedName = normalizeToolPolicyName(descriptor.name);
     if (!command || !normalizedName) {
+      continue;
+    }
+    if (!connectedDevices.admits(entry)) {
       continue;
     }
     entries.push({ ...entry, command, normalizedName });
@@ -714,6 +722,16 @@ function* resolveOpenClawPluginToolSteps(
         : {}),
     });
     pluginTools.push(tool);
+    connectedDevices.record(entry, entry.command, toolName);
+  }
+
+  const inventory = connectedDevices.createTool({
+    existingNames: existingNormalized,
+    allowlist,
+    denylist,
+  });
+  if (inventory) {
+    pluginTools.push(inventory);
   }
 
   return pluginTools;
