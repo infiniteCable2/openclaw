@@ -12,6 +12,10 @@ import {
 import { PreparedConversationKnowledgeCheckpointSelection } from "./conversation-knowledge-checkpoint-admission.js";
 import { conversationKnowledgeContributionId } from "./conversation-knowledge-identity.js";
 import {
+  isConversationKnowledgeSeedSuffix,
+  resolveConversationKnowledgeSeedSuffixRead,
+} from "./conversation-knowledge-seed-suffix.js";
+import {
   readPersonalConversationContributionCustody,
   type PersonalConversationContributionRange,
 } from "./conversation-knowledge-source-custody.js";
@@ -32,6 +36,8 @@ import {
   type SessionSourcePredicate,
 } from "./session-source-authority.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
+import { withSessionTranscriptDeltaReader } from "./session-transcript-delta-read.js";
+import { isSessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 
 type FrameContext = Omit<
   PreparedProjectedInitialSessionContext,
@@ -131,6 +137,63 @@ class PreparedConversationKnowledgeInitialFrame {
       prepared.rawSeq !== null &&
       prepared.rawSeq >= version.rawSeq
     );
+  }
+
+  async coversCompletedSeedSuffix(
+    creation: PreparedConversationBranchCreation,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const { generation, rawSeq: from } = this.#context.sourceVersion;
+    const through = creation.rootVersion?.rawSeq;
+    if (
+      !generation ||
+      creation.rootVersion?.generation !== generation ||
+      from === null ||
+      through == null ||
+      through <= from
+    ) {
+      return false;
+    }
+    this.#check();
+    const source = assertConversationBranchCreation({
+      creation,
+      branch: creation.branch,
+      participant: creation.participant,
+      audience: creation.audience,
+    });
+    if (
+      !isDeepStrictEqual(source, this.#context.source) ||
+      !isDeepStrictEqual(creation.branch.root, this.#context.projection.branch.root)
+    ) {
+      return false;
+    }
+    const root = creation.branch.root;
+    const target = { ...root, agentId: source.agentId, storePath: source.path };
+    const limits = resolveConversationKnowledgeSeedSuffixRead({
+      agentId: target.agentId,
+      sessionId: root.sessionId,
+      generation,
+      fromSeq: from,
+      throughSeq: through,
+    });
+    if (!limits) {
+      return false;
+    }
+    try {
+      const page = await withSessionTranscriptDeltaReader(
+        target,
+        (reader) => reader.raw(limits),
+        signal,
+      );
+      this.#check();
+      creation.source();
+      return isConversationKnowledgeSeedSuffix(page, from, through);
+    } catch (error) {
+      if (!isSessionTranscriptProjectionUnavailableError(error)) {
+        throw error;
+      }
+      return false;
+    }
   }
 
   async release(): Promise<void> {

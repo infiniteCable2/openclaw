@@ -165,13 +165,19 @@ export async function prepareConversationKnowledgeInitialContext(params: {
       // A stale former broker cannot deny a newly authorized native creation.
       check();
     }
-    if (frame && !frame.frame.coversRootSnapshot(creation.rootVersion)) {
-      await frame.release();
-      frame = undefined;
+    if (frame) {
+      const acquired = frame;
+      cleanups.push(() => acquired.release());
+      if (
+        !frame.frame.coversRootSnapshot(creation.rootVersion) &&
+        !(await frame.frame.coversCompletedSeedSuffix(creation, params.signal))
+      ) {
+        await frame.release();
+        cleanups.pop();
+        frame = undefined;
+      }
     }
     if (frame) {
-      const retainedFrame = frame;
-      cleanups.push(() => retainedFrame.release());
       const prepared = await borrowPreparedConversationKnowledgeInitialFrame({
         frame: frame.frame,
         creation,

@@ -293,7 +293,10 @@ it("does not treat revoked creating authority as optional stale frame lookup", a
 it("releases an older prepared frame and copies the root snapshot captured at creation", async () => {
   const release = vi.fn(async () => {});
   const coversRootSnapshot = vi.fn(() => false);
-  boundary.acquire.mockReturnValue({ frame: { coversRootSnapshot }, release });
+  boundary.acquire.mockReturnValue({
+    frame: { coversRootSnapshot, coversCompletedSeedSuffix: vi.fn(async () => false) },
+    release,
+  });
   const prepared = await prepareConversationKnowledgeInitialContext(params());
   expect(coversRootSnapshot).toHaveBeenCalledExactlyOnceWith(rootVersion);
   expect(release).toHaveBeenCalledOnce();
@@ -306,6 +309,24 @@ it("releases an older prepared frame and copies the root snapshot captured at cr
   ).toEqual(["source-1", "source-2"]);
   await prepared.release();
   expect(release).toHaveBeenCalledOnce();
+});
+
+it("releases the borrowed frame if its bounded seed proof is interrupted", async () => {
+  const release = vi.fn(async () => {});
+  boundary.acquire.mockReturnValue({
+    frame: {
+      coversRootSnapshot: vi.fn(() => false),
+      coversCompletedSeedSuffix: vi.fn(async () => {
+        throw new Error("Seed proof interrupted");
+      }),
+    },
+    release,
+  });
+  await expect(prepareConversationKnowledgeInitialContext(params())).rejects.toThrow(
+    "Seed proof interrupted",
+  );
+  expect(release).toHaveBeenCalledOnce();
+  expect(boundary.sources).not.toHaveBeenCalled();
 });
 
 it("prepares the whole ordered brokerless tail before creation and retains exact source authority", async () => {

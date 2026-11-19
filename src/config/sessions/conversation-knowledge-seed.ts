@@ -5,6 +5,7 @@ import {
   readSessionTranscriptRunId,
   resolveTerminalAssistantTranscriptRunId,
 } from "../../sessions/transcript-events.js";
+import { CONVERSATION_KNOWLEDGE_SEED } from "./conversation-knowledge-context-kinds.js";
 import { readConversationKnowledgeReports } from "./conversation-knowledge-history.js";
 import {
   ConversationKnowledgeSourceCapacityError,
@@ -38,7 +39,7 @@ import { isSessionTranscriptProjectionUnavailableError } from "./session-transcr
 import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
 import type { InternalSessionEntry } from "./types.js";
 
-export const CONVERSATION_KNOWLEDGE_SEED = "openclaw.conversation-knowledge-seed.v1";
+export { CONVERSATION_KNOWLEDGE_SEED } from "./conversation-knowledge-context-kinds.js";
 const fields = [
   "sessionId",
   "lifecycleRevision",
