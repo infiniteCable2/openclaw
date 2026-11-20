@@ -755,6 +755,30 @@ describe("shared root projection preparation", () => {
     expect(boundary.summarize).not.toHaveBeenCalled();
     expect(boundary.append).not.toHaveBeenCalled();
   });
+  it("reuses published packets beyond the recipient cache bound and repairs stale packets", async () => {
+    const f = register();
+    const read = boundary.read.getMockImplementation()!;
+    boundary.read.mockImplementationOnce(async (ref: ConversationKnowledgeReference) => ({
+      ...(await read(ref)),
+      text: "x".repeat(4 * 1024 * 1024),
+    }));
+    boundary.frame.mockResolvedValueOnce(nativeFrame());
+    await quantum();
+    expect(f.registration.projection().tail).toHaveLength(0);
+    const first = boundary.frame.mock.calls[0]![0] as FrameInput;
+
+    boundary.refs.push(reference(2));
+    boundary.frame.mockImplementationOnce((input: FrameInput) => {
+      expect(input.tail[0]).toBe(first.tail[0]);
+      input.invalidCached(input.tail[0]!.reference, input.tail[0]!.packet);
+      return nativeFrame();
+    });
+    expect(await quantum()).toBe(true);
+    expect(boundary.read.mock.calls.map(([ref]) => ref.through.rawSeq)).toEqual([1, 2]);
+    boundary.frame.mockResolvedValueOnce(nativeFrame());
+    expect(await quantum()).toBe(false);
+    expect(boundary.read.mock.calls.map(([ref]) => ref.through.rawSeq)).toEqual([1, 2, 1]);
+  });
   it("hydrates only new originals, shares below-threshold packets and does not reacquire model auth on unchanged roots", async () => {
     const first = register();
     await quantum();

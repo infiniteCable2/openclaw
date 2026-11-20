@@ -100,6 +100,8 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     | { config: OpenClawConfig; value: ConversationKnowledgeCheckpointModel["planning"] }
     | undefined;
   const tail = createConversationKnowledgeCheckpointTail();
+  // Keep the last published frame's packet bytes available even outside the bounded recipient tail.
+  let frameTail = new Map<string, PreparedRootKnowledgeContribution>();
   let loggedProjectionRevision = -1;
   let loggedFrameRevision = -1;
   let sourceSessionKeys = new Set<string>();
@@ -177,6 +179,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
       latest = undefined;
       planning = undefined;
       tail.clear();
+      frameTail.clear();
       sourceSessionKeys.clear();
       rootContinuation.release();
       // Native resource custody joins cleanup; this retired selector must not
@@ -289,11 +292,13 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           },
         });
         const preparedSources = sources;
-        const retainFrame = async (selectedTail: readonly PreparedRootKnowledgeContribution[]) => {
+        const retainFrame = async (
+          selectedTail: Map<string, PreparedRootKnowledgeContribution>,
+        ) => {
           const invalid = new Map<string, PreparedRootKnowledgeContribution["packet"]>();
           const frame = await preparedSources.prepareInitialContextFrame({
             ...(latest ? { checkpoint: latest.checkpoint, coverage: latest.coverage } : {}),
-            tail: selectedTail,
+            tail: [...selectedTail.values()],
             invalidCached(reference, packet) {
               invalid.set(conversationKnowledgeContributionId(reference), packet);
             },
@@ -302,6 +307,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             check();
             let repaired = false;
             for (const [id, packet] of invalid) {
+              if (frameTail.get(id)?.packet === packet) {
+                repaired = frameTail.delete(id) || repaired;
+              }
               if (tail.get(id)?.packet === packet) {
                 repaired = tail.evict(id) || repaired;
               }
@@ -312,6 +320,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             }
             if (frame) {
               frames.publish(frame, releaseCustody);
+              frameTail = selectedTail;
               retained = true;
               if (loggedFrameRevision !== tail.revision) {
                 if (log.isEnabled("debug")) {
@@ -321,7 +330,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
                       JSON.stringify([broker.branch.agentId, broker.branch.root]),
                     ),
                     revision: tail.revision,
-                    tailCount: selectedTail.length,
+                    tailCount: selectedTail.size,
                     hasCheckpoint: latest !== undefined,
                   });
                 }
@@ -383,7 +392,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         tail.reconcile(remaining, previousCoverage);
         if (!remaining.length) {
           // Frame preparation still owns source custody across its awaited reads.
-          return await retainFrame([]);
+          return await retainFrame(new Map());
         }
         const acquireModel = async () => {
           if (!model) {
@@ -420,7 +429,10 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             check();
           }
           const id = conversationKnowledgeContributionId(reference);
-          let cached = tail.get(id);
+          const published = frameTail.get(id);
+          let cached =
+            tail.get(id) ??
+            (isDeepStrictEqual(published?.reference, reference) ? published : undefined);
           if (!cached) {
             const value = await sources.read(reference, false);
             if (!value) {
@@ -430,7 +442,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
               continue;
             }
             // Cache admission does not limit whole-source native token planning.
-            cached = tail.put(value, referenceOrder.get(id)!, maxTailBytes) ?? value;
+            cached = tail.put(value, referenceOrder.get(id)!, maxTailBytes);
           }
           contributions.push(cached);
           selectedContributions.set(id, cached);
@@ -448,7 +460,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         if (tail.revision !== loggedProjectionRevision) {
           notify();
         }
-        if (await retainFrame([...selectedContributions.values()])) {
+        if (await retainFrame(selectedContributions)) {
           // Only a disproven, still-current cache value schedules one repair
           // quantum. Unavailable originals wait for native source notifications.
           return true;
@@ -489,6 +501,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
           tail.assertRange(current);
           if (!(await sources.validate(current.reference, current.packet))) {
             tail.evict(contribution.contributionId);
+            frameTail.delete(contribution.contributionId);
             return false;
           }
         }
@@ -538,6 +551,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         publish({ checkpoint, coverage });
         for (const id of candidate.coveredContributionIds) {
           tail.evict(id);
+          frameTail.delete(id);
         }
         log.debug("Related-history checkpoint prepared", {
           summarizedContributions: candidate.coveredContributionIds.length,

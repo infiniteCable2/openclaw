@@ -90,24 +90,29 @@ export function createConversationKnowledgeCheckpointTail() {
       }
     },
     put(value: PreparedRootKnowledgeContribution, order: number, maxBytes: number) {
+      const id = conversationKnowledgeContributionId(value.reference);
+      const existing = entries.get(id);
+      if (existing) {
+        return existing.value;
+      }
+      // The published frame may retain these bytes even when the recipient cache is full.
+      // Strip any extra custody from the original read before either owner keeps the packet.
+      const { contributionId, complete, text, reference, packet } = value;
+      const retained = freezeJsonSnapshot(
+        structuredClone({ contributionId, complete, text, reference, packet }),
+      );
       const referenceKey = JSON.stringify(value.reference);
       const size =
         Buffer.byteLength(value.text, "utf8") +
         Buffer.byteLength(JSON.stringify(value.packet), "utf8") +
         Buffer.byteLength(referenceKey, "utf8");
-      const id = conversationKnowledgeContributionId(value.reference);
-      if (!entries.has(id) && bytes + size <= maxBytes) {
-        // Retain only detached packet data. The read operation may also carry live custody.
-        const { contributionId, complete, text, reference, packet } = value;
-        const retained = freezeJsonSnapshot(
-          structuredClone({ contributionId, complete, text, reference, packet }),
-        );
+      if (bytes + size <= maxBytes) {
         entries.set(id, { referenceKey, value: retained, bytes: size, order });
         bytes += size;
         projection = undefined;
         revision++;
       }
-      return entries.get(id)?.value;
+      return retained;
     },
     evict,
     clear() {
