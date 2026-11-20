@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { ConversationKnowledgeReference } from "../config/sessions/conversation-knowledge.js";
 import type { SessionTranscriptContextVersion } from "../config/sessions/session-transcript-context-version.types.js";
 import { SessionTranscriptReadFenceError } from "../config/sessions/session-transcript-read-fence-error.js";
@@ -170,4 +171,3 @@ async function validateAnchors(
   }
   return contributionVersion;
 }
-import { isDeepStrictEqual } from "node:util";

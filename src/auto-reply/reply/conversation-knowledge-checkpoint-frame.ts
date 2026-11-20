@@ -130,7 +130,9 @@ export function createConversationKnowledgeCheckpointFrameSlot<
           if (preparation !== observed) {
             observed = preparation;
             const finish = () => {
-              if (observed === preparation) finished = preparation;
+              if (observed === preparation) {
+                finished = preparation;
+              }
             };
             settled = preparation.then(finish, finish);
           }
