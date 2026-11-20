@@ -496,7 +496,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           workCheck,
         });
         let complete = true;
-        prepareNativeKnowledgeRootContributionGroup(events.evidence, branch, references);
+        if (references.length) {
+          prepareNativeKnowledgeRootContributionGroup(events.evidence, branch, references);
+        }
         const ownCount = references.filter(selection.currentOwn).length;
         const verifyOwn = async (reference: ConversationKnowledgeReference) => {
           const range = await readAvailableSource(reference, () =>
@@ -516,8 +518,6 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         for (const [index, reference] of references.entries()) {
           if (index > 0 && index % 8 === 0) {
             await setImmediate(undefined, { signal: params.signal });
-          }
-          if (index % 8 === 0) {
             workCheck();
           }
           if (ownCount === 1 && selection.currentOwn(reference)) {
