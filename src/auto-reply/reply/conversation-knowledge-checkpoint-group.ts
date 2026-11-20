@@ -3,6 +3,7 @@ import type { PreparedConversationBranchCreation } from "../../config/sessions/c
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import { selectConversationKnowledgeReceipts } from "../../config/sessions/conversation-knowledge-selection.js";
 import {
+  prepareNativeKnowledgeRootContributionGroup,
   prepareConversationKnowledgeRootSubset,
   type ConversationKnowledgeBranch,
   type NativeKnowledgeRootEvidence,
@@ -61,12 +62,15 @@ export function selectCheckpointSourceReferences(params: {
 /** Current own history uses admitted custody and exact anchors, never a self grant. */
 export async function prepareCheckpointOwnGroup(params: {
   branch: ConversationKnowledgeBranch;
+  evidence: NativeKnowledgeRootEvidence | undefined;
   contributions: readonly ConversationKnowledgeReference[];
   readSource(): Promise<CapturedSessionEntryReadSource>;
   assertCurrent: SessionSourceAssertion;
   workCheck: () => void;
   signal: AbortSignal;
 }) {
+  // Current own history uses its admitted reader instead of a foreign group grant.
+  prepareNativeKnowledgeRootContributionGroup(params.evidence, params.branch, params.contributions);
   const readSource = await params.readSource();
   const source = {
     agentId: params.branch.agentId,

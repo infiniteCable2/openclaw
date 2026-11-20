@@ -68,9 +68,12 @@ function rootPayload(
     return previous;
   }
   const owned = nativeSnapshot?.events ?? freezeJsonSnapshot(structuredClone([...events]));
-  const references = new Map<string, ConversationKnowledgeReference>();
-  const byKey = new Map<string, TranscriptEvent>();
-  for (const event of owned) {
+  const prefix = nativeSnapshot?.previous?.deref();
+  const retained = prefix && nativeRootPayloads.get(prefix);
+  const references = new Map<string, ConversationKnowledgeReference>(retained?.references);
+  const byKey = new Map<string, TranscriptEvent>(retained?.byKey);
+  for (let index = retained?.events.length ?? 0; index < owned.length; index++) {
+    const event = owned[index]!;
     const row = asOptionalRecord(event);
     let reference = row && parsedRootReferences.get(row);
     if (reference === undefined) {

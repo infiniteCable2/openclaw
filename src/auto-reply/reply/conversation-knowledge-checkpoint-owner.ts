@@ -429,9 +429,8 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
               unavailableContributions++;
               continue;
             }
-            cached = value;
             // Cache admission does not limit whole-source native token planning.
-            tail.put(value, referenceOrder.get(id)!, maxTailBytes);
+            cached = tail.put(value, referenceOrder.get(id)!, maxTailBytes) ?? value;
           }
           contributions.push(cached);
           selectedContributions.set(id, cached);

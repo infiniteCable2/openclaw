@@ -792,8 +792,8 @@ describe("shared root projection preparation", () => {
     await quantum();
     const original = f.registration.projection().tail;
     const input = boundary.frame.mock.calls[0]![0] as FrameInput;
-    expect(original[0]!.packet).not.toBe(input.tail[0]!.packet);
-    expect(original[0]!.reference).not.toBe(input.tail[0]!.reference);
+    expect(original[0]!.packet).toBe(input.tail[0]!.packet);
+    expect(original[0]!.reference).toBe(input.tail[0]!.reference);
     expect(Object.isFrozen(original)).toBe(true);
     expect(Object.isFrozen(original[0]!.reference.through)).toBe(true);
     expect(() => {
@@ -801,6 +801,7 @@ describe("shared root projection preparation", () => {
     }).toThrow(TypeError);
     boundary.refs.reverse();
     await quantum();
+    expect(f.registration.projection().tail[1]!.packet).toBe(original[0]!.packet);
     expect(f.registration.projection().tail.map((item) => item.reference.through.rawSeq)).toEqual([
       2, 1,
     ]);

@@ -64,8 +64,8 @@ export function createConversationKnowledgeCheckpointTail() {
         [...entries.values()]
           .toSorted((left, right) => left.order - right.order)
           .map(({ value }) => ({
-            reference: structuredClone(value.reference),
-            packet: structuredClone(value.packet),
+            reference: value.reference,
+            packet: value.packet,
           })),
       ));
     },
@@ -98,11 +98,17 @@ export function createConversationKnowledgeCheckpointTail() {
         Buffer.byteLength(referenceKey, "utf8");
       const id = conversationKnowledgeContributionId(value.reference);
       if (!entries.has(id) && bytes + size <= maxBytes) {
-        entries.set(id, { referenceKey, value, bytes: size, order });
+        // Retain only detached packet data. The read operation may also carry live custody.
+        const { contributionId, complete, text, reference, packet } = value;
+        const retained = freezeJsonSnapshot(
+          structuredClone({ contributionId, complete, text, reference, packet }),
+        );
+        entries.set(id, { referenceKey, value: retained, bytes: size, order });
         bytes += size;
         projection = undefined;
         revision++;
       }
+      return entries.get(id)?.value;
     },
     evict,
     clear() {

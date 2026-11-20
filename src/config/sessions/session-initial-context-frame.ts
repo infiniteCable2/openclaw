@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
-import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
+import { freezeJsonSnapshot, isDeeplyFrozenPlainData } from "../../shared/immutable-data.js";
 import { createRuntimeConfigSnapshotMatcher } from "../runtime-config-snapshot-match.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { conversationKnowledgeParticipantIdentity } from "./conversation-audience.js";
@@ -88,7 +88,18 @@ class PreparedConversationKnowledgeInitialFrame {
     if (issuer !== frameIssuer) {
       throw new Error("Initial root frames require native source preparation");
     }
-    this.#context = freezeJsonSnapshot(structuredClone(params.context));
+    const { projection, ...root } = params.context;
+    const { packets, ...metadata } = projection;
+    const snapshot = structuredClone({ ...root, projection: metadata });
+    this.#context = freezeJsonSnapshot({
+      ...snapshot,
+      projection: {
+        ...snapshot.projection,
+        packets: packets.map((packet) =>
+          isDeeplyFrozenPlainData(packet) ? packet : structuredClone(packet),
+        ),
+      },
+    });
     this.#prepared = prepared;
     const rootPredicate = prepared.checks.find(
       ({ predicate }) =>

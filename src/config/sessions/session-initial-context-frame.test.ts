@@ -399,11 +399,14 @@ it("rejects a forged frame, changed payload and cloned predicate seal", async ()
       ...f.destination("target"),
     }),
   ).rejects.toThrow("native issuer");
+  const originalText = f.params.context.projection.packets[0]!.text;
   const frame = await prepareConversationKnowledgeInitialFrame(f.params);
+  f.params.context.projection.packets[0]!.text = "Mutable caller packet";
   const prepared = await borrowPreparedConversationKnowledgeInitialFrame({
     frame,
     ...f.destination("target"),
   });
+  expect(prepared.context.projection.packets[0]!.text).toBe(originalText);
   const source = await prepareSessionSourceAuthority(prepared.source);
   const predicates = source.checks.map((c) => c.predicate);
   const changed = structuredClone(prepared.context);

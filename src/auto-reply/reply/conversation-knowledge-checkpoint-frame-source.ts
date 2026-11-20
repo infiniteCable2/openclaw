@@ -26,6 +26,7 @@ import {
 } from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
+import { isDeeplyFrozenPlainData } from "../../shared/immutable-data.js";
 import type { InvalidCheckpointCachedPacket } from "./conversation-knowledge-checkpoint-range.js";
 import type {
   PreparedRootKnowledgeContribution,
@@ -43,6 +44,30 @@ export type PreparedInitialFrameRange = {
   claim: PreparedInitialSessionContextSourceClaim;
   range: PersonalConversationContributionRange;
 };
+type FramePacket = PreparedProjectedInitialSessionContext["projection"]["packets"][number];
+const retainedFramePackets = new WeakMap<PreparedRootKnowledgeContribution, FramePacket>();
+
+/** Packet bytes have no read authority. Each publication proves its current range separately. */
+function projectFramePacket(value: PreparedRootKnowledgeContribution, sourceClaim: number) {
+  const retained = retainedFramePackets.get(value);
+  if (retained?.sourceClaim === sourceClaim) {
+    return retained;
+  }
+  const packet: FramePacket = {
+    receipt: value.reference,
+    text: value.packet.part.text,
+    offset: 0,
+    nextOffset: value.packet.part.nextOffset ?? 0,
+    complete: true,
+    sourceClaim,
+  };
+  if (isDeeplyFrozenPlainData(value)) {
+    Object.freeze(packet);
+    retainedFramePackets.set(value, packet);
+  }
+  return packet;
+}
+
 type FrameSources = {
   references: readonly ConversationKnowledgeReference[];
   source(selectedProofs?: readonly SessionSourceAssertion[]): SessionSourceAssertion;
@@ -151,7 +176,7 @@ export async function prepareCheckpointInitialFrame(
   }
   const claims: PreparedInitialSessionContextSourceClaim[] = [];
   const ranges: PersonalConversationContributionRange[] = [];
-  const packets: PreparedProjectedInitialSessionContext["projection"]["packets"][number][] = [];
+  const packets: FramePacket[] = [];
   for (const reference of references) {
     const id = conversationKnowledgeContributionId(reference);
     const selected = verified.get(id)!;
@@ -165,14 +190,7 @@ export async function prepareCheckpointInitialFrame(
     if (!value.packet.part.complete) {
       return undefined;
     }
-    packets.push({
-      receipt: reference,
-      text: value.packet.part.text,
-      offset: 0,
-      nextOffset: value.packet.part.nextOffset ?? 0,
-      complete: true,
-      sourceClaim,
-    });
+    packets.push(projectFramePacket(value, sourceClaim));
   }
   const original = sources.source([...frameProofs]);
   const checkpointSelection =

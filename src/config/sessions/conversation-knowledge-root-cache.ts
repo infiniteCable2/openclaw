@@ -10,7 +10,12 @@ import type { SessionTranscriptWatermark } from "./session-history-read.types.js
 import { createTranscriptRawDeltaCursor } from "./session-transcript-raw-cursor.js";
 
 type Boundary = { generation: string; maxSeq: number; tailId?: string };
-type Snapshot = Boundary & { events: readonly TranscriptEvent[]; bytes: number };
+type Snapshot = Boundary & {
+  events: readonly TranscriptEvent[];
+  bytes: number;
+  /** Only the native linear-delta reader can link a snapshot to its proven prefix. */
+  previous?: WeakRef<Snapshot>;
+};
 type ContinuationState = { snapshot: Snapshot };
 const resultSnapshots = new WeakMap<readonly TranscriptEvent[], Snapshot>();
 const continuationStates = new WeakMap<
@@ -121,6 +126,7 @@ export class ConversationKnowledgeRootCache {
             ...delta.boundary,
             events: [...previous.events, ...delta.events],
             bytes: previous.bytes + delta.bytes,
+            previous: new WeakRef(previous),
           };
         }
       }

@@ -9,7 +9,6 @@ import { conversationKnowledgeContributionId } from "../../config/sessions/conve
 import type { ConversationKnowledgeRootContinuation } from "../../config/sessions/conversation-knowledge-root-cache.js";
 import {
   assertNativeKnowledgeRootContribution,
-  prepareNativeKnowledgeRootContributionGroup,
   readConversationKnowledgeRoot,
   type ConversationKnowledgeBranch,
 } from "../../config/sessions/conversation-knowledge-store.js";
@@ -496,9 +495,6 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           workCheck,
         });
         let complete = true;
-        if (references.length) {
-          prepareNativeKnowledgeRootContributionGroup(events.evidence, branch, references);
-        }
         const ownCount = references.filter(selection.currentOwn).length;
         const verifyOwn = async (reference: ConversationKnowledgeReference) => {
           const range = await readAvailableSource(reference, () =>
@@ -541,6 +537,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
             const selectedGroup = selection.currentOwn(contributions[0]!)
               ? await prepareCheckpointOwnGroup({
                   branch,
+                  evidence: events.evidence,
                   contributions,
                   readSource: () => ownSource(contributions[0]!),
                   assertCurrent: targetFacts.assertCurrent,

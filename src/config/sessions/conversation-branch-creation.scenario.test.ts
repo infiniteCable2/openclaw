@@ -648,6 +648,7 @@ it("warms an existing startup root before input and reuses its frame across fres
         expect(discovery).not.toHaveBeenCalled();
         expect(groups).not.toHaveBeenCalled();
         expect(bodies).not.toHaveBeenCalled();
+        const initialPackets = (await borrowing.mock.results[0]!.value).context.projection.packets;
 
         // The append alone wakes the root. A concurrent native creation joins its work.
         expectedOriginals = 6;
@@ -680,6 +681,10 @@ it("warms an existing startup root before input and reuses its frame across fres
         expect(groups.mock.calls[0]![0].sources[0]?.sessionKey).toBe(donorA.sessionKey);
         expect(discovery.mock.calls.some(([request]) => request.targetCreation)).toBe(false);
         expect(borrowing).toHaveBeenCalledTimes(3);
+        const appendedPackets = (await borrowing.mock.results[2]!.value).context.projection.packets;
+        expect(
+          appendedPackets.filter((packet, index) => packet === initialPackets[index]),
+        ).toHaveLength(5);
         discovery.mockClear();
         groups.mockClear();
         bodies.mockClear();
