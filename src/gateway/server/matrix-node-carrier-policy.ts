@@ -10,6 +10,9 @@ const MAPS_COMMANDS: ReadonlySet<unknown> = new Set([
   "maps.search",
   "maps.directions",
   "maps.navigate",
+  "maps.show",
+  "maps.street_view",
+  "maps.shortlist",
 ]);
 
 export function isMatrixNodeCarrierCommand(value: unknown): boolean {

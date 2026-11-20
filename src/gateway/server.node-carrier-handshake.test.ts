@@ -40,7 +40,14 @@ import { installGatewayTestHooks, withGatewayServer } from "./test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
 const makeIdentityPath = useAuthIdentityFixture();
-const maps = ["maps.search", "maps.directions", "maps.navigate"];
+const maps = [
+  "maps.search",
+  "maps.directions",
+  "maps.navigate",
+  "maps.show",
+  "maps.street_view",
+  "maps.shortlist",
+];
 const client = { id: "node-host", version: "1.0.0", platform: "android", mode: "node" } as const;
 
 type NativeFrame = {

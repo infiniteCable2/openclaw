@@ -1,0 +1,2 @@
+7
+# Exercise additional Maps view commands through the native Matrix node carrier.
