@@ -6,17 +6,18 @@ export const MATRIX_NODE_CARRIER_METHODS = [
   "node.invoke.result",
   "node.pluginTools.update",
 ] as const;
-const MAPS_COMMANDS: ReadonlySet<unknown> = new Set([
+const ANDROID_TOOLBOX_COMMANDS: ReadonlySet<unknown> = new Set([
   "maps.search",
   "maps.directions",
   "maps.navigate",
   "maps.show",
   "maps.street_view",
   "maps.shortlist",
+  "location.get",
 ]);
 
 export function isMatrixNodeCarrierCommand(value: unknown): boolean {
-  return MAPS_COMMANDS.has(value);
+  return ANDROID_TOOLBOX_COMMANDS.has(value);
 }
 
 export function isMatrixNodeCarrierConnect(
@@ -33,7 +34,7 @@ export function isMatrixNodeCarrierConnect(
     (expectedNodeId === undefined || params.device?.id === expectedNodeId) &&
     (!params.caps || params.caps.length === 0) &&
     (!params.permissions || Object.keys(params.permissions).length === 0) &&
-    (params.commands ?? []).length <= MAPS_COMMANDS.size &&
+    (params.commands ?? []).length <= ANDROID_TOOLBOX_COMMANDS.size &&
     (params.commands ?? []).every(isMatrixNodeCarrierCommand) &&
     Boolean(
       auth &&
@@ -55,7 +56,7 @@ export function isMatrixNodeCarrierRequest(value: unknown): boolean {
     return false;
   }
   const tools = asOptionalObjectRecord(frame.params)?.tools;
-  if (!Array.isArray(tools) || tools.length > MAPS_COMMANDS.size) {
+  if (!Array.isArray(tools) || tools.length > ANDROID_TOOLBOX_COMMANDS.size) {
     return false;
   }
   const commands = new Set();

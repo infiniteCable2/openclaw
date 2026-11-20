@@ -40,13 +40,14 @@ import { installGatewayTestHooks, withGatewayServer } from "./test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
 const makeIdentityPath = useAuthIdentityFixture();
-const maps = [
+const toolboxCommands = [
   "maps.search",
   "maps.directions",
   "maps.navigate",
   "maps.show",
   "maps.street_view",
   "maps.shortlist",
+  "location.get",
 ];
 const client = { id: "node-host", version: "1.0.0", platform: "android", mode: "node" } as const;
 
@@ -168,7 +169,7 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
         maxProtocol: PROTOCOL_VERSION,
         role,
         scopes,
-        commands: maps,
+        commands: toolboxCommands,
         auth,
         ...connectOverrides,
         device: {
@@ -198,7 +199,7 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
 
   try {
     // Keep existing command approvals in force, even when the carrier narrows them further.
-    await writeConfigFile({ gateway: { nodes: { commands: { allow: maps } } } });
+    await writeConfigFile({ gateway: { nodes: { commands: { allow: toolboxCommands } } } });
     await withGatewayServer(async () => {
       checkpoint = "owner-close";
       const brokenOwner = open({
@@ -296,17 +297,17 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
       const connectedHelloBytes = Buffer.byteLength(JSON.stringify(reconnected));
       expect(connectedHelloBytes).toBeLessThan(12 * 1024);
       process.stdout.write(`carrier-hello-bytes:${connectedHelloBytes}\n`);
-      const tools = maps.map((command) => ({
-        pluginId: "fixture-maps",
+      const tools = toolboxCommands.map((command) => ({
+        pluginId: "fixture-toolbox",
         name: command.replace(".", "_"),
-        description: "Synthetic Maps descriptor",
+        description: "Synthetic Android Toolbox descriptor",
         command,
       }));
       checkpoint = "catalog";
       const updated = await current.request("node.pluginTools.update", { tools });
       expect(updated.ok).toBe(true);
       expect(updated.payload?.tools?.map((tool) => tool.command).toSorted()).toEqual(
-        [...maps].toSorted(),
+        [...toolboxCommands].toSorted(),
       );
       expect(
         (
@@ -459,17 +460,17 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
         JSON.stringify({
           type: "event",
           event: "node.invoke.request",
-          payload: { nodeId: identity.deviceId, command: "maps.search" },
+          payload: { nodeId: identity.deviceId, command: "location.get" },
         }),
       );
       const dispatched = current.next((frame) => frame.event === "node.invoke.request");
       const captureInvoke = vi.spyOn(registry, "invoke");
-      const result = invoke();
+      const result = invoke(runtimeIdentity, { command: "location.get", params: {} });
       const frame = await Promise.race([dispatched, result.then(() => undefined)]);
       if (!frame?.payload?.id) {
-        throw new Error("native Maps invoke not delivered");
+        throw new Error("native location invoke not delivered");
       }
-      expect(frame.payload.command).toBe("maps.search");
+      expect(frame.payload.command).toBe("location.get");
       const pendingDispatch = current.invocations.get(frame.payload.id);
       const nativeDeadline = captureInvoke.mock.lastCall?.[0].deadlineAtMs;
       expect(nativeDeadline).toBeGreaterThan(performance.now());
