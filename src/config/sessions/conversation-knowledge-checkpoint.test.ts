@@ -11,6 +11,7 @@ import {
   createConversationKnowledgeCheckpoint,
   prepareConversationKnowledgeCheckpointCoverage,
   readConversationKnowledgeCheckpoint,
+  sameConversationKnowledgeCheckpointRange,
   selectConversationKnowledgeCheckpointBootstrap,
   selectConversationKnowledgeCheckpointReport,
   type ConversationKnowledgeCheckpoint,
@@ -142,6 +143,20 @@ function rehash(
   return { ...content, checkpointId: sha256Hex(JSON.stringify(content)) };
 }
 describe("conversation checkpoint coverage", () => {
+  it("compares the exact checkpoint endpoints even when a source path or generation changes", () => {
+    const through = reference(1).through;
+    const range = { through, from: through };
+    expect(sameConversationKnowledgeCheckpointRange(range, structuredClone(range))).toBe(true);
+    expect(sameConversationKnowledgeCheckpointRange(range, { through })).toBe(false);
+    for (const field of ["generation", "storePath"] as const) {
+      expect(
+        sameConversationKnowledgeCheckpointRange(range, {
+          ...range,
+          through: { ...through, [field]: "changed" },
+        }),
+      ).toBe(false);
+    }
+  });
   it("preserves exact gaps and rejects mixed people, duplicate occurrences and altered payloads", () => {
     const first = reference(1),
       third = reference(3);

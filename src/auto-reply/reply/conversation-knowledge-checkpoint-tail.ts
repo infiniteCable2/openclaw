@@ -1,5 +1,5 @@
 import {
-  conversationKnowledgeCheckpointRangeDigest,
+  sameConversationKnowledgeCheckpointRange,
   type PreparedConversationKnowledgeCheckpointCoverage,
 } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
@@ -44,8 +44,7 @@ export function createConversationKnowledgeCheckpointTail() {
     },
     assertRange(value: PreparedRootKnowledgeContribution) {
       if (
-        conversationKnowledgeCheckpointRangeDigest(value.reference, value.packet) !==
-        conversationKnowledgeCheckpointRangeDigest(value.reference, {
+        !sameConversationKnowledgeCheckpointRange(value.packet, {
           through: value.reference.readRange?.through ?? value.reference.through,
           from: value.reference.readRange?.admission ?? value.reference.privateAudience?.admission,
         })

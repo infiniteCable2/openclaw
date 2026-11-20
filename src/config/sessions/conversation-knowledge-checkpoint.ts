@@ -14,7 +14,10 @@ import type {
   CustomMessageReport,
   CustomMessageReportAppend,
 } from "./session-accessor.sqlite-transcript-reports.types.js";
-import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
+import {
+  sameTranscriptEntryAnchor,
+  type TranscriptEntryAnchor,
+} from "./transcript-entry-anchor.js";
 
 export const CONVERSATION_KNOWLEDGE_CHECKPOINT = "openclaw.conversation-knowledge-checkpoint.v1";
 /** Committed audience artifact; covered originals remain stored but no longer gate its context. */
@@ -44,9 +47,30 @@ const checkpointId = (value: CheckpointContent): string => sha256Hex(JSON.string
 function canonicalReference(value: unknown): ConversationKnowledgeReference | undefined {
   return readConversationUtteranceObservation(value) ?? readConversationKnowledgeReceipt(value);
 }
+type CheckpointRange = { through: TranscriptEntryAnchor; from?: TranscriptEntryAnchor };
+
+const sameCheckpointAnchor = (
+  left: TranscriptEntryAnchor | undefined,
+  right: TranscriptEntryAnchor | undefined,
+) =>
+  left === right ||
+  (left !== undefined &&
+    left.storePath === right?.storePath &&
+    sameTranscriptEntryAnchor(left, right));
+
+/** Compare the exact endpoints represented by the persisted range digest. */
+export function sameConversationKnowledgeCheckpointRange(
+  left: CheckpointRange,
+  right: CheckpointRange,
+) {
+  return (
+    sameCheckpointAnchor(left.through, right.through) && sameCheckpointAnchor(left.from, right.from)
+  );
+}
+
 export function conversationKnowledgeCheckpointRangeDigest(
   reference: ConversationKnowledgeReference,
-  range?: { through: TranscriptEntryAnchor; from?: TranscriptEntryAnchor },
+  range?: CheckpointRange,
 ): string {
   const anchor = (value: TranscriptEntryAnchor | undefined) =>
     value

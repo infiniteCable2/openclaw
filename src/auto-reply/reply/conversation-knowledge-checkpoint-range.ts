@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { conversationKnowledgeHistoricalContributionIdentity } from "../../config/sessions/conversation-audience.js";
-import { conversationKnowledgeCheckpointRangeDigest } from "../../config/sessions/conversation-knowledge-checkpoint.js";
+import { sameConversationKnowledgeCheckpointRange } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import { issuePersonalConversationContributionRange } from "../../config/sessions/conversation-knowledge-source-custody.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
@@ -74,10 +74,7 @@ export async function validateCheckpointCachedPackets(params: {
     if (!packet) {
       continue;
     }
-    if (
-      conversationKnowledgeCheckpointRangeDigest(reference, range) !==
-      conversationKnowledgeCheckpointRangeDigest(reference, packet)
-    ) {
+    if (!sameConversationKnowledgeCheckpointRange(range, packet)) {
       invalid.push({ reference, packet });
       continue;
     }
