@@ -1,15 +1,28 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it } from "vitest";
+import { SessionManager } from "../../agents/sessions/session-manager.js";
 import {
   createConversationKnowledgeScenario,
   person,
 } from "../../auto-reply/reply/conversation-knowledge.scenario.test-support.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { deriveConversationKnowledgeReadRange } from "./conversation-knowledge-rewrite.js";
-import { readConversationKnowledgeBranch } from "./conversation-knowledge-store.js";
+import {
+  readConversationKnowledgeBranch,
+  recordConversationUtteranceObservation,
+} from "./conversation-knowledge-store.js";
+import {
+  CONVERSATION_UTTERANCE_REPORT,
+  readConversationUtteranceObservation,
+} from "./conversation-knowledge.js";
 import { openConversationPublicationStore } from "./conversation-publication.js";
-import { appendTranscriptMessage, upsertSessionEntryCore } from "./session-accessor.js";
+import {
+  appendTranscriptMessage,
+  loadTranscriptEvents,
+  upsertSessionEntryCore,
+} from "./session-accessor.js";
 import { rewritePreparedTranscriptMessageAtAnchor } from "./session-message-rewrite.js";
+import { readSessionTranscriptAnchorsAsync } from "./session-transcript-anchor-read.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 
 const admission: TranscriptEntryAnchor = {
@@ -48,6 +61,71 @@ const derive = (
     ...next,
     ...overrides,
   });
+
+it("renews only unchanged root ranges when the native worker removes a transcript suffix", async () => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "conversation-suffix-continuity" },
+    async (state) => {
+      const fixture = await createConversationKnowledgeScenario(state);
+      try {
+        const source = await fixture.branch("suffix");
+        const owner = await fixture.claim(source);
+        const publish = async (content: string) => {
+          const { anchor } = await appendTranscriptMessage(source, {
+            message: { role: "user", content, timestamp: Date.now() },
+          });
+          if (!anchor) {
+            throw new Error("Expected a committed source occurrence");
+          }
+          expect(
+            await recordConversationUtteranceObservation({
+              ...owner,
+              anchor,
+              role: "user",
+              privateAudience: { participant: person, admission: anchor },
+            }),
+          ).toBe(true);
+          return anchor;
+        };
+        const kept = await publish("Earlier admitted observation.");
+        const removed = await publish("Later admitted observation.");
+        const manager = await SessionManager.openAsync({
+          ...source,
+          expectedLifecycleRevision: source.lifecycleRevision,
+        });
+        expect(
+          await manager.removeTrailingEntriesAsync((entry) => entry.id === removed.entryId),
+        ).toBe(1);
+        const { anchors } = await readSessionTranscriptAnchorsAsync(source, {
+          entryIds: [kept.entryId, removed.entryId],
+        });
+        const [current] = anchors;
+        expect(anchors.map((anchor) => anchor.entryId)).toEqual([kept.entryId]);
+        expect(current?.generation).not.toBe(kept.generation);
+        const references = (await loadTranscriptEvents(fixture.root)).flatMap((event) => {
+          const row = asOptionalRecord(event);
+          const report =
+            row?.customType === CONVERSATION_UTTERANCE_REPORT
+              ? readConversationUtteranceObservation(row.details)
+              : undefined;
+          return report ? [report] : [];
+        });
+        expect(references.map((reference) => reference.through.entryId)).toEqual([
+          kept.entryId,
+          removed.entryId,
+        ]);
+        const [unchanged, changed] = references;
+        expect(unchanged?.through.generation).toBe(kept.generation);
+        expect(unchanged?.readRange?.through.generation).toBe(current?.generation);
+        expect(unchanged?.readRange?.admission?.generation).toBe(current?.generation);
+        expect(changed?.through.generation).toBe(removed.generation);
+        expect(changed?.readRange).toBeUndefined();
+      } finally {
+        await fixture.close();
+      }
+    },
+  );
+});
 
 describe("producer-issued unchanged-prefix continuity", () => {
   it("renews only physical reads and can chain another proven rewrite", () => {

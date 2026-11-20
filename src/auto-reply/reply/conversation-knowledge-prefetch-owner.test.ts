@@ -195,7 +195,7 @@ describe("conversation knowledge prefetch lifecycle", () => {
     }
   });
 
-  it("refreshes watched donor context controls without waking on ordinary transcript appends", async () => {
+  it("refreshes context controls on the current root and watched donors without duplicate append work", async () => {
     const prepare = vi.fn(async () => {});
     const donorKey = "agent:example:donor";
     const owner = createConversationKnowledgePrefetchOwner({
@@ -259,10 +259,33 @@ describe("conversation knowledge prefetch lifecycle", () => {
     hint();
     await owner.wait();
     expect(prepare).toHaveBeenCalledTimes(4);
+    const rootValue = {
+      ...value,
+      sessionKey: target.root.sessionKey,
+      sessionId: target.root.sessionId,
+    };
+    boundary.transcriptFact.mockReturnValue({ kind: "postimage", value: rootValue });
+    hint({ sessionKey: target.root.sessionKey });
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(4);
+    boundary.transcriptFact.mockReturnValue({
+      kind: "postimage",
+      value: { ...rootValue, sessionId: "retired-root", contextChanged: true },
+    });
+    hint({ sessionKey: target.root.sessionKey });
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(4);
+    boundary.transcriptFact.mockReturnValue({
+      kind: "postimage",
+      value: { ...rootValue, contextChanged: true },
+    });
+    hint({ sessionKey: target.root.sessionKey });
+    await owner.wait();
+    expect(prepare).toHaveBeenCalledTimes(5);
     await owner.close();
     hint();
     await owner.wait();
-    expect(prepare).toHaveBeenCalledTimes(4);
+    expect(prepare).toHaveBeenCalledTimes(5);
   });
 
   it("resumes settled recipient work without rebuilding unchanged sources", async () => {

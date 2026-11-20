@@ -1,0 +1,2 @@
+# Native exact suffix worker preserves only proven conversation ranges.
+78

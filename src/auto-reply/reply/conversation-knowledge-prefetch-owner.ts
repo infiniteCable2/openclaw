@@ -443,11 +443,18 @@ export function createConversationKnowledgePrefetchOwner(params: {
         change.agentId !== target.agentId ||
         !change.storePath ||
         path.resolve(change.storePath) !== target.storePath ||
-        !params.watchesSource?.(change.sessionKey)
+        (change.sessionKey !== root.sessionKey && !params.watchesSource?.(change.sessionKey))
       ) {
         return;
       }
       const fact = readPreparedSessionTranscriptChange(change);
+      if (
+        change.sessionKey === root.sessionKey &&
+        fact?.kind === "postimage" &&
+        fact.value.sessionId !== root.sessionId
+      ) {
+        return;
+      }
       if (
         change.factsInvalidated === true ||
         fact?.kind === "unknown" ||
@@ -455,8 +462,8 @@ export function createConversationKnowledgePrefetchOwner(params: {
         (fact?.kind === "postimage" &&
           (fact.value.contextChanged === true || fact.value.needsRebuild !== 0))
       ) {
-        // Native context controls can invalidate cached bytes without adding a
-        // root receipt. Ordinary message/report appends must not cause another scan.
+        // Native context controls and root rewrites can invalidate cached bytes without
+        // appending a report. Ordinary appends already have their own notification.
         request(
           "source",
           change.factsInvalidated === true

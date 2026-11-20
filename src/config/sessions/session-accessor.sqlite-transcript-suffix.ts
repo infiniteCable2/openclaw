@@ -1,3 +1,4 @@
+import { isMainThread } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   executeSqliteQuerySync,
@@ -8,6 +9,7 @@ import {
   withSqliteDatabaseWriteScope,
 } from "../../infra/sqlite-database-admission.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { renewConversationKnowledgeAfterExactRewriteInTransaction } from "./conversation-knowledge-rewrite.js";
 import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import { preparePriorWorkspaceRewriteInTransaction } from "./session-accessor.sqlite-prior-workspace.js";
 import { selectActiveTranscriptIdentityRows } from "./session-accessor.sqlite-projection-read.js";
@@ -18,8 +20,10 @@ import {
 } from "./session-accessor.sqlite-read.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { insertTranscriptRowsWithoutProjectionInTransaction } from "./session-accessor.sqlite-transcript-batch.js";
+import { rewriteSqliteTranscriptEventRowsInTransaction } from "./session-accessor.sqlite-transcript-rewrite.js";
 import {
   pruneTranscriptReactionsInTransaction,
+  readTranscriptGenerationInTransaction,
   readTranscriptMutationStateInTransaction,
   rotateTranscriptGenerationInTransaction,
   touchTranscriptMutationInTransaction,
@@ -397,6 +401,10 @@ export function replaceSqliteTranscriptSuffixInTransaction(
   const projectionIsHealthy =
     plan.incremental?.projectionWasHealthy ??
     !sessionTranscriptIndexNeedsReconcile(database.db, resolved.sessionId);
+  const previousGeneration =
+    !isMainThread && projectionIsHealthy && plan.startSeq > 0
+      ? readTranscriptGenerationInTransaction(database, resolved.sessionId)
+      : undefined;
   const suffixIdentityKeys = new Map(
     plan.incremental?.suffixIdentityKeys ??
       executeSqliteQuerySync(
@@ -574,4 +582,15 @@ export function replaceSqliteTranscriptSuffixInTransaction(
     contextChanged: true,
     projectionReady: projectionIsHealthy,
   });
+  if (previousGeneration) {
+    // This writer proved the untouched prefix in the same transaction as the generation change.
+    renewConversationKnowledgeAfterExactRewriteInTransaction({
+      database,
+      scope: resolved,
+      previousGeneration,
+      firstChangedSeq: plan.startSeq,
+      rewriteRootRows: (scope, rows) =>
+        rewriteSqliteTranscriptEventRowsInTransaction(database, scope, rows),
+    });
+  }
 }
