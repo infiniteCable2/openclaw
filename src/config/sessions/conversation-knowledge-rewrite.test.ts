@@ -110,7 +110,7 @@ it("renews only unchanged root ranges when the native worker removes a transcrip
               : undefined;
           return report ? [report] : [];
         });
-        expect(references.map((reference) => reference.through.entryId)).toEqual([
+        expect(references.map((report) => report.through.entryId)).toEqual([
           kept.entryId,
           removed.entryId,
         ]);
