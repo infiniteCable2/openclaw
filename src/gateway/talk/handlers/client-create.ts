@@ -517,6 +517,7 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
                     resolveSandboxedSessionCreation(client, runtimeConfig) ??
                     resolveOperatorSessionCreation(client),
                   deadlineAt: sessionEntryDeadlineAt,
+                  signal: request.signal,
                   requester: composeSessionSourceAssertion([
                     requester.assertCurrent,
                     replacement?.source(target).assertCurrent,

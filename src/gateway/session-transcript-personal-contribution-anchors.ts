@@ -1,9 +1,18 @@
 import type { ConversationKnowledgeReference } from "../config/sessions/conversation-knowledge.js";
 import type { SessionTranscriptContextVersion } from "../config/sessions/session-transcript-context-version.types.js";
+import { SessionTranscriptReadFenceError } from "../config/sessions/session-transcript-read-fence-error.js";
 import { MAX_SESSION_ROW_FACTS_KEYS } from "../config/sessions/session-transcript-worker.types.js";
 import type { TranscriptEntryAnchor } from "../config/sessions/transcript-entry-anchor.js";
 import { PersonalConversationReadRefusedError } from "./session-mutation-authorization-error.js";
-export async function validatePersonalContributionGroupAnchors(params: {
+import type { PersonalReadSource } from "./session-transcript-personal-admission.js";
+
+export type PersonalContributionAnchorPrefix = {
+  source: PersonalReadSource;
+  version: SessionTranscriptContextVersion;
+  length: number;
+};
+
+type AnchorRequest = {
   contributions: readonly ConversationKnowledgeReference[];
   source: {
     agentId: string;
@@ -15,7 +24,35 @@ export async function validatePersonalContributionGroupAnchors(params: {
   assertCurrent(): void;
   signal?: AbortSignal;
   preparedVersion?: SessionTranscriptContextVersion;
-}): Promise<SessionTranscriptContextVersion> {
+};
+
+export async function validatePersonalContributionGroupAnchors(
+  params: AnchorRequest & { anchorPrefix?: PersonalContributionAnchorPrefix },
+): Promise<SessionTranscriptContextVersion> {
+  const { anchorPrefix, ...request } = params;
+  if (anchorPrefix && isDeepStrictEqual(anchorPrefix.source, params.source)) {
+    try {
+      return await validateAnchors(
+        {
+          ...request,
+          contributions: request.contributions.slice(anchorPrefix.length),
+        },
+        anchorPrefix.version,
+      );
+    } catch (error) {
+      if (!(error instanceof SessionTranscriptReadFenceError)) {
+        throw error;
+      }
+      request.assertCurrent();
+    }
+  }
+  return validateAnchors(request);
+}
+
+async function validateAnchors(
+  params: AnchorRequest,
+  prefixVersion?: SessionTranscriptContextVersion,
+): Promise<SessionTranscriptContextVersion> {
   let contributionVersion: SessionTranscriptContextVersion | undefined;
   // One worker snapshot per group. These are the same identity/navigation
   // fields checked by assertSessionTranscriptContextAnchorInDatabase.
@@ -62,6 +99,7 @@ export async function validatePersonalContributionGroupAnchors(params: {
   // the original prefix across pages; navigation rewrites invalidate it.
   const quantum = MAX_SESSION_ROW_FACTS_KEYS - 1;
   for (let offset = 0; offset < entryIds.length; offset += quantum) {
+    const retainedVersion = contributionVersion ?? prefixVersion;
     const facts = await readSessionTranscriptAnchorsAsync(
       {
         agentId: selectedSource.agentId,
@@ -73,11 +111,14 @@ export async function validatePersonalContributionGroupAnchors(params: {
         entryIds: entryIds.slice(offset, offset + quantum),
         includeContextVersion: true,
         includeSession: true,
-        ...(contributionVersion ? { contextValidation: { version: contributionVersion } } : {}),
+        ...(retainedVersion ? { contextValidation: { version: retainedVersion } } : {}),
       },
       params.signal,
     );
     params.assertCurrent();
+    if (retainedVersion && facts.contextValidated !== true) {
+      throw new SessionTranscriptReadFenceError("Contribution group prefix changed");
+    }
     if (
       !facts.contextVersion ||
       facts.session?.sessionId !== selectedSource.sessionId ||
@@ -129,3 +170,4 @@ export async function validatePersonalContributionGroupAnchors(params: {
   }
   return contributionVersion;
 }
+import { isDeepStrictEqual } from "node:util";

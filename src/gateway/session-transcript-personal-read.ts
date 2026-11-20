@@ -11,6 +11,7 @@ import type { SessionTranscriptContextVersion } from "../config/sessions/session
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ConversationPrivateAudience } from "../sessions/conversation-private-audience.js";
 import { PersonalConversationReadRefusedError } from "./session-mutation-authorization-error.js";
+import type { PersonalReadSource } from "./session-transcript-personal-admission.js";
 import type { PersonalContributionMetadata } from "./session-transcript-personal-contribution-group.js";
 import {
   preparePersonalConversationReadInternal,
@@ -48,6 +49,7 @@ class PreparedPersonalConversationContributionGroup {
   readonly #admission: PreparedPersonalConversationAdmission;
   readonly #metadata: PersonalContributionMetadata;
   readonly #version: SessionTranscriptContextVersion;
+  readonly #source: PersonalReadSource;
   #active = true;
   readonly byteLength: number;
   readonly ownedByteLength: number;
@@ -57,6 +59,7 @@ class PreparedPersonalConversationContributionGroup {
     admission: PreparedPersonalConversationAdmission,
     metadata: PersonalContributionMetadata,
     version: SessionTranscriptContextVersion,
+    source: PersonalReadSource,
   ) {
     if (issuer !== contributionGroupIssuer) {
       throw new Error("Contribution group requires native admission");
@@ -64,6 +67,7 @@ class PreparedPersonalConversationContributionGroup {
     this.#admission = admission;
     this.#metadata = metadata;
     this.#version = Object.freeze({ ...version });
+    this.#source = source;
     this.byteLength = admission.byteLength + metadata.byteLength;
     this.ownedByteLength = admission.byteLength + Buffer.byteLength(JSON.stringify(version)) + 128;
     Object.freeze(this);
@@ -80,6 +84,7 @@ class PreparedPersonalConversationContributionGroup {
       contributions: value.#metadata.contributions,
       metadata: value.#metadata,
       version: value.#version,
+      source: value.#source,
     };
   }
 
@@ -122,10 +127,11 @@ export async function preparePersonalConversationContributionGroup(
       "contribution" | "contributionGroup"
     > & {
       contributions: readonly ConversationKnowledgeReference[];
+      previousGroup?: PreparedPersonalConversationContributionGroup;
     };
   },
 ): Promise<PreparedPersonalConversationContributionGroup> {
-  const { contributions: supplied, ...personal } = params.personal;
+  const { contributions: supplied, previousGroup, ...personal } = params.personal;
   const contributions = structuredClone(supplied);
   if (!contributions.length || params.sources.length !== 1) {
     throw new PersonalConversationReadRefusedError("Contribution group requires one exact source");
@@ -134,9 +140,23 @@ export async function preparePersonalConversationContributionGroup(
   if (contributions.some((reference) => !isDeepStrictEqual(reference.source, originalSource))) {
     throw new PersonalConversationReadRefusedError("Contribution group mixes source incarnations");
   }
+  const previous =
+    previousGroup && PreparedPersonalConversationContributionGroup.acquire(previousGroup);
+  const prefixLength = previous?.contributions.length ?? 0;
+  const anchorPrefix =
+    previous &&
+    prefixLength < contributions.length &&
+    previous.contributions.every((reference, index) =>
+      isDeepStrictEqual(reference, contributions[index]),
+    )
+      ? { source: previous.source, version: previous.version, length: prefixLength }
+      : undefined;
   const grant = await preparePersonalConversationReadInternal(
     { ...params, personal },
     contributions,
+    undefined,
+    undefined,
+    anchorPrefix,
   );
   try {
     if (!grant.contributionVersion || !grant.contributionMetadata) {
@@ -147,6 +167,7 @@ export async function preparePersonalConversationContributionGroup(
       grant.prepareAdmission(),
       grant.contributionMetadata,
       grant.contributionVersion,
+      grant.sources[0]!,
     );
   } finally {
     grant.release();

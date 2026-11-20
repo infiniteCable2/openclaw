@@ -75,6 +75,7 @@ export async function prepareTalkClientContext(
               startupEnsuredSessionId = await ensureClientVoiceAgentSessionEntry({
                 chatType: "direct",
                 privateAudience,
+                signal: request.signal,
                 ...sessionTarget,
                 cfg: runtimeConfig,
                 getRuntimeConfig: context.getRuntimeConfig,

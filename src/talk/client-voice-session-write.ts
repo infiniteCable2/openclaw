@@ -236,6 +236,7 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
   sessionKey: string;
   storePath?: string;
   deadlineAt?: number;
+  signal?: AbortSignal;
   requester?: SessionSourceAssertion;
   source?: SessionSourceAssertion;
   prepareWorkerGrant?: (
@@ -248,6 +249,7 @@ export async function ensureClientVoiceAgentSessionEntry(params: {
   creation?: Pick<Parameters<typeof buildSessionCreationStamp>[0], "actor" | "sandbox">;
 }): Promise<string> {
   const assertLifetimeCurrent = () => {
+    params.signal?.throwIfAborted();
     params.assertCurrent?.();
     params.assertCommitAllowed?.();
     if (params.deadlineAt !== undefined && Date.now() >= params.deadlineAt) {

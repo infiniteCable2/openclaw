@@ -34,6 +34,7 @@ import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import {
   acquirePreparedConversationKnowledgeInitialFrame,
   readPreparedConversationKnowledgeRootProjection,
+  waitForPreparedConversationKnowledgeInitialFrame,
 } from "./conversation-knowledge-checkpoint-owner.js";
 import {
   prepareConversationKnowledgeCheckpointSources,
@@ -155,12 +156,10 @@ export async function prepareConversationKnowledgeInitialContext(params: {
     });
     cleanups.push(() => creation.release());
     check();
+    const selection = { branch, participant: creation.participant };
     let frame: ReturnType<typeof acquirePreparedConversationKnowledgeInitialFrame>;
     try {
-      frame = acquirePreparedConversationKnowledgeInitialFrame({
-        branch,
-        participant: creation.participant,
-      });
+      frame = acquirePreparedConversationKnowledgeInitialFrame(selection);
     } catch {
       // A stale former broker cannot deny a newly authorized native creation.
       check();
@@ -175,6 +174,23 @@ export async function prepareConversationKnowledgeInitialContext(params: {
         await frame.release();
         cleanups.pop();
         frame = undefined;
+      }
+    }
+    if (!frame && creation.rootVersion?.generation && creation.rootVersion.rawSeq !== null) {
+      try {
+        frame = await waitForPreparedConversationKnowledgeInitialFrame(
+          selection,
+          creation.rootVersion,
+          params.signal,
+        );
+        if (frame) {
+          const acquired = frame;
+          cleanups.push(() => acquired.release());
+        }
+        check();
+      } catch {
+        // A retired root owner does not replace the current call's own admission.
+        check();
       }
     }
     if (frame) {

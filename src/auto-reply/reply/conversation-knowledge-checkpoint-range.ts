@@ -131,13 +131,13 @@ export async function validateCheckpointCachedPackets(params: {
     }
   }
   for (const { reference, range, packet } of candidates) {
-    params.check();
     const key = JSON.stringify(packet.version);
     let valid = prefixes.get(key);
     if (valid === undefined) {
       if (isDeepStrictEqual(packet.version, range.version)) {
         valid = true;
       } else {
+        params.check();
         try {
           const facts = await readSessionTranscriptAnchorsAsync(
             params.target,

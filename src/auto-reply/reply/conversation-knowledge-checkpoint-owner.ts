@@ -25,6 +25,7 @@ import { ConversationKnowledgeRootContinuation } from "../../config/sessions/con
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
+import type { SessionTranscriptContextVersion } from "../../config/sessions/session-transcript-context-version.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
@@ -594,6 +595,14 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         owner.assertCurrent();
         return frames.acquire();
       },
+      waitForInitialFrame(version: SessionTranscriptContextVersion, signal?: AbortSignal) {
+        owner.assertCurrent();
+        return frames.waitFor(
+          (frame) => frame.coversRootSnapshot(version),
+          owner.currentPreparation,
+          signal,
+        );
+      },
       async close() {
         if (!active) {
           if (!brokers.size) {
@@ -657,6 +666,14 @@ export function acquirePreparedConversationKnowledgeInitialFrame(
   params: Parameters<typeof selectPreparedRootOwner>[0],
 ) {
   return selectPreparedRootOwner(params)?.acquireInitialFrame();
+}
+
+export function waitForPreparedConversationKnowledgeInitialFrame(
+  params: Parameters<typeof selectPreparedRootOwner>[0],
+  version: SessionTranscriptContextVersion,
+  signal?: AbortSignal,
+) {
+  return selectPreparedRootOwner(params)?.waitForInitialFrame(version, signal);
 }
 
 /** Shared root preparation is independent of any one call and never changes recipient history. */

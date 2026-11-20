@@ -9,6 +9,7 @@ import { conversationKnowledgeContributionId } from "../../config/sessions/conve
 import type { ConversationKnowledgeRootContinuation } from "../../config/sessions/conversation-knowledge-root-cache.js";
 import {
   assertNativeKnowledgeRootContribution,
+  prepareNativeKnowledgeRootContributionGroup,
   readConversationKnowledgeRoot,
   type ConversationKnowledgeBranch,
 } from "../../config/sessions/conversation-knowledge-store.js";
@@ -474,9 +475,6 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
         reference: ConversationKnowledgeReference,
         packet?: PreparedConversationKnowledgePacket,
       ) => readAvailableSource(reference, () => validate(reference, packet)),
-      async verify(reference: ConversationKnowledgeReference) {
-        return readAvailableSource(reference, () => validate(reference));
-      },
       async verifyAll(
         references: readonly ConversationKnowledgeReference[],
         verified: (
@@ -498,6 +496,7 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           workCheck,
         });
         let complete = true;
+        prepareNativeKnowledgeRootContributionGroup(events.evidence, branch, references);
         const ownCount = references.filter(selection.currentOwn).length;
         const verifyOwn = async (reference: ConversationKnowledgeReference) => {
           const range = await readAvailableSource(reference, () =>
@@ -518,8 +517,9 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           if (index > 0 && index % 8 === 0) {
             await setImmediate(undefined, { signal: params.signal });
           }
-          workCheck();
-          assertNativeKnowledgeRootContribution(events.evidence, branch, reference);
+          if (index % 8 === 0) {
+            workCheck();
+          }
           if (ownCount === 1 && selection.currentOwn(reference)) {
             complete = (await verifyOwn(reference)) && complete;
             continue;

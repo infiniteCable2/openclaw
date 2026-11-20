@@ -46,6 +46,7 @@ export type VoiceSessionInitializationParams = {
   /** Original host recipient proof; only new conversations can become private. */
   privateAudience?: ConversationPrivateAudience;
   deadlineAt?: number;
+  signal?: AbortSignal;
   assertCommitAllowed?: SessionSourceAssertion;
   /** Actual native creation publication, never a proposed ID or a reloaded row. */
   onCreatedSessionCommitted?: (target: {
@@ -75,7 +76,16 @@ export async function initializePreparedVoiceConversation(
       ? resolveAgentConversationRootSessionKey({ cfg, agentId: params.agentId })
       : undefined;
   const storePath = resolveSessionStorePathForScope(params, cfg);
+  const deadline =
+    params.deadlineAt === undefined
+      ? undefined
+      : AbortSignal.timeout(Math.max(0, params.deadlineAt - Date.now()));
+  const signal =
+    params.signal && deadline
+      ? AbortSignal.any([params.signal, deadline])
+      : (params.signal ?? deadline);
   const assertCurrent = () => {
+    params.signal?.throwIfAborted();
     params.assertCurrent?.();
     params.assertCommitAllowed?.();
     if (params.deadlineAt !== undefined && Date.now() >= params.deadlineAt) {
@@ -175,6 +185,7 @@ export async function initializePreparedVoiceConversation(
                 getRuntimeConfig,
                 audience: privateAudience,
                 assertCurrent,
+                signal,
               });
             },
           }

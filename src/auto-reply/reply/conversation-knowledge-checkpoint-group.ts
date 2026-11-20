@@ -246,7 +246,11 @@ export async function prepareCheckpointGroupRead(params: {
     if (!grant) {
       provisional = await preparePersonalConversationContributionGroup({
         ...common,
-        personal: { ...personal, contributions: params.contributions },
+        personal: {
+          ...personal,
+          contributions: params.contributions,
+          ...(expectedGroup ? { previousGroup: expectedGroup } : {}),
+        },
       });
       params.groups.push(provisional);
       grant = await preparePersonalConversationRead({

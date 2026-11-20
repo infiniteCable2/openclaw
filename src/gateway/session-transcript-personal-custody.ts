@@ -37,6 +37,7 @@ import {
   type PersonalReadCustody,
   type PersonalAdmissionBinding,
 } from "./session-transcript-personal-admission.js";
+import type { PersonalContributionAnchorPrefix } from "./session-transcript-personal-contribution-anchors.js";
 import {
   preparePersonalContributionMetadata,
   type PersonalContributionMetadata,
@@ -102,6 +103,7 @@ export async function preparePersonalConversationReadInternal(
   groupContributions?: readonly ConversationKnowledgeReference[],
   preparedGroupVersion?: SessionTranscriptContextVersion,
   preparedMetadata?: PersonalContributionMetadata,
+  anchorPrefix?: PersonalContributionAnchorPrefix,
 ) {
   const target = structuredClone(params.personal.target);
   const participant = structuredClone(params.personal.originalParticipant);
@@ -558,6 +560,7 @@ export async function preparePersonalConversationReadInternal(
         assertCurrent,
         signal: params.signal,
         preparedVersion: preparedGroupVersion,
+        anchorPrefix,
       });
     }
     const prepare = async (): Promise<PreparedSessionSourceAuthority> => {

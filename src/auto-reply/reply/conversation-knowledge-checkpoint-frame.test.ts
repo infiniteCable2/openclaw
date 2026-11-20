@@ -58,6 +58,34 @@ describe("root preparation custody", () => {
     expect(source.release).toHaveBeenCalledOnce();
   });
 
+  it("lets callers share an in-flight publication while one caller cancels independently", async () => {
+    const slot =
+      createConversationKnowledgeCheckpointFrameSlot<ReturnType<typeof fixture>["frame"]>();
+    const stale = fixture();
+    const fresh = fixture();
+    const preparing = createDeferredCore();
+    const caller = new AbortController();
+    const matches = (frame: typeof fresh.frame) => frame === fresh.frame;
+    slot.publish(stale.frame, stale.release);
+    const inFlight = () => preparing.promise;
+    const cancelled = slot.waitFor(matches, inFlight, caller.signal);
+    const remaining = slot.waitFor(matches, inFlight);
+    caller.abort();
+    await expect(cancelled).rejects.toThrow();
+    slot.publish(fresh.frame, fresh.release);
+    const result = await remaining;
+    expect(result?.frame).toBe(fresh.frame);
+    await result?.release();
+    const unavailable = slot.waitFor((frame) => frame === stale.frame, inFlight);
+    preparing.resolve();
+    await expect(unavailable).resolves.toBeUndefined();
+    const alreadyPublished = await slot.waitFor(matches, () => undefined);
+    expect(alreadyPublished?.frame).toBe(fresh.frame);
+    await alreadyPublished?.release();
+    await slot.settle();
+    expect(stale.release).toHaveBeenCalledOnce();
+  });
+
   it("joins the last borrower before the root closes its native source reader", async () => {
     const slot =
       createConversationKnowledgeCheckpointFrameSlot<ReturnType<typeof fixture>["frame"]>();

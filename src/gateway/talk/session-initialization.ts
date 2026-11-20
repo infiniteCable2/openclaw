@@ -48,6 +48,7 @@ export async function ensureGatewayTalkSessionEntry(
       creation:
         resolveSandboxedSessionCreation(client, cfg) ?? resolveOperatorSessionCreation(client),
       assertCommitAllowed: assertCurrent,
+      signal: params.request?.signal,
       ...(params.request
         ? {
             requester: readGatewayRequestMutationAuthority(params.request).assertCurrent,

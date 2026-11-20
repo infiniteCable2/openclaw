@@ -21,6 +21,7 @@ export async function prepareAndAdmitChatSend(
     respond,
     context,
     client,
+    signal,
     hasCurrentClientAuthority,
     sessionMutationAuthorization,
   }: Pick<
@@ -29,6 +30,7 @@ export async function prepareAndAdmitChatSend(
     | "respond"
     | "context"
     | "client"
+    | "signal"
     | "hasCurrentClientAuthority"
     | "sessionMutationAuthorization"
   >,
@@ -147,6 +149,7 @@ export async function prepareAndAdmitChatSend(
   const nativeRestriction = await prepareChatSendNativeRuntimeRestriction({
     ...preparation,
     session,
+    signal,
   });
   if (nativeRestriction) {
     respond(false, undefined, nativeRestriction);

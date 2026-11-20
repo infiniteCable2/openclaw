@@ -20,7 +20,7 @@ import {
   type PersonalConversationContributionRange,
 } from "./conversation-knowledge-source-custody.js";
 import {
-  assertNativeKnowledgeRootContribution,
+  prepareNativeKnowledgeRootContributionGroup,
   type NativeKnowledgeRootEvidence,
 } from "./conversation-knowledge-store.js";
 import {
@@ -348,12 +348,30 @@ export async function prepareConversationKnowledgeInitialFrame(
   }
   const source = await prepareSessionSourceAuthority(params.source);
   try {
+    const { claims: sourceClaims } = context.projection;
+    prepareNativeKnowledgeRootContributionGroup(
+      params.evidence,
+      context.projection.branch,
+      sourceClaims.map((claim) => claim.reference),
+    );
+    const predicateKey = (predicate: SessionSourcePredicate) =>
+      JSON.stringify([
+        predicate.sessionKey,
+        predicate.transcript?.sessionId,
+        predicate.transcript?.version.generation,
+        predicate.transcript?.version.rawSeq,
+      ]);
+    const predicates = new Map<string, SessionSourcePredicate[]>();
+    for (const { predicate } of source.checks) {
+      const key = predicateKey(predicate);
+      const matching = predicates.get(key);
+      if (matching) {
+        matching.push(predicate);
+      } else {
+        predicates.set(key, [predicate]);
+      }
+    }
     for (const [index, claim] of context.projection.claims.entries()) {
-      assertNativeKnowledgeRootContribution(
-        params.evidence,
-        context.projection.branch,
-        claim.reference,
-      );
       const range = params.ranges[index]!;
       const custody = readPersonalConversationContributionCustody({
         proof: range,
@@ -364,7 +382,9 @@ export async function prepareConversationKnowledgeInitialFrame(
         (!isDeepStrictEqual(range.version, claim.version) && "version") ||
         (!isDeepStrictEqual(range.through, claim.through) && "through") ||
         (!isDeepStrictEqual(range.from, claim.from) && "from") ||
-        (!source.checks.some((check) => isDeepStrictEqual(check.predicate, claim.predicate)) &&
+        (!predicates
+          .get(predicateKey(claim.predicate))
+          ?.some((predicate) => isDeepStrictEqual(predicate, claim.predicate)) &&
           "predicate") ||
         (custody.audienceIdentity !== identity && "audience");
       if (changed) {

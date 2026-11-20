@@ -1,4 +1,5 @@
 import type { PreparedConversationKnowledgeInitialFrame } from "../../config/sessions/session-initial-context-frame.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { createDeferredCore, type Deferred } from "../../shared/deferred.js";
 
 type RetainedFrame<Frame> = {
@@ -18,6 +19,7 @@ export function createConversationKnowledgeCheckpointFrameSlot<
 >() {
   let current: RetainedFrame<Frame> | undefined;
   const retired = new Set<RetainedFrame<Frame>>();
+  const observers = new Set<() => void>();
   const retire = (value: RetainedFrame<Frame>) => {
     value.retired = true;
     retired.add(value);
@@ -46,6 +48,37 @@ export function createConversationKnowledgeCheckpointFrameSlot<
     });
     return closing;
   };
+  const acquire = () => {
+    const value = current;
+    if (!value) {
+      return undefined;
+    }
+    try {
+      value.frame.assertCurrent();
+    } catch {
+      retire(value);
+      return undefined;
+    }
+    if (value.borrowers++ === 0) {
+      value.idle = createDeferredCore();
+    }
+    let active = true;
+    return {
+      frame: value.frame,
+      async release() {
+        if (!active) {
+          return;
+        }
+        active = false;
+        if (--value.borrowers === 0) {
+          value.idle.resolve();
+          if (value.retired) {
+            await close(value);
+          }
+        }
+      },
+    };
+  };
   return {
     publish(frame: Frame, release: () => Promise<void>) {
       frame.assertCurrent();
@@ -53,37 +86,60 @@ export function createConversationKnowledgeCheckpointFrameSlot<
         retire(current);
       }
       current = { frame, release, borrowers: 0, retired: false, idle: createDeferredCore() };
+      for (const notify of observers) {
+        notify();
+      }
     },
-    acquire() {
-      const value = current;
-      if (!value) {
-        return undefined;
-      }
+    acquire,
+    async waitFor(
+      matches: (frame: Frame) => boolean,
+      currentPreparation: () => Promise<void> | undefined,
+      signal?: AbortSignal,
+    ) {
+      let observed: Promise<void> | undefined;
+      let finished: Promise<void> | undefined;
+      let settled = Promise.resolve();
+      let next = createDeferredCore();
+      const notify = () => next.resolve();
+      observers.add(notify);
       try {
-        value.frame.assertCurrent();
-      } catch {
-        retire(value);
-        return undefined;
-      }
-      if (value.borrowers++ === 0) {
-        value.idle = createDeferredCore();
-      }
-      let active = true;
-      return {
-        frame: value.frame,
-        async release() {
-          if (!active) {
-            return;
-          }
-          active = false;
-          if (--value.borrowers === 0) {
-            value.idle.resolve();
-            if (value.retired) {
-              await close(value);
+        for (;;) {
+          signal?.throwIfAborted();
+          const candidate = acquire();
+          const snapshot = current;
+          if (candidate) {
+            let matched = false;
+            try {
+              matched = matches(candidate.frame);
+              if (matched) {
+                return candidate;
+              }
+            } finally {
+              if (!matched) {
+                await candidate.release();
+              }
             }
           }
-        },
-      };
+          if (current !== snapshot) {
+            continue;
+          }
+          const preparation = currentPreparation();
+          if (!preparation || preparation === finished) {
+            return undefined;
+          }
+          if (preparation !== observed) {
+            observed = preparation;
+            const finish = () => {
+              if (observed === preparation) finished = preparation;
+            };
+            settled = preparation.then(finish, finish);
+          }
+          await racePromiseWithAbortSignal(Promise.race([next.promise, settled]), signal);
+          next = createDeferredCore();
+        }
+      } finally {
+        observers.delete(notify);
+      }
     },
     clear() {
       if (current) {

@@ -6,6 +6,7 @@ import {
 } from "../config/sessions/conversation-knowledge.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
 import { prepareSessionSourceAuthority } from "../config/sessions/session-source-authority.js";
+import { SessionTranscriptReadFenceError } from "../config/sessions/session-transcript-read-fence-error.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SessionSharingTarget } from "./session-sharing-policy.js";
 import {
@@ -790,6 +791,43 @@ describe("source-account-bound personal participant links", () => {
 });
 
 describe("exact historical contribution groups", () => {
+  it.each([false, true])(
+    "extends exact native ranges with only the new anchors when the old prefix is current (stale=%s)",
+    async (stale) => {
+      const f = historicalFixture(3);
+      const previous = await preparePersonalConversationContributionGroup({
+        ...f.params,
+        personal: { ...f.params.personal, contributions: f.references.slice(0, 2) },
+      });
+      try {
+        if (stale) {
+          mocks.anchors.mockRejectedValueOnce(
+            new SessionTranscriptReadFenceError("Prior prefix changed"),
+          );
+        }
+        const extended = await preparePersonalConversationContributionGroup({
+          ...f.params,
+          personal: { ...f.params.personal, contributions: f.references, previousGroup: previous },
+        });
+        extended.release();
+        expect(mocks.anchors.mock.calls[1]?.[1]).toMatchObject({
+          entryIds: ["entry-2"],
+          contextValidation: { version: { generation: "original-generation" } },
+        });
+        expect(mocks.anchors).toHaveBeenCalledTimes(stale ? 3 : 2);
+        if (stale) {
+          expect(mocks.anchors.mock.calls[2]?.[1].entryIds).toEqual([
+            "entry-0",
+            "entry-1",
+            "entry-2",
+          ]);
+        }
+      } finally {
+        previous.release();
+      }
+    },
+  );
+
   it("rebinds one native custody per group, keeps original provenance, and fences the current lifecycle at COMMIT", async () => {
     const f = historicalFixture();
     const group = await f.create();

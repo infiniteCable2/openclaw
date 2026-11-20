@@ -40,6 +40,7 @@ vi.mock("node:timers/promises", async (importOriginal) => ({
 vi.mock("../../config/sessions/conversation-knowledge-store.js", () => ({
   readConversationKnowledgeRoot: async () => boundary.root,
   assertNativeKnowledgeRootContribution() {},
+  prepareNativeKnowledgeRootContributionGroup() {},
 }));
 // mock-isolation: This suite owns checkpoint refusal handling, not foreign-source grant discovery.
 vi.mock("./conversation-knowledge-source-reader.js", () => ({

@@ -27,7 +27,7 @@ import {
 const native = vi.hoisted(() => ({ evidence: {}, original: vi.fn(), creation: vi.fn() }));
 // mock-isolation: Native root admission is independently covered by storage scenarios; this suite owns frame sealing.
 vi.mock("./conversation-knowledge-store.js", () => ({
-  assertNativeKnowledgeRootContribution(evidence: unknown) {
+  prepareNativeKnowledgeRootContributionGroup(evidence: unknown) {
     if (evidence !== native.evidence) {
       throw new Error("Native root evidence refused");
     }

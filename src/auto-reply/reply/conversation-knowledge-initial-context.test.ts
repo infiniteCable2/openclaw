@@ -45,6 +45,7 @@ vi.mock("./conversation-knowledge-checkpoint-source.js", () => ({
 // mock-isolation: The root cache returns detached data; it never grants permission in this suite.
 vi.mock("./conversation-knowledge-checkpoint-owner.js", () => ({
   acquirePreparedConversationKnowledgeInitialFrame: boundary.acquire,
+  waitForPreparedConversationKnowledgeInitialFrame: vi.fn(),
   readPreparedConversationKnowledgeRootProjection: boundary.warm,
 }));
 // mock-isolation: Fixed canonical checkpoint records exercise summary coverage without a report worker.

@@ -239,6 +239,7 @@ export async function prepareChannelConversationConnection(
     chatType: scope.conversation.kind,
     privateAudience: audience,
     assertCommitAllowed: assertTargetCurrent,
+    signal,
   });
   assertTargetCurrent();
   await connection.openRecipient({

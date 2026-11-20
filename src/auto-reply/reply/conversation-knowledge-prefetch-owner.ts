@@ -487,5 +487,12 @@ export function createConversationKnowledgePrefetchOwner(params: {
     throw error;
   }
   request("source", "initial");
-  return { request, pausePreparation, close, assertCurrent, wait };
+  return {
+    request,
+    pausePreparation,
+    close,
+    assertCurrent,
+    wait,
+    currentPreparation: () => completion,
+  };
 }

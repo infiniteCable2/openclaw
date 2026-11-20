@@ -41,6 +41,7 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
   context: GatewayRequestHandlerOptions["context"];
   assertCurrent?: () => void;
   assertCurrentAsync?: () => Promise<void>;
+  signal?: AbortSignal;
 }): Promise<ErrorShape | undefined> {
   const { request, session, client, context } = params;
   const { entry, cfg, agentId, sessionKey, resolvedSessionModel } = session;
@@ -212,6 +213,7 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
                   getRuntimeConfig: context.getRuntimeConfig,
                   sessionEntry,
                   audience,
+                  signal: params.signal,
                   assertCurrent: () => {
                     params.assertCurrent?.();
                     assertSessionTargetCurrent();

@@ -2,10 +2,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { withinTest } from "../../../test/helpers/promise.js";
 import * as checkpointFrames from "../../auto-reply/reply/conversation-knowledge-checkpoint-frame-source.js";
-import {
-  acquirePreparedConversationKnowledgeInitialFrame,
-  registerConversationKnowledgeCheckpointOwner,
-} from "../../auto-reply/reply/conversation-knowledge-checkpoint-owner.js";
+import * as checkpointOwner from "../../auto-reply/reply/conversation-knowledge-checkpoint-owner.js";
 import * as checkpointSources from "../../auto-reply/reply/conversation-knowledge-checkpoint-source.js";
 import { prepareConversationKnowledgeInitialContext } from "../../auto-reply/reply/conversation-knowledge-initial-context.js";
 import { openConversationKnowledgeRoot } from "../../auto-reply/reply/conversation-knowledge-open.js";
@@ -287,9 +284,11 @@ it("warms an existing startup root before input and reuses its frame across fres
     { scenario: "minimal", label: "native-shared-initial-frame" },
     async (state) => {
       const fixture = await createConversationKnowledgeScenario(state);
-      let registration: ReturnType<typeof registerConversationKnowledgeCheckpointOwner> | undefined;
+      let registration:
+        | ReturnType<typeof checkpointOwner.registerConversationKnowledgeCheckpointOwner>
+        | undefined;
       const heldFrames: NonNullable<
-        ReturnType<typeof acquirePreparedConversationKnowledgeInitialFrame>
+        ReturnType<typeof checkpointOwner.acquirePreparedConversationKnowledgeInitialFrame>
       >[] = [];
       const resumes: (() => void)[] = [];
       const recipientPauses = new Map<
@@ -360,7 +359,7 @@ it("warms an existing startup root before input and reuses its frame across fres
         let ready = createDeferredCore();
         let previousFrame:
           | NonNullable<
-              ReturnType<typeof acquirePreparedConversationKnowledgeInitialFrame>
+              ReturnType<typeof checkpointOwner.acquirePreparedConversationKnowledgeInitialFrame>
             >["frame"]
           | undefined;
         const prepareFrame = checkpointFrames.prepareCheckpointInitialFrame;
@@ -410,6 +409,7 @@ it("warms an existing startup root before input and reuses its frame across fres
             return result;
           });
         spies.push(sourceAttempts);
+        let holdPublication: Promise<void> | undefined;
         spies.push(
           vi
             .spyOn(checkpointFrames, "prepareCheckpointInitialFrame")
@@ -418,7 +418,10 @@ it("warms an existing startup root before input and reuses its frame across fres
               diagnose(
                 `frame-input:references=${input.sources.references.length}:tail=${input.tail.length}:checkpoint=${Number(Boolean(input.checkpoint))}`,
               );
-              const result = prepareFrame(input);
+              const result = prepareFrame(input).then(async (frame) => {
+                await holdPublication;
+                return frame;
+              });
               void result.then(
                 (value) => stages.push(value ? "frame-prepared" : "frame-unavailable"),
                 (error: unknown) =>
@@ -491,7 +494,7 @@ it("warms an existing startup root before input and reuses its frame across fres
             ) {
               return;
             }
-            const candidate = acquirePreparedConversationKnowledgeInitialFrame({
+            const candidate = checkpointOwner.acquirePreparedConversationKnowledgeInitialFrame({
               branch,
               participant: person,
             });
@@ -646,28 +649,46 @@ it("warms an existing startup root before input and reuses its frame across fres
         expect(groups).not.toHaveBeenCalled();
         expect(bodies).not.toHaveBeenCalled();
 
-        // A new original alone wakes the root; no target turn builds the successor.
+        // The append alone wakes the root. A concurrent native creation joins its work.
         expectedOriginals = 6;
         ready = createDeferredCore();
+        const releasePublication = createDeferredCore();
+        holdPublication = releasePublication.promise;
+        const joined = createDeferredCore();
+        const waitForFrame = checkpointOwner.waitForPreparedConversationKnowledgeInitialFrame;
+        const waiting = vi
+          .spyOn(checkpointOwner, "waitForPreparedConversationKnowledgeInitialFrame")
+          .mockImplementation((...args) => {
+            const result = waitForFrame(...args);
+            joined.resolve();
+            return result;
+          });
+        spies.push(waiting);
         await publish("sealed-later-delta");
         resumes.shift()!();
+        const thirdPending = create("updated", 6);
+        void thirdPending.catch(joined.reject);
+        try {
+          await withinTest(joined.promise, signal);
+        } finally {
+          holdPublication = undefined;
+          releasePublication.resolve();
+        }
         await withinTest(ready.promise, signal);
+        const third = await thirdPending;
         expect(groups).toHaveBeenCalledOnce();
         expect(groups.mock.calls[0]![0].sources[0]?.sessionKey).toBe(donorA.sessionKey);
+        expect(discovery.mock.calls.some(([request]) => request.targetCreation)).toBe(false);
+        expect(borrowing).toHaveBeenCalledTimes(3);
         discovery.mockClear();
         groups.mockClear();
         bodies.mockClear();
         borrowing.mockClear();
-        const third = await create("updated", 6);
         expect(third.packetIds.filter((id) => !first.packetIds.includes(id))).toHaveLength(1);
         expect(first.packetIds.every((id) => third.packetIds.includes(id))).toBe(true);
         expect(JSON.stringify(await loadTranscriptEvents(third.initialized))).toContain(
           "sealed-later-delta answer",
         );
-        expect(borrowing).toHaveBeenCalledOnce();
-        expect(discovery).not.toHaveBeenCalled();
-        expect(groups).not.toHaveBeenCalled();
-        expect(bodies).not.toHaveBeenCalled();
         expect((await fixture.receipts()).length).toBe(6);
 
         // Native source compaction alone must refresh retained custody and bytes.
