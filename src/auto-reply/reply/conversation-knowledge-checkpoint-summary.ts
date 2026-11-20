@@ -3,6 +3,7 @@ import {
   capCompactionSummary,
   type CompactionSettings,
 } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
+import { SummaryOutputBudgetError } from "../../../packages/agent-core/src/harness/types.js";
 import { estimateMessagesTokens } from "../../agents/compaction-planning.js";
 import { withCompleteCompactionSummary } from "../../agents/compaction-summary-coverage.js";
 import { summarizeCompactionHistory } from "../../agents/compaction.js";
@@ -30,7 +31,11 @@ type CheckpointSummaryPlanInput = {
 
 type Deferred = {
   kind: "deferred";
-  reason: "no-whole-prefix" | "summary-unavailable" | "summary-still-over-budget";
+  reason:
+    | "no-whole-prefix"
+    | "summary-unavailable"
+    | "summary-still-over-budget"
+    | "summary-output-budget";
 };
 type ReadyPlan = {
   kind: "ready";
@@ -191,13 +196,25 @@ export async function prepareConversationKnowledgeCheckpointSummary(
   if (summary === undefined || !completeSummary(summary)) {
     // Native input sampling bounds even a large prefix. Coverage means summarized,
     // not verbatim; original contributions remain available in their source histories.
-    summary = await withCompleteCompactionSummary(() =>
-      summarizeCompactionHistory({
-        ...native,
-        messages: plan.messages,
-        previousSummary: params.previousSummary,
-      }),
-    );
+    try {
+      summary = await withCompleteCompactionSummary(() =>
+        summarizeCompactionHistory({
+          ...native,
+          messages: plan.messages,
+          previousSummary: params.previousSummary,
+        }),
+      );
+    } catch (error) {
+      native.signal.throwIfAborted();
+      if (
+        error instanceof SummaryOutputBudgetError ||
+        (error instanceof Error && error.cause instanceof SummaryOutputBudgetError)
+      ) {
+        // An unchanged request would exhaust the same budget again.
+        return { kind: "deferred", reason: "summary-output-budget" };
+      }
+      throw error;
+    }
   }
   native.signal.throwIfAborted();
   if (!completeSummary(summary)) {

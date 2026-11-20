@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  CompactionError,
+  SummaryOutputBudgetError,
+} from "../../../packages/agent-core/src/harness/types.js";
 import { requiresCompleteCompactionSummary } from "../../agents/compaction-summary-coverage.js";
 import { prepareCompactionBudgetPreflight } from "../../agents/embedded-agent-runner/compaction-budget-preflight.js";
 import type { StreamFn } from "../../agents/runtime/index.js";
@@ -211,6 +215,30 @@ describe("native root checkpoint summary adapter", () => {
       summary: text,
       coveredContributionIds: ["oldest", "middle"],
     });
+  });
+
+  it.each([
+    ["direct", new SummaryOutputBudgetError("No visible summary")],
+    [
+      "wrapped",
+      new CompactionError(
+        "summarization_failed",
+        "Native compaction failed",
+        new SummaryOutputBudgetError("No visible summary"),
+      ),
+    ],
+  ])("defers a %s output budget error and accepts a later summary", async (_kind, error) => {
+    const params = fixture();
+    summary.mockRejectedValueOnce(error);
+    expect(await prepareConversationKnowledgeCheckpointSummary(params)).toEqual({
+      kind: "deferred",
+      reason: "summary-output-budget",
+    });
+    expect(summary).toHaveBeenCalledOnce();
+    expect(await prepareConversationKnowledgeCheckpointSummary(params)).toMatchObject({
+      kind: "candidate",
+    });
+    expect(summary).toHaveBeenCalledTimes(2);
   });
 
   it("preserves the old checkpoint on a failure, cancellation or summary that does not fit", async () => {
