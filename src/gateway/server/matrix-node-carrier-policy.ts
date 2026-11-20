@@ -10,6 +10,7 @@ const ANDROID_TOOLBOX_COMMANDS: ReadonlySet<unknown> = new Set([
   "maps.search",
   "maps.directions",
   "maps.navigate",
+  "maps.navigation_status",
   "maps.show",
   "maps.street_view",
   "maps.shortlist",

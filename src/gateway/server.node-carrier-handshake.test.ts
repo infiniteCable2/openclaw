@@ -44,6 +44,7 @@ const toolboxCommands = [
   "maps.search",
   "maps.directions",
   "maps.navigate",
+  "maps.navigation_status",
   "maps.show",
   "maps.street_view",
   "maps.shortlist",
@@ -222,10 +223,11 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
           .ok,
       ).toBe(false);
       checkpoint = "reject-command";
-      expect(
-        (await open().connect({ bootstrapToken: bootstrap.token }, { commands: ["system.run"] }))
-          .ok,
-      ).toBe(false);
+      for (const command of ["system.run", "notifications.list"]) {
+        expect(
+          (await open().connect({ bootstrapToken: bootstrap.token }, { commands: [command] })).ok,
+        ).toBe(false);
+      }
 
       checkpoint = "bootstrap";
       const first = open({ expectedNodeId: undefined, assertInvokeSession: undefined });
@@ -451,6 +453,9 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
       expect(
         registry.sendEvent(identity.deviceId, "node.invoke.request", { command: "maps.search" }),
       ).toBe(false);
+      expect(
+        (await invoke(runtimeIdentity, { command: "notifications.list", params: {} }))?.[0],
+      ).toBe(false);
       expect(current.sent).toHaveLength(framesBeforeRejectedInvocations);
       const transport = registry.get(identity.deviceId)?.client.socket;
       if (!transport?.sendNodeInvoke) {
@@ -503,7 +508,10 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
       const dispatchedBeforeSessionRetirement = current.next(
         (requestFrame) => requestFrame.event === "node.invoke.request",
       );
-      const retiredSessionResult = invoke();
+      const retiredSessionResult = invoke(runtimeIdentity, {
+        command: "maps.navigation_status",
+        params: {},
+      });
       const retiredSessionFrame = await Promise.race([
         dispatchedBeforeSessionRetirement,
         retiredSessionResult.then(() => undefined),
@@ -511,6 +519,7 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
       if (!retiredSessionFrame?.payload?.id) {
         throw new Error("fixture retirement invoke missing");
       }
+      expect(retiredSessionFrame.payload.command).toBe("maps.navigation_status");
       activeSessionKey = "agent:main:matrix:group:another-rtc";
       expect(() => pendingDispatch?.assertCurrent()).toThrow("Matrix node invoke authority closed");
       expect((await invoke())?.[0]).toBe(false);
@@ -574,7 +583,7 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
           type: "req",
           id: "bad",
           method: "node.pluginTools.update",
-          params: { tools: [{ ...tools[0], command: "system.run" }] },
+          params: { tools: [{ ...tools[0], command: "notifications.list" }] },
         }),
       );
       await closed;

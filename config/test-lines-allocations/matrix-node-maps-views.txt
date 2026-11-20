@@ -1,2 +1,2 @@
-8
-# Exercise Android Maps views and device location through the native Matrix node carrier.
+17
+# Exercise Android Maps views, device location, and scoped Maps status through the native Matrix node carrier.
