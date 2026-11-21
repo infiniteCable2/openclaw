@@ -1,0 +1,2 @@
+7
+# Verify an opted-in cross-channel link opened during a call expires with the original call.

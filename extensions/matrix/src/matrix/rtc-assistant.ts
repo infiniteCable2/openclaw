@@ -5,7 +5,10 @@ import {
 } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSession.js";
 import type { TalkEvent } from "openclaw/plugin-sdk/realtime-voice";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
-import type { MatrixRtcClientFacade } from "./sdk/matrix-rtc.js";
+import {
+  MATRIX_RTC_CONVERSATION_MEDIA_EVENT,
+  type MatrixRtcClientFacade,
+} from "./sdk/matrix-rtc.js";
 
 export const MATRIX_RTC_CONVERSATION_KEY = "io.openclaw.conversation";
 const ASSISTANT_PURPOSE = "assistant-voice";
@@ -14,9 +17,13 @@ const MAX_PENDING_OUTCOMES = 8;
 
 function presentationOffers(membership: Pick<CallMembership, "applicationData">) {
   const value = membership.applicationData[MATRIX_RTC_CONVERSATION_KEY];
+  const marker = isRecord(value) ? value : undefined;
+  const captions = marker?.captions === true;
+  const talkEvents = marker?.talk_events === true;
   return {
-    captions: isRecord(value) && value.captions === true,
-    talkEvents: isRecord(value) && value.talk_events === true,
+    captions,
+    talkEvents,
+    audioOutputControl: captions && talkEvents && marker?.audio_output_control === true,
   };
 }
 
@@ -48,10 +55,11 @@ export function createMatrixRtcConversationPresentation(params: {
   caller: Pick<CallMembership, "userId" | "deviceId" | "memberId" | "applicationData">;
   self: { userId: string; deviceId: string };
   assertCurrent(): CallMembership;
+  getAudioTransport(): { setAudioOutputAvailable(available: boolean): Promise<void> } | undefined;
   onEnd(): unknown;
   dispose(close: () => void): void;
   roomId: string;
-  client: Pick<MatrixRtcClientFacade, "sendEncryptedToDevice">;
+  client: Pick<MatrixRtcClientFacade, "sendEncryptedToDevice" | "onConversationMedia">;
   logger: { warn(message: string): void };
 }) {
   if (!params.request) {
@@ -83,6 +91,9 @@ export function createMatrixRtcConversationPresentation(params: {
   let latestActivity: TalkEvent | undefined;
   let deliveredActivitySequence = 0;
   let sendingTalk = false;
+  let audioGeneration = 0;
+  let audioAvailable = true;
+  let audioApplication = Promise.resolve();
   const outcomes: TalkEvent[] = [];
   const target = { userId: params.caller.userId, deviceId: params.caller.deviceId };
   const flushTalk = async () => {
@@ -144,7 +155,8 @@ export function createMatrixRtcConversationPresentation(params: {
       const offers = presentationOffers(currentCaller);
       if (
         acknowledged?.captions === offers.captions &&
-        acknowledged.talkEvents === offers.talkEvents
+        acknowledged.talkEvents === offers.talkEvents &&
+        acknowledged.audioOutputControl === offers.audioOutputControl
       ) {
         return;
       }
@@ -180,6 +192,7 @@ export function createMatrixRtcConversationPresentation(params: {
             state: "ready",
             captions: offers.captions,
             ...(offers.talkEvents ? { talk_events: true, talk_session_id: params.sessionId } : {}),
+            ...(offers.audioOutputControl ? { audio_output_control: true } : {}),
           },
         })
         .then(() => {
@@ -213,42 +226,110 @@ export function createMatrixRtcConversationPresentation(params: {
   // after that update, rechecking the current caller and lifecycle in publish().
   const onMembershipsChanged = () => queueMicrotask(publish);
   params.session.on(MatrixRTCSessionEvent.MembershipsChanged, onMembershipsChanged);
+  const stopMedia = params.client.onConversationMedia((peer, content) => {
+    const { generation, available } = content;
+    if (
+      closed ||
+      !acknowledged?.audioOutputControl ||
+      peer.userId !== target.userId ||
+      peer.deviceId !== target.deviceId ||
+      content.version !== 1 ||
+      content.room_id !== params.roomId ||
+      content.request_id !== requestId ||
+      content.talk_session_id !== params.sessionId ||
+      content.type !== "availability" ||
+      content.direction !== "output" ||
+      content.medium !== "audio" ||
+      typeof generation !== "number" ||
+      !Number.isSafeInteger(generation) ||
+      generation < 1 ||
+      typeof available !== "boolean" ||
+      generation < audioGeneration ||
+      (generation === audioGeneration && available !== audioAvailable)
+    ) {
+      return;
+    }
+    const acknowledge = async () => {
+      const transport = params.getAudioTransport();
+      if (!transport || !presentationOffers(params.assertCurrent()).audioOutputControl) {
+        return;
+      }
+      if (generation > audioGeneration) {
+        audioGeneration = generation;
+        audioAvailable = available;
+        audioApplication = transport.setAudioOutputAvailable(available);
+      }
+      await audioApplication;
+      if (
+        closed ||
+        generation !== audioGeneration ||
+        !presentationOffers(params.assertCurrent()).audioOutputControl
+      ) {
+        return;
+      }
+      await params.client.sendEncryptedToDevice(target, MATRIX_RTC_CONVERSATION_MEDIA_EVENT, {
+        version: 1,
+        room_id: params.roomId,
+        request_id: requestId,
+        talk_session_id: params.sessionId,
+        type: "applied",
+        direction: "output",
+        medium: "audio",
+        generation,
+        available,
+      });
+    };
+    void acknowledge().catch(() => {
+      if (!closed) {
+        params.logger.warn("matrix rtc: assistant audio output update failed");
+      }
+    });
+  });
   const close = () => {
+    if (closed) {
+      return;
+    }
     closed = true;
+    stopMedia();
     latestActivity = undefined;
     outcomes.length = 0;
     params.session.off(MatrixRTCSessionEvent.MembershipsChanged, onMembershipsChanged);
   };
   params.dispose(close);
+  const sendCaption = (caption: { role: "user" | "assistant"; text: string }) => {
+    if (closed || !acknowledged?.captions || !caption.text.trim()) {
+      return;
+    }
+    // Serialize encryption/queue admission, never audio. The SDK owns network
+    // retries; a client must reject delayed captions from an older request.
+    captionQueue = captionQueue
+      .then(async () => {
+        if (closed || !acknowledged?.captions) {
+          return;
+        }
+        if (!presentationOffers(params.assertCurrent()).captions) {
+          return;
+        }
+        await params.client.sendEncryptedToDevice(target, "io.openclaw.conversation.caption", {
+          version: 1,
+          room_id: params.roomId,
+          request_id: requestId,
+          seq: ++captionSequence,
+          role: caption.role,
+          text: caption.text,
+        });
+      })
+      .catch(() => {
+        if (!closed) {
+          params.logger.warn("matrix rtc: assistant caption queue admission failed");
+        }
+      });
+  };
   const speechCallbacks = {
     onSpeechCaption(caption: { role: "user" | "assistant"; text: string }) {
-      if (closed || publishing || !acknowledged?.captions || !caption.text.trim()) {
-        return;
+      if (caption.role === "user" || !acknowledged?.audioOutputControl) {
+        sendCaption(caption);
       }
-      // Serialize encryption/queue admission, never audio. The SDK owns network
-      // retries; a client must reject delayed captions from an older request.
-      captionQueue = captionQueue
-        .then(async () => {
-          if (closed || publishing || !acknowledged?.captions) {
-            return;
-          }
-          if (!presentationOffers(params.assertCurrent()).captions) {
-            return;
-          }
-          await params.client.sendEncryptedToDevice(target, "io.openclaw.conversation.caption", {
-            version: 1,
-            room_id: params.roomId,
-            request_id: requestId,
-            seq: ++captionSequence,
-            role: caption.role,
-            text: caption.text,
-          });
-        })
-        .catch(() => {
-          if (!closed) {
-            params.logger.warn("matrix rtc: assistant caption queue admission failed");
-          }
-        });
     },
     onTalkEvent(event: TalkEvent) {
       if (closed || event.sessionId !== params.sessionId) {
@@ -269,6 +350,16 @@ export function createMatrixRtcConversationPresentation(params: {
         }
         outcomes.push(event);
         void flushTalk();
+      } else if (
+        acknowledged?.audioOutputControl &&
+        isRecord(event.payload) &&
+        (event.type === "output.text.done" ||
+          (event.type === "output.text.delta" &&
+            event.payload.purpose === "commentary" &&
+            event.payload.blockFinal === true)) &&
+        typeof event.payload.text === "string"
+      ) {
+        sendCaption({ role: "assistant", text: event.payload.text });
       }
       // A session.error can describe one failed input in an otherwise usable call.
     },

@@ -1,0 +1,2 @@
+1
+# Cover declaration of a fixed read without granting it on native reconnect.

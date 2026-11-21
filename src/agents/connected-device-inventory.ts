@@ -86,6 +86,9 @@ export function prepareConnectedDeviceInventory(
             nodeId: entry.nodeId,
             identity,
             sessionKey,
+            isPrivateRequesterProfile: (profileId) =>
+              isCallerCurrent() &&
+              caller?.personalToolParticipants?.isPrivateRequesterProfile(profileId) === true,
           }),
         );
       }

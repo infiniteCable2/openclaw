@@ -51,6 +51,7 @@ const mocks = vi.hoisted(() => ({
       >[0],
     ) => ({
       sendKey: vi.fn(),
+      setAudioOutputAvailable: vi.fn(async (_available: boolean) => {}),
       stop: vi.fn(async () => undefined),
       dispose: vi.fn(async () => undefined),
     }),

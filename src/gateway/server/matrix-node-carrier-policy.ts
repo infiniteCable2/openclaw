@@ -1,5 +1,6 @@
 import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import type { ConnectParams } from "../../../packages/gateway-protocol/src/index.js";
+import { NODE_NETWORK_DEVICE_READ_COMMAND } from "../../infra/node-commands.js";
 
 export const MATRIX_NODE_CARRIER_MAX_BYTES = 12 * 1024;
 export const MATRIX_NODE_CARRIER_METHODS = [
@@ -35,6 +36,7 @@ const ANDROID_TOOLBOX_COMMANDS: ReadonlySet<unknown> = new Set([
   "media.playback.status",
   "messages.email.draft",
   "messages.sms.draft",
+  NODE_NETWORK_DEVICE_READ_COMMAND,
   "phone.dial",
 ]);
 

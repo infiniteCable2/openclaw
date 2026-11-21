@@ -149,6 +149,7 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
   #stopped = false;
   #inputStarted = false;
   #outputGeneration = 0;
+  #audioOutput = new AbortController();
   #clearTail = Promise.resolve();
   #gateTail = Promise.resolve();
 
@@ -331,7 +332,22 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
     });
   }
 
+  audioOutputSignal(): AbortSignal {
+    return this.#audioOutput.signal;
+  }
+
+  async setAudioOutputAvailable(available: boolean): Promise<void> {
+    if (available && this.#audioOutput.signal.aborted) {
+      this.#audioOutput = new AbortController();
+    } else if (!available && !this.#audioOutput.signal.aborted) {
+      this.#audioOutput.abort();
+      await this.clearOutput();
+    }
+    await this.#clearTail;
+  }
+
   async writeOutput(audio: Buffer): Promise<void> {
+    const availability = this.#audioOutput.signal;
     if (this.#fatal || this.#stopping || this.#stopped || !this.#child.stdin.writable) {
       throw new Error("MatrixRTC media output is unavailable");
     }
@@ -341,7 +357,13 @@ export class NativeMatrixRtcAudioTransport implements MeetingRealtimeAudioTransp
     await this.#clearTail;
     const generation = this.#outputGeneration;
     for (let offset = 0; offset < audio.byteLength; offset += OUTPUT_PCM_FRAME_BYTES) {
-      if (generation !== this.#outputGeneration || this.#fatal || this.#stopping || this.#stopped) {
+      if (
+        availability.aborted ||
+        generation !== this.#outputGeneration ||
+        this.#fatal ||
+        this.#stopping ||
+        this.#stopped
+      ) {
         return;
       }
       const payload = audio.subarray(

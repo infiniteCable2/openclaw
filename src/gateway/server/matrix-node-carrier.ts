@@ -21,6 +21,7 @@ export type MatrixNodeCarrierOwner = {
   peerKey: string;
   agentId: string;
   expectedNodeId?: string;
+  crossChannelSenderId?: string;
   /** Throws unless the Gateway-verified session still owns this live RTC admission. */
   assertInvokeSession?(sessionKey: string): void;
   roomId: string;
@@ -33,9 +34,14 @@ export type MatrixNodeCarrierOwner = {
   onClose(): void;
 };
 
+export type MatrixNodeCarrierHostOwner = Omit<MatrixNodeCarrierOwner, "crossChannelSenderId"> & {
+  accountId: string;
+  privateRequester?: Readonly<{ profileId: string; isCurrent(): boolean }>;
+};
+
 export function attachMatrixNodeCarrier(
   connectionOptions: GatewayConnectionOptions,
-  owner: MatrixNodeCarrierOwner & { accountId: string },
+  owner: MatrixNodeCarrierHostOwner,
 ) {
   if (
     !owner.agentId.trim() ||
@@ -52,6 +58,9 @@ export function attachMatrixNodeCarrier(
       throw new Error("Matrix node carrier revoked");
     }
     owner.assertCurrent();
+    if (owner.privateRequester && !owner.privateRequester.isCurrent()) {
+      throw new Error("Matrix Node owner person profile changed");
+    }
   };
   current();
   const binding: MatrixNodeCarrierBinding = Object.freeze({
@@ -60,6 +69,7 @@ export function attachMatrixNodeCarrier(
     accountId: owner.accountId,
     expectedNodeId: owner.expectedNodeId,
     assertInvokeSession: owner.assertInvokeSession?.bind(owner),
+    privateRequesterProfileId: owner.privateRequester?.profileId,
     isCurrent: () => {
       current();
       return true;
@@ -207,6 +217,7 @@ export function attachMatrixNodeCarrier(
     prepareAuthenticatedReceive: () => ({ ok: true, value: () => {} }),
   });
   return {
+    assertCurrent: current,
     receive(rawJson: string) {
       try {
         current();

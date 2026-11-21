@@ -8,6 +8,8 @@ export type MatrixNodeCarrierBinding = Readonly<{
   accountId: string;
   expectedNodeId?: string;
   assertInvokeSession?: (sessionKey: string) => void;
+
+  privateRequesterProfileId?: string;
   isCurrent: () => boolean;
 }>;
 
@@ -21,41 +23,55 @@ export function captureMatrixNodeCarrierRunScope(params: {
   identity?: Pick<AgentRuntimeIdentity, "agentId" | "sessionKey" | "operationalRunInstance">;
   nodeId: string;
   sessionKey?: string;
+  isPrivateRequesterProfile?: (profileId: string) => boolean;
 }): (() => boolean) | undefined {
   const { binding, identity } = params;
-  const { assertInvokeSession } = binding;
-  const origin = identity && readMatrixConversationRunOrigin(identity.operationalRunInstance);
   if (
     !binding.expectedNodeId ||
     binding.expectedNodeId !== params.nodeId ||
-    !assertInvokeSession ||
     !identity ||
-    !origin ||
-    origin.agentId !== binding.agentId ||
-    origin.accountId !== binding.accountId ||
-    origin.roomId !== binding.roomId ||
-    origin.sessionKey !== identity.sessionKey ||
     identity.agentId !== binding.agentId ||
     (params.sessionKey !== undefined && params.sessionKey !== identity.sessionKey)
   ) {
     return undefined;
   }
+  const { assertInvokeSession, privateRequesterProfileId } = binding;
+  const origin = readMatrixConversationRunOrigin(identity.operationalRunInstance);
   const sessionKey = identity.sessionKey;
-  return () => {
-    try {
-      if (!binding.isCurrent()) {
+  if (
+    assertInvokeSession &&
+    origin?.agentId === binding.agentId &&
+    origin.accountId === binding.accountId &&
+    origin.roomId === binding.roomId &&
+    origin.sessionKey === sessionKey
+  ) {
+    return () => {
+      try {
+        if (!binding.isCurrent()) {
+          return false;
+        }
+        origin.assertCurrent();
+        const outcome: unknown = assertInvokeSession(sessionKey);
+        if (outcome instanceof Promise) {
+          void outcome.catch(() => {});
+        }
+        return outcome === undefined;
+      } catch {
         return false;
       }
-      origin.assertCurrent();
-      const outcome: unknown = assertInvokeSession(sessionKey);
-      if (outcome instanceof Promise) {
-        void outcome.catch(() => {});
+    };
+  }
+  const { isPrivateRequesterProfile } = params;
+  if (privateRequesterProfileId && isPrivateRequesterProfile) {
+    return () => {
+      try {
+        return binding.isCurrent() && isPrivateRequesterProfile(privateRequesterProfileId);
+      } catch {
+        return false;
       }
-      return outcome === undefined;
-    } catch {
-      return false;
-    }
-  };
+    };
+  }
+  return undefined;
 }
 
 export function captureMatrixNodeCarrierDispatch(params: {
@@ -65,6 +81,7 @@ export function captureMatrixNodeCarrierDispatch(params: {
   nodeId: string;
   command: string;
   sessionKey?: string;
+  isPrivateRequesterProfile?: (profileId: string) => boolean;
   isRequestCurrent: () => boolean;
 }): (() => boolean) | undefined {
   const { binding, identity, validate, command } = params;
@@ -103,4 +120,17 @@ export function assertMatrixNodeCarrierDispatch(
   ) {
     throw new Error("Matrix node invoke authority closed");
   }
+}
+
+/** Keep the original carrier binding when another host policy narrows dispatch. */
+export function restrictMatrixNodeCarrierDispatch(
+  original: () => boolean,
+  gate: () => boolean,
+): () => boolean {
+  const binding = dispatchBindings.get(original);
+  const restricted = () => original() && gate();
+  if (binding) {
+    dispatchBindings.set(restricted, binding);
+  }
+  return restricted;
 }

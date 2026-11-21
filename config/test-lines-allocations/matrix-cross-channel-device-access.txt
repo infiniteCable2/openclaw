@@ -1,0 +1,2 @@
+162
+# Verify the paired device and exact private profile govern cross-channel Matrix Node access.

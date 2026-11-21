@@ -70,6 +70,7 @@ const upgradedToolbox = [
   "media.playback.status",
   "messages.email.draft",
   "messages.sms.draft",
+  "network.device.read",
   "phone.dial",
 ];
 const client = { id: "node-host", version: "1.0.0", platform: "android", mode: "node" } as const;
