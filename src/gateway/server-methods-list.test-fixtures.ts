@@ -17,7 +17,7 @@ openclaw.chat.history openclaw.changes.list openclaw.approval.list openclaw.setu
 openclaw.setup.activate openclaw.setup.activate.start openclaw.setup.auth.start
 openclaw.setup.prepare.start wizard.start wizard.next wizard.cancel wizard.status talk.catalog
 talk.config talk.client.create talk.client.transcript talk.client.close talk.client.toolCall
-talk.client.steer talk.session.create talk.session.appendAudio talk.session.cancelOutput
+talk.client.steer talk.session.create talk.session.appendAudio talk.session.media talk.session.cancelOutput
 talk.session.acknowledgeMark talk.session.submitToolResult talk.session.steer talk.session.close
 talk.speak talk.mode commands.list models.list models.authStatus models.authLogout tools.catalog
 tools.effective tools.invoke mcp.app.view mcp.app.listTools mcp.app.listResources

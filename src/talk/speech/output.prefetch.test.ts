@@ -9,6 +9,7 @@ type OutputParams = Parameters<typeof createSpeechOutput>[0];
 function createFixture(
   synthesize: () => Promise<TtsTelephonyStreamResult>,
   writeOutput: (audio: Buffer) => Promise<void>,
+  audioOutputSignal?: OutputParams["transport"]["audioOutputSignal"],
 ) {
   let generation = 0;
   let stopped = false;
@@ -86,6 +87,7 @@ function createFixture(
       onFatal() {},
       startInput() {},
       writeOutput,
+      audioOutputSignal,
       clearOutput: async () => undefined,
       stop: async () => undefined,
       dispose: async () => undefined,
@@ -146,6 +148,34 @@ function completeResult(
 }
 
 describe("speech output compute/playout overlap", () => {
+  it("finishes a muted reply as text and synthesizes the next reply when audio returns", async () => {
+    const synthesize = vi.fn(async () => completeResult());
+    const writeOutput = vi.fn(async () => {});
+    let availability = new AbortController();
+    const f = createFixture(synthesize, writeOutput, () => availability.signal);
+    const reply = f.output.createSpeechUtterance();
+    availability.abort();
+    const text = f.output.finalizeSpeechUtterance(reply, "An answer delivered as text.");
+    await expect(text?.completion).resolves.toBeUndefined();
+    expect(f.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "output.text.done",
+        payload: expect.objectContaining({ text: "An answer delivered as text." }),
+      }),
+    );
+    expect(f.endTurn).toHaveBeenCalledOnce();
+    expect(synthesize).not.toHaveBeenCalled();
+    expect(writeOutput).not.toHaveBeenCalled();
+    availability = new AbortController();
+    const resumed = f.output.finalizeSpeechUtterance(
+      f.output.createSpeechUtterance(),
+      "Audio is available again.",
+    );
+    await expect(resumed?.completion).resolves.toEqual(["Audio is available again."]);
+    expect(synthesize).toHaveBeenCalledOnce();
+    expect(writeOutput).toHaveBeenCalled();
+  });
+
   it("queues status without holding native work and retains waiting/answer custody until physical release", async () => {
     const releasing = createDeferred();
     const allowRelease = createDeferred();

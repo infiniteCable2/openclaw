@@ -1,0 +1,3 @@
+# Native relay media negotiation and independent output availability proofs.
+# A muted call still delivers text. Disabled and expired sources reject new frames while admitted frames remain readable.
+161

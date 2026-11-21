@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import type {
+  TalkSessionMediaParams,
+  TalkSessionMediaResult,
+} from "../../packages/gateway-protocol/src/schema/channels.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import type { SpeechSessionHandle } from "./speech/types.js";
 
@@ -17,7 +21,7 @@ export type TalkConnectionPresentation = Readonly<{
   label: string;
   readTarget: Readonly<{ agentId: string; sessionKey: string; sessionId?: string }>;
   input: Readonly<{ audio: boolean; video?: boolean; text?: boolean }>;
-  output: Readonly<{ audio: boolean }>;
+  output: Readonly<{ audio: boolean; text?: boolean }>;
   /** Existing native operations only; descriptions do not grant the operation. */
   operations: readonly ("current-turn-reply" | "steer" | "cancel-output")[];
   state(): "preparing" | "ready" | "closed";
@@ -31,6 +35,7 @@ type TalkSpeechRelayRecord = {
   connId: string;
   sessionTarget: TalkSessionStorageTarget;
   appendAudio(audioBase64: string, endOfInput?: boolean, captureId?: string): Promise<void>;
+  receiveMedia(input: TalkSessionMediaParams): TalkSessionMediaResult;
   acknowledgeMark(markName: string): void;
   cancelOutput: SpeechSessionHandle["cancelOutput"];
   steer: SpeechSessionHandle["steer"];

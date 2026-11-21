@@ -167,6 +167,65 @@ it("public STT/TTS rejects unsupported input boundaries before accepting their a
   await dispatch("talk.session.close", { sessionId: call.sessionId });
 });
 
+it("keeps the speech turn and final text when relay audio output goes away", async ({ signal }) => {
+  const turnEnded = createDeferredCore();
+  const hardware = installSyntheticSpeechHardware({
+    finishInput: () => hardware.emitTranscript("Check the synthetic relay output."),
+  });
+  mocks.runEmbeddedAgent.mockImplementation(publishNativeSpeechModelRun);
+  const published: unknown[] = [];
+  vi.mocked(context.broadcastToConnIds).mockImplementation((_name, payload) => {
+    published.push(payload);
+    if (
+      isRecord(payload) &&
+      isRecord(payload.talkEvent) &&
+      payload.talkEvent.type === "turn.ended"
+    ) {
+      turnEnded.resolve();
+    }
+  });
+  const { sessionId, readyMark } = await createSpeechRelayCall({
+    capabilities: ["input-end", "media-availability-v1"],
+  });
+  await dispatch("talk.session.acknowledgeMark", { sessionId, markName: readyMark });
+  expect(
+    await dispatch("talk.session.media", {
+      sessionId,
+      type: "availability",
+      direction: "output",
+      medium: "audio",
+      generation: 1,
+      available: false,
+    }),
+  ).toHaveBeenCalledWith(
+    true,
+    {
+      ok: true,
+      status: "applied",
+      available: { audioOutput: false, textOutput: true, videoInput: false },
+    },
+    undefined,
+  );
+  await dispatch("talk.session.appendAudio", {
+    sessionId,
+    audioBase64: Buffer.alloc(640, 3).toString("base64"),
+    endOfInput: true,
+  });
+  await withinTest(turnEnded.promise, signal);
+  expect(hardware.input).toHaveBeenCalledOnce();
+  expect(hardware.close).not.toHaveBeenCalled();
+  expect(mocks.streamSpeech).not.toHaveBeenCalled();
+  expect(published).toContainEqual(
+    expect.objectContaining({
+      role: "assistant",
+      final: true,
+      text: "The synthetic device is ready.",
+    }),
+  );
+  expect(published).not.toContainEqual(expect.objectContaining({ type: "audio" }));
+  await dispatch("talk.session.close", { sessionId });
+});
+
 it("public STT/TTS fences a pending input boundary when its call closes", async ({ signal }) => {
   const finishing = createDeferredCore();
   const release = createDeferredCore();

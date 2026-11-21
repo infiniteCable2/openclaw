@@ -50,6 +50,7 @@ export async function playSpeechGreeting(params: {
     isCurrent: () => boolean,
   ) => Promise<boolean>;
 }): Promise<void> {
+  const audioAvailability = params.transport.audioOutputSignal?.();
   // Local publication alone does not prove the caller's audio track has arrived.
   await params.transport.waitForRemoteAudioReady?.();
   if (!params.isCurrent() || !params.canStart()) {
@@ -64,7 +65,8 @@ export async function playSpeechGreeting(params: {
   params.onStarted();
   const controller = new AbortController();
   params.activeTtsAborts.add(controller);
-  const isCurrent = () => params.isCurrent() && !controller.signal.aborted;
+  const isCurrent = () =>
+    params.isCurrent() && !controller.signal.aborted && !audioAvailability?.aborted;
   try {
     const turnId = params.harness.ensureTurn();
     params.harness.emit({
@@ -92,6 +94,10 @@ export async function playSpeechGreeting(params: {
         params.harness.finishOutputAudio("completed");
         params.harness.endTurn();
       }
+    }
+    if (audioAvailability?.aborted && params.isCurrent()) {
+      params.harness.finishOutputAudio("stopped");
+      params.harness.endTurn();
     }
   } finally {
     params.activeTtsAborts.delete(controller);

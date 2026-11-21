@@ -30,6 +30,7 @@ import type { createSpeechWaitingController } from "./waiting-controller.js";
 
 export type SpeechUtterance = {
   generation: number;
+  audioAvailability?: AbortSignal;
   waitingGeneration: number;
   waitingTurn?: number;
   chunks: string[];
@@ -112,24 +113,26 @@ export function createSpeechOutput(params: {
     onHandoff?: () => void,
   ) => {
     const harness = params.getHarness();
+    const audioAvailability = params.transport.audioOutputSignal?.();
+    const canWrite = () => !audioAvailability?.aborted && isCurrent();
     // A newly starting segment waits for unresolved acoustic input; already
     // playing speech remains controlled by the reversible output gate.
     if (firstChunk) {
       await params.waitForInput();
     }
-    if (!isCurrent()) {
+    if (!canWrite()) {
       return false;
     }
     if (firstChunk) {
       params.transport.beginOutput?.();
-      if (!isCurrent()) {
+      if (!canWrite()) {
         return false;
       }
       harness.outputActivity.markPlaybackStarted();
     }
     harness.recordOutputAudio(audio);
     params.onOutputTurn(harness.talk.activeTurnId);
-    if (!isCurrent()) {
+    if (!canWrite()) {
       return false;
     }
     onHandoff?.();
@@ -140,6 +143,7 @@ export function createSpeechOutput(params: {
 
   const createSpeechUtterance = (waitingTurn?: number): SpeechUtterance => ({
     generation: params.getOutputGeneration(),
+    audioAvailability: params.transport.audioOutputSignal?.(),
     waitingGeneration: waiting.generation,
     waitingTurn,
     chunks: [],
@@ -191,6 +195,9 @@ export function createSpeechOutput(params: {
       });
     }
     utterance.chunks.push(normalized);
+    if (utterance.audioAvailability?.aborted) {
+      return;
+    }
     pendingChunks += 1;
     const pending = pendingByGeneration.get(utterance.generation) ?? 0;
     pendingByGeneration.set(utterance.generation, pending + 1);
@@ -209,7 +216,8 @@ export function createSpeechOutput(params: {
     );
     const playbackDone = createDeferred();
     const prepared = preparation.prepare({
-      isCurrent: () => isCurrentSpeechUtterance(utterance),
+      isCurrent: () => isCurrentSpeechUtterance(utterance) && !utterance.audioAvailability?.aborted,
+      availability: utterance.audioAvailability,
       playbackDone: playbackDone.promise,
       synthesize: (signal) =>
         params.runtime.tts.streamTextToSpeechTelephony({
@@ -233,6 +241,9 @@ export function createSpeechOutput(params: {
         const controller = ready.controller;
         if ("error" in ready) {
           activeTtsAborts.delete(controller);
+          if (utterance.audioAvailability?.aborted) {
+            return;
+          }
           throw ready.error;
         }
         const result = ready.result;
@@ -240,7 +251,11 @@ export function createSpeechOutput(params: {
         const release = () => resources.release();
         let cleanupFailure: { error: unknown } | undefined;
         try {
-          if (!isCurrentSpeechUtterance(utterance) || controller.signal.aborted) {
+          if (
+            !isCurrentSpeechUtterance(utterance) ||
+            controller.signal.aborted ||
+            utterance.audioAvailability?.aborted
+          ) {
             return;
           }
           if (!result.success || !result.audioStream || !result.sampleRate) {
@@ -254,7 +269,9 @@ export function createSpeechOutput(params: {
           let firstUtteranceChunk = !utterance.playbackStarted;
           let bytesWritten = 0;
           const isCurrentPlayback = () =>
-            isCurrentSpeechUtterance(utterance) && !controller.signal.aborted;
+            isCurrentSpeechUtterance(utterance) &&
+            !controller.signal.aborted &&
+            !utterance.audioAvailability?.aborted;
           try {
             for (;;) {
               if (!isCurrentPlayback()) {
@@ -354,7 +371,7 @@ export function createSpeechOutput(params: {
         }
       })
       .catch((error: unknown) => {
-        if (!isCurrentSpeechUtterance(utterance)) {
+        if (!isCurrentSpeechUtterance(utterance) || utterance.audioAvailability?.aborted) {
           return;
         }
         utterance.failed = true;
@@ -396,7 +413,7 @@ export function createSpeechOutput(params: {
       status: true,
     };
     enqueueSpeechChunk(text, utterance, undefined, undefined, undefined, "commentary");
-    if (!utterance.chunks.length) {
+    if (!utterance.chunks.length || utterance.audioAvailability?.aborted) {
       return false;
     }
     // The existing queue owns synthesis, sink handoff and stream/provider release.
@@ -480,6 +497,20 @@ export function createSpeechOutput(params: {
     }
     const completion = ttsQueue.then(async () => {
       await params.waitForInput();
+      if (isCurrentSpeechUtterance(utterance) && utterance.audioAvailability?.aborted) {
+        if (utterance.waitingTurn !== undefined) {
+          params.finishWaitingTurn(utterance.waitingTurn);
+        }
+        await waiting.joinStop();
+        if (!isCurrentSpeechUtterance(utterance)) {
+          return undefined;
+        }
+        utterance.finalized = true;
+        harness.finishOutputAudio("stopped");
+        harness.endTurn();
+        params.onActivity?.("listening");
+        return undefined;
+      }
       if (
         !isCurrentSpeechUtterance(utterance) ||
         utterance.failed ||
