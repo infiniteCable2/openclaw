@@ -41,6 +41,37 @@ import { installGatewayTestHooks, withGatewayServer } from "./test-helpers.js";
 installGatewayTestHooks({ scope: "suite" });
 const makeIdentityPath = useAuthIdentityFixture();
 const maps = ["maps.search", "maps.directions", "maps.navigate"];
+const upgradedToolbox = [
+  "android.notifications.read",
+  "calendar.event.draft",
+  "calendar.events.list",
+  "clock.alarm.dismiss",
+  "clock.alarm.set",
+  "clock.alarm.show",
+  "clock.alarm.snooze",
+  "clock.timer.dismiss",
+  "clock.timer.set",
+  "clock.timer.show",
+  "device.sensors.read",
+  "device.status",
+  "location.get",
+  "maps.search",
+  "maps.directions",
+  "maps.navigate",
+  "maps.navigation_status",
+  "maps.show",
+  "maps.street_view",
+  "maps.shortlist",
+  "media.item.open",
+  "media.playback.next",
+  "media.playback.pause",
+  "media.playback.play",
+  "media.playback.previous",
+  "media.playback.status",
+  "messages.email.draft",
+  "messages.sms.draft",
+  "phone.dial",
+];
 const client = { id: "node-host", version: "1.0.0", platform: "android", mode: "node" } as const;
 
 type NativeFrame = {
@@ -58,7 +89,7 @@ type NativeFrame = {
   };
 };
 
-test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner lifetime", async () => {
+test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and owner lifetime", async () => {
   let options: wsIngress.AttachGatewayWsConnectionHandlerParams | undefined;
   const nativeWsIngress = wsIngress.attachGatewayWsConnectionHandler;
   const capture = vi
@@ -276,8 +307,14 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
         false,
       );
       expect((await open().connect({ deviceToken: "invalid-device-credential" })).ok).toBe(false);
+      const legacy = open();
+      expect((await legacy.connect({ deviceToken })).ok).toBe(true);
+      expect(registry.get(identity.deviceId)?.commands.toSorted()).toEqual([...maps].toSorted());
+      legacy.link.close();
+
+      checkpoint = "reconnect-with-upgraded-toolbox";
       const current = open();
-      const reconnected = await current.connect({ deviceToken });
+      const reconnected = await current.connect({ deviceToken }, { commands: upgradedToolbox });
       expect(reconnected.ok).toBe(true);
       expect(reconnected.payload?.auth?.method).toBe("device-token");
       expect(reconnected.payload).toMatchObject({
@@ -289,10 +326,10 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
       const connectedHelloBytes = Buffer.byteLength(JSON.stringify(reconnected));
       expect(connectedHelloBytes).toBeLessThan(12 * 1024);
       process.stdout.write(`carrier-hello-bytes:${connectedHelloBytes}\n`);
-      const tools = maps.map((command) => ({
-        pluginId: "fixture-maps",
-        name: command.replace(".", "_"),
-        description: "Synthetic Maps descriptor",
+      const tools = upgradedToolbox.map((command) => ({
+        pluginId: "fixture-toolbox",
+        name: command.replaceAll(".", "_"),
+        description: "Synthetic Android Toolbox descriptor",
         command,
       }));
       checkpoint = "catalog";
@@ -301,6 +338,7 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
       expect(updated.payload?.tools?.map((tool) => tool.command).toSorted()).toEqual(
         [...maps].toSorted(),
       );
+      expect(registry.get(identity.deviceId)?.commands.toSorted()).toEqual([...maps].toSorted());
       expect(
         (
           await current.request("node.invoke.result", {
