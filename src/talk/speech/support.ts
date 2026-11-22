@@ -39,6 +39,22 @@ export function createSpeechCaptionPublisher(
   };
 }
 
+export function createSpeechCaptionObservers(
+  params: Pick<SpeechSessionStartParams, "onSpeechCaption" | "onSpeechCaptionProgress" | "logger">,
+  isStopped: () => boolean,
+) {
+  return {
+    onSpeechCaption: createSpeechCaptionPublisher(params, isStopped),
+    onSpeechCaptionProgress: (textBlockId: string) => {
+      try {
+        params.onSpeechCaptionProgress?.(textBlockId);
+      } catch {
+        params.logger.warn("[talk] speech caption progress observer failed");
+      }
+    },
+  };
+}
+
 type SpeechProviderSelectionConfig = {
   agentId?: string;
   provider?: string;

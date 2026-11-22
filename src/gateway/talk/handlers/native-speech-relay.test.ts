@@ -488,6 +488,8 @@ it("public STT/TTS relay applies the admitted agent's commentary profile before 
   const earlyAudio = createDeferredCore();
   const turnEnded = createDeferredCore();
   const textEvents: Record<string, unknown>[] = [];
+  const partialAnswers: string[] = [];
+  const answer = "The device check finished. Everything looks fine.";
   let modelFinished = false;
   mocks.runEmbeddedAgent.mockImplementation(async (params) =>
     publishNativeSpeechModelRun(params, async () => {
@@ -499,8 +501,9 @@ it("public STT/TTS relay applies the admitted agent's commentary profile before 
       await finishModel.promise;
       modelFinished = true;
       await params.onBlockReply?.({ text: "The device check finished." });
+      await params.onBlockReply?.({ text: "Everything looks fine." });
       await params.waitForPendingInput?.(params.abortSignal);
-      return { payloads: [{ text: "The device check finished." }], meta: { durationMs: 0 } };
+      return { payloads: [{ text: answer }], meta: { durationMs: 0 } };
     }),
   );
   vi.mocked(context.broadcastToConnIds).mockImplementation((_name, payload) => {
@@ -513,6 +516,14 @@ it("public STT/TTS relay applies the admitted agent's commentary profile before 
         payload.talkEvent.type === "output.text.done")
     ) {
       textEvents.push(payload.talkEvent);
+    }
+    if (
+      payload.type === "transcript" &&
+      payload.role === "assistant" &&
+      payload.final === false &&
+      typeof payload.text === "string"
+    ) {
+      partialAnswers.push(payload.text);
     }
     if (payload.type === "audio") {
       earlyAudio.resolve();
@@ -557,21 +568,43 @@ it("public STT/TTS relay applies the admitted agent's commentary profile before 
     expect(textEvents).toEqual([
       commentary,
       expect.objectContaining({
+        type: "output.text.delta",
+        final: false,
+        payload: {
+          sessionId,
+          text: "The device check finished.",
+          textBlockId: expect.any(String),
+          blockFinal: true,
+        },
+      }),
+      expect.objectContaining({
+        type: "output.text.delta",
+        final: false,
+        payload: {
+          sessionId,
+          text: "Everything looks fine.",
+          textBlockId: expect.any(String),
+          blockFinal: true,
+        },
+      }),
+      expect.objectContaining({
         type: "output.text.done",
         final: true,
-        payload: { sessionId, text: "The device check finished." },
+        payload: { sessionId, text: answer },
       }),
     ]);
+    expect(partialAnswers).toEqual(["The device check finished.", answer]);
     expect(mocks.streamSpeech.mock.calls.map(([request]) => request.text)).toEqual([
       "Checking the device now.",
       "The device check finished.",
+      "Everything looks fine.",
     ]);
     expect(await dispatch("talk.session.close", { sessionId })).toHaveBeenCalledWith(
       true,
       { ok: true },
       undefined,
     );
-    expect(hardware.releaseStream).toHaveBeenCalledTimes(2);
+    expect(hardware.releaseStream).toHaveBeenCalledTimes(3);
   } finally {
     finishModel.resolve();
   }

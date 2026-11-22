@@ -88,6 +88,14 @@ export function createMatrixRtcConversationPresentation(params: {
   let acknowledged: ReturnType<typeof presentationOffers> | undefined;
   let captionSequence = 0;
   let captionQueue = Promise.resolve();
+  let sentenceCaptions:
+    | {
+        turnId: string;
+        blocks: Map<string, { seq: number; advanced: boolean }>;
+        answer: string;
+      }
+    | undefined;
+  let activeCaptionTurn: string | undefined;
   let latestActivity: TalkEvent | undefined;
   let deliveredActivitySequence = 0;
   let sendingTalk = false;
@@ -296,28 +304,20 @@ export function createMatrixRtcConversationPresentation(params: {
     params.session.off(MatrixRTCSessionEvent.MembershipsChanged, onMembershipsChanged);
   };
   params.dispose(close);
-  const sendCaption = (caption: { role: "user" | "assistant"; text: string }) => {
-    if (closed || !acknowledged?.captions || !caption.text.trim()) {
+  // Serialize presentation sends, never audio. The SDK owns network retries.
+  const queueCaption = (send: (offers: ReturnType<typeof presentationOffers>) => Promise<void>) => {
+    if (closed || !acknowledged?.captions) {
       return;
     }
-    // Serialize encryption/queue admission, never audio. The SDK owns network
-    // retries; a client must reject delayed captions from an older request.
     captionQueue = captionQueue
       .then(async () => {
         if (closed || !acknowledged?.captions) {
           return;
         }
-        if (!presentationOffers(params.assertCurrent()).captions) {
-          return;
+        const offers = presentationOffers(params.assertCurrent());
+        if (offers.captions) {
+          await send(offers);
         }
-        await params.client.sendEncryptedToDevice(target, "io.openclaw.conversation.caption", {
-          version: 1,
-          room_id: params.roomId,
-          request_id: requestId,
-          seq: ++captionSequence,
-          role: caption.role,
-          text: caption.text,
-        });
       })
       .catch(() => {
         if (!closed) {
@@ -325,17 +325,93 @@ export function createMatrixRtcConversationPresentation(params: {
         }
       });
   };
+  const sendCaption = (
+    caption: { role: "user" | "assistant"; text: string },
+    presentation?: { turnId: string; blockId?: string; commentary: boolean },
+  ) => {
+    queueCaption(async () => {
+      let text = caption.text;
+      if (presentation && sentenceCaptions?.turnId !== presentation.turnId) {
+        sentenceCaptions = { turnId: presentation.turnId, blocks: new Map(), answer: "" };
+      }
+      const sentences = presentation ? sentenceCaptions : undefined;
+      if (presentation?.blockId && sentences?.blocks.has(presentation.blockId)) {
+        return;
+      }
+      if (presentation && !presentation.blockId && sentences?.answer) {
+        // The client appends captions. Send only a final suffix that was not already shown.
+        const finalText = text.replace(/\s+/g, " ").trim();
+        text = finalText.startsWith(sentences.answer)
+          ? finalText.slice(sentences.answer.length).trimStart()
+          : "";
+      }
+      if (!text.trim()) {
+        return;
+      }
+      const seq = ++captionSequence;
+      await params.client.sendEncryptedToDevice(target, "io.openclaw.conversation.caption", {
+        version: 1,
+        room_id: params.roomId,
+        request_id: requestId,
+        seq,
+        role: caption.role,
+        text,
+      });
+      if (presentation?.blockId && sentences) {
+        sentences.blocks.set(presentation.blockId, { seq, advanced: false });
+        if (!presentation.commentary) {
+          sentences.answer = `${sentences.answer} ${text}`.replace(/\s+/g, " ").trim();
+        }
+      }
+    });
+  };
+  const sendCaptionProgress = (textBlockId: string) => {
+    const generation = audioGeneration;
+    const turnId = activeCaptionTurn;
+    queueCaption(async (offers) => {
+      const block = sentenceCaptions?.blocks.get(textBlockId);
+      if (
+        !block ||
+        block.advanced ||
+        sentenceCaptions?.turnId !== turnId ||
+        turnId !== activeCaptionTurn ||
+        generation !== audioGeneration ||
+        !audioAvailable ||
+        !offers.audioOutputControl
+      ) {
+        return;
+      }
+      block.advanced = true;
+      await params.client.sendEncryptedToDevice(target, MATRIX_RTC_CONVERSATION_MEDIA_EVENT, {
+        version: 1,
+        room_id: params.roomId,
+        request_id: requestId,
+        talk_session_id: params.sessionId,
+        type: "caption_progress",
+        direction: "output",
+        medium: "audio",
+        caption_seq: block.seq,
+      });
+    });
+  };
   const speechCallbacks = {
     onSpeechCaption(caption: { role: "user" | "assistant"; text: string }) {
       if (caption.role === "user" || !acknowledged?.audioOutputControl) {
         sendCaption(caption);
       }
     },
+    onSpeechCaptionProgress(textBlockId: string) {
+      if (acknowledged?.audioOutputControl && audioAvailable) {
+        sendCaptionProgress(textBlockId);
+      }
+    },
     onTalkEvent(event: TalkEvent) {
       if (closed || event.sessionId !== params.sessionId) {
         return;
       }
-      if (event.type === "session.ready") {
+      if (event.type === "turn.started") {
+        activeCaptionTurn = event.turnId;
+      } else if (event.type === "session.ready") {
         speechReady = true;
         publish();
       } else if (event.type === "session.closed") {
@@ -353,13 +429,29 @@ export function createMatrixRtcConversationPresentation(params: {
       } else if (
         acknowledged?.audioOutputControl &&
         isRecord(event.payload) &&
-        (event.type === "output.text.done" ||
-          (event.type === "output.text.delta" &&
-            event.payload.purpose === "commentary" &&
-            event.payload.blockFinal === true)) &&
         typeof event.payload.text === "string"
       ) {
-        sendCaption({ role: "assistant", text: event.payload.text });
+        if (event.type === "output.text.done") {
+          sendCaption(
+            { role: "assistant", text: event.payload.text },
+            event.turnId ? { turnId: event.turnId, commentary: false } : undefined,
+          );
+        } else if (
+          event.type === "output.text.delta" &&
+          event.payload.blockFinal === true &&
+          event.turnId &&
+          typeof event.payload.textBlockId === "string"
+        ) {
+          activeCaptionTurn = event.turnId;
+          sendCaption(
+            { role: "assistant", text: event.payload.text },
+            {
+              turnId: event.turnId,
+              blockId: event.payload.textBlockId,
+              commentary: event.payload.purpose === "commentary",
+            },
+          );
+        }
       }
       // A session.error can describe one failed input in an otherwise usable call.
     },

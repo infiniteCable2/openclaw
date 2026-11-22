@@ -90,6 +90,8 @@ export type SpeechSessionStartParams = {
   onTalkEvent?: (event: TalkEvent) => void;
   /** Presentation only: final non-echo input or a speech segment starting its server audio handoff. */
   onSpeechCaption?: (caption: { role: "user" | "assistant"; text: string }) => void;
+  /** The first PCM write of the identified speech block completed while it was current. */
+  onSpeechCaptionProgress?: (textBlockId: string) => void;
   onActivity?: (activity: "listening" | "sensing" | "hearing" | "processing" | "speaking") => void;
   /** Retain teardown ownership before provider setup can fail. */
   onSession?: (session: SpeechSessionHandle) => void;

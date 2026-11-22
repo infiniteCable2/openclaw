@@ -111,7 +111,12 @@ function assistantHarness(
     h.emitter.emit(MatrixRTCSessionEvent.MembershipsChanged);
   };
   const event = (
-    type: "session.ready" | "session.error" | "session.closed" | "output.text.done",
+    type:
+      | "session.ready"
+      | "session.error"
+      | "session.closed"
+      | "output.text.done"
+      | "output.text.delta",
     sessionId?: string,
     payload = {},
   ) => {
@@ -120,6 +125,7 @@ function assistantHarness(
       type,
       sessionId: sessionId ?? engine.meetingSessionId,
       id: "event",
+      turnId: "fixture-turn",
       seq: 1,
       timestamp: "2026-01-01T00:00:00Z",
       mode: "stt-tts",
@@ -196,6 +202,61 @@ it("controls only audio output from the verified current caller and keeps text c
     receive();
     await flushPromises();
     expect(transport.setAudioOutputAvailable.mock.calls).toEqual([[false], [true]]);
+  } finally {
+    await h.controller.stop();
+  }
+});
+
+it("shows sentence captions early and advances only the matching caption after audio handoff", async () => {
+  const h = assistantHarness();
+  h.remoteMembership.applicationData = {
+    [MATRIX_RTC_CONVERSATION_KEY]: {
+      ...request,
+      captions: true,
+      talk_events: true,
+      audio_output_control: true,
+    },
+  };
+  try {
+    h.start();
+    await flushPromises();
+    await h.ready();
+    const engine = mocks.startMeetingAgentRealtimeEngine.mock.calls[0]![0];
+    h.event("output.text.delta", engine.meetingSessionId, {
+      text: "Early.",
+      textBlockId: "segment-1",
+      blockFinal: true,
+    });
+    h.event("output.text.delta", engine.meetingSessionId, {
+      text: "Checking.",
+      textBlockId: "commentary-1",
+      blockFinal: true,
+      purpose: "commentary",
+    });
+    await flushPromises();
+    engine.onSpeechCaptionProgress?.("segment-1");
+    engine.onSpeechCaptionProgress?.("other-segment");
+    h.event("output.text.done", engine.meetingSessionId, { text: "Early. Tail." });
+    await flushPromises();
+    const sends = h.sdkClient.encryptAndSendToDevice.mock.calls;
+    expect(sends.map(([type, , content]) => [type, content])).toEqual([
+      ["io.openclaw.conversation.caption", expect.objectContaining({ seq: 1, text: "Early." })],
+      ["io.openclaw.conversation.caption", expect.objectContaining({ seq: 2, text: "Checking." })],
+      [
+        MATRIX_RTC_CONVERSATION_MEDIA_EVENT,
+        {
+          version: 1,
+          room_id: roomId,
+          request_id: request.request_id,
+          talk_session_id: engine.meetingSessionId,
+          type: "caption_progress",
+          direction: "output",
+          medium: "audio",
+          caption_seq: 1,
+        },
+      ],
+      ["io.openclaw.conversation.caption", expect.objectContaining({ seq: 3, text: "Tail." })],
+    ]);
   } finally {
     await h.controller.stop();
   }

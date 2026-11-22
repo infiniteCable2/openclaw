@@ -177,14 +177,17 @@ export async function createTalkSpeechRelaySession(params: {
         );
     },
   };
+  let streamedAssistantText = "";
   const publishEventRequired = (talkEvent: TalkEvent) => {
     if (lifetime.signal.aborted) {
       return;
     }
     if (talkEvent.type === "turn.started") {
       activeTurnId = talkEvent.turnId;
+      streamedAssistantText = "";
     } else if (talkEvent.type === "turn.ended" || talkEvent.type === "turn.cancelled") {
       activeTurnId = undefined;
+      streamedAssistantText = "";
     }
     const payload = talkEvent.payload;
     if (
@@ -193,6 +196,30 @@ export async function createTalkSpeechRelaySession(params: {
         talkEvent.type === "output.text.done" ||
         talkEvent.type === "output.text.delta")
     ) {
+      return;
+    }
+    if (
+      talkEvent.type === "output.text.delta" &&
+      payload &&
+      typeof payload === "object" &&
+      "blockFinal" in payload &&
+      payload.blockFinal === true &&
+      (!("purpose" in payload) || payload.purpose !== "commentary") &&
+      "text" in payload &&
+      typeof payload.text === "string"
+    ) {
+      // Native transcript clients replace their partial text. Keep the nested
+      // event as an individual block for consumers using its stable identity.
+      streamedAssistantText = streamedAssistantText
+        ? `${streamedAssistantText} ${payload.text}`
+        : payload.text;
+      broadcast({
+        type: "transcript",
+        role: "assistant",
+        text: streamedAssistantText,
+        final: false,
+        talkEvent,
+      });
       return;
     }
     if (

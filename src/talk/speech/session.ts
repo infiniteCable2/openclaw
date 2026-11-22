@@ -29,7 +29,7 @@ import type { SpeechStreamCancellation } from "./stream-cleanup.js";
 import {
   buildSpeechTranscriptionFailureEvent,
   buildSpeechInputFailureEvent,
-  createSpeechCaptionPublisher,
+  createSpeechCaptionObservers,
   formatSpeechAgentAudioModelLog,
   formatSpeechTranscriptSummaryLog,
   speechOutputBytesPerMs,
@@ -53,7 +53,7 @@ export async function startSpeechSession(
   params.signal?.throwIfAborted();
   const language = resolveAgentLanguage(params.fullConfig, params.config.agentId ?? "");
   let stopped = false;
-  const publishSpeechCaption = createSpeechCaptionPublisher(params, () => stopped);
+  const speechCaptionObservers = createSpeechCaptionObservers(params, () => stopped);
   const video = createSpeechVideoInput(params.config.video);
   const inputs = createSpeechInputMetadata(video, params.sessionId);
   let sttSession: RealtimeTranscriptionSession | null = null;
@@ -222,7 +222,7 @@ export async function startSpeechSession(
     logger: params.logger,
     onActivity: params.onActivity,
     onOutput: activity.output,
-    onSpeechCaption: publishSpeechCaption,
+    ...speechCaptionObservers,
     getHarness: () => harness,
     isStopped: () => stopped,
     getOutputGeneration: () => outputGeneration,
@@ -615,7 +615,7 @@ export async function startSpeechSession(
           );
           return;
         }
-        publishSpeechCaption({ role: "user", text: trimmed });
+        speechCaptionObservers.onSpeechCaption({ role: "user", text: trimmed });
         const metadata = inputs.capture(onset?.startedAtMs, context?.utteranceId);
         if (nativeInput) {
           nativeInput.enqueue({
@@ -721,7 +721,7 @@ export async function startSpeechSession(
       writeOutputAudio: (audio, firstChunk, isCurrent) =>
         speechOutput.writeOutputAudio(audio, firstChunk, isCurrent, () => {
           activity.output(generation, "streaming", "greeting");
-          publishSpeechCaption({ role: "assistant", text: greeting.text });
+          speechCaptionObservers.onSpeechCaption({ role: "assistant", text: greeting.text });
         }),
     })
       .finally(() => activity.output(generation, "submitted", "greeting"))

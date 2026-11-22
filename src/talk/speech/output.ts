@@ -55,6 +55,7 @@ export function createSpeechOutput(params: {
   logger: RuntimeLogger;
   onActivity?: (activity: "listening" | "sensing" | "hearing" | "processing" | "speaking") => void;
   onSpeechCaption?: SpeechSessionStartParams["onSpeechCaption"];
+  onSpeechCaptionProgress?: SpeechSessionStartParams["onSpeechCaptionProgress"];
   onOutput?: (
     generation: number,
     state: "preparing" | "streaming" | "submitted",
@@ -90,7 +91,7 @@ export function createSpeechOutput(params: {
   });
   let pendingChunks = 0;
   const pendingByGeneration = new Map<number, number>();
-  let commentarySequence = 0;
+  let textBlockSequence = 0;
   let handoffPending = false;
   const failedReleases = new Map<() => Promise<void>, { error: unknown; reported: boolean }>();
   const settlements = new Set<Promise<void>>();
@@ -178,22 +179,21 @@ export function createSpeechOutput(params: {
     if (!normalized || !isCurrentSpeechUtterance(utterance)) {
       return;
     }
-    if (purpose === "commentary") {
-      const itemId = `${params.sessionId}:commentary:${utterance.generation}:${++commentarySequence}`;
-      harness.emit({
-        type: "output.text.delta",
-        turnId: harness.ensureTurn(),
-        itemId,
-        final: false,
-        payload: {
-          sessionId: params.sessionId,
-          text: text ?? normalized,
-          purpose: "commentary",
-          textBlockId: itemId,
-          blockFinal: true,
-        },
-      });
-    }
+    const commentary = purpose === "commentary";
+    const itemId = `${params.sessionId}:${commentary ? "commentary" : "answer"}:${utterance.generation}:${++textBlockSequence}`;
+    harness.emit({
+      type: "output.text.delta",
+      turnId: harness.ensureTurn(),
+      itemId,
+      final: false,
+      payload: {
+        sessionId: params.sessionId,
+        text: commentary ? (text ?? normalized) : normalized,
+        ...(commentary ? { purpose: "commentary" } : {}),
+        textBlockId: itemId,
+        blockFinal: true,
+      },
+    });
     utterance.chunks.push(normalized);
     if (utterance.audioAvailability?.aborted) {
       return;
@@ -327,6 +327,7 @@ export function createSpeechOutput(params: {
                 utterance.playbackStarted = true;
               }
               if (firstSegmentChunk) {
+                params.onSpeechCaptionProgress?.(itemId);
                 params.onActivity?.("speaking");
               }
               firstSegmentChunk = false;

@@ -38,6 +38,7 @@ function createFixture(
   const onOutput = vi.fn<NonNullable<OutputParams["onOutput"]>>();
   const onActivity = vi.fn<NonNullable<OutputParams["onActivity"]>>();
   const onSpeechCaption = vi.fn<NonNullable<OutputParams["onSpeechCaption"]>>();
+  const onSpeechCaptionProgress = vi.fn<NonNullable<OutputParams["onSpeechCaptionProgress"]>>();
   const waitingStop = vi.fn(async (): Promise<void> => undefined);
   const waitingIdle = vi.fn((_turn: number) => undefined);
   let stopping = Promise.resolve();
@@ -65,6 +66,7 @@ function createFixture(
     onOutput,
     onActivity,
     onSpeechCaption,
+    onSpeechCaptionProgress,
     getHarness: () => harness,
     isStopped: () => stopped,
     getOutputGeneration: () => generation,
@@ -103,6 +105,7 @@ function createFixture(
     onOutput,
     onActivity,
     onSpeechCaption,
+    onSpeechCaptionProgress,
     transcripts,
     activeTtsAborts,
     activeTtsReaders,
@@ -433,6 +436,34 @@ describe("speech output compute/playout overlap", () => {
     expect(fixture.onOutput).toHaveBeenLastCalledWith(0, "submitted", "speech");
   });
 
+  it("publishes a sentence before synthesis and links its first successful audio write", async () => {
+    const synthesis = createDeferred<TtsTelephonyStreamResult>();
+    const written = createDeferred();
+    const writing = createDeferred();
+    const fixture = createFixture(
+      () => synthesis.promise,
+      async () => {
+        written.resolve();
+        await writing.promise;
+      },
+    );
+    const utterance = fixture.output.createSpeechUtterance();
+    fixture.output.enqueueSpeechChunk("First sentence.", utterance);
+    const published = fixture.emit.mock.calls[0]?.[0];
+    synthesis.resolve(completeResult());
+    await written.promise;
+    const progressBeforeAcceptance = fixture.onSpeechCaptionProgress.mock.calls.length;
+    writing.resolve();
+    await fixture.output.drain();
+
+    expect(published).toMatchObject({
+      type: "output.text.delta",
+      payload: { text: "First sentence.", blockFinal: true, textBlockId: expect.any(String) },
+    });
+    expect(progressBeforeAcceptance).toBe(0);
+    expect(fixture.onSpeechCaptionProgress).toHaveBeenCalledExactlyOnceWith(published?.itemId);
+  });
+
   it("publishes admitted commentary as identified text without finalizing the answer", async () => {
     const fixture = createFixture(
       async () => completeResult(),
@@ -477,6 +508,32 @@ describe("speech output compute/playout overlap", () => {
       }),
     );
     await fixture.output.drain();
+  });
+
+  it("keeps public commentary visible when the audio sink is muted", async () => {
+    const synthesize = vi.fn(async () => completeResult());
+    const fixture = createFixture(
+      synthesize,
+      async () => undefined,
+      () => AbortSignal.abort(),
+    );
+    fixture.output.enqueueSpeechChunk(
+      "Checking.",
+      fixture.output.createSpeechUtterance(),
+      undefined,
+      undefined,
+      undefined,
+      "commentary",
+    );
+    await fixture.output.drain();
+    expect(fixture.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "output.text.delta",
+        payload: expect.objectContaining({ text: "Checking.", purpose: "commentary" }),
+      }),
+    );
+    expect(synthesize).not.toHaveBeenCalled();
+    expect(fixture.onSpeechCaptionProgress).not.toHaveBeenCalled();
   });
 
   it("does not publish commentary for an obsolete output generation", async () => {
@@ -776,6 +833,7 @@ describe("speech output compute/playout overlap", () => {
       role: "assistant",
       text: "An interrupted synthetic block.",
     });
+    expect(fixture.onSpeechCaptionProgress).not.toHaveBeenCalled();
     expect(fixture.activeTtsAborts.size).toBe(0);
     expect(fixture.activeTtsReaders.size).toBe(0);
   });
