@@ -63,7 +63,12 @@ export function createMatrixNodeCarrierAdmission(params: {
     const row = account?.rtc?.admissions?.find((entry) => entry.roomId === roomId);
     const device = row?.nodeDevices?.find((entry) => entry.deviceId === peer.deviceId);
     return row?.userId === peer.userId && device
-      ? { agentId: row.agentId, expectedNodeId: device.nodeId }
+      ? {
+          agentId: row.agentId,
+          expectedNodeId: device.nodeId,
+          crossChannelSenderId:
+            device.nodeId && device.allowCrossChannelAccess ? peer.userId : undefined,
+        }
       : undefined;
   };
   return async (peer: MatrixNodePeer, roomId: string) => {
@@ -71,19 +76,21 @@ export function createMatrixNodeCarrierAdmission(params: {
     if (!original) {
       return undefined;
     }
-    // Bootstrap pairs the node outside a call. A pinned node belongs to the
-    // specific Assistant Voice attempt that was active when its carrier opened.
-    const connection = original.expectedNodeId
-      ? params.bindNodeConnection(peer, roomId, original.agentId)
-      : undefined;
-    if (original.expectedNodeId && !connection) {
+    // Use the active call's lifetime when a pinned link opens inside a call,
+    // including when its private requester may invoke from another channel.
+    // Explicitly shared links can also be opened separately outside a call.
+    const bindCall = () => params.bindNodeConnection(peer, roomId, original.agentId);
+    const connection = original.expectedNodeId ? bindCall() : undefined;
+    if (original.expectedNodeId && !connection && !original.crossChannelSenderId) {
       return undefined;
     }
     const audience = await params.preparePrivateAudience({ roomId, senderId: peer.userId });
     const isSameAdmission = () => {
       const current = choose(peer, roomId);
       return (
-        current?.agentId === original.agentId && current.expectedNodeId === original.expectedNodeId
+        current?.agentId === original.agentId &&
+        current.expectedNodeId === original.expectedNodeId &&
+        current.crossChannelSenderId === original.crossChannelSenderId
       );
     };
     if (!audience || connection?.signal.aborted || !isSameAdmission()) {
@@ -93,10 +100,12 @@ export function createMatrixNodeCarrierAdmission(params: {
       ...original,
       signal: connection?.signal,
       assertInvokeSession(sessionKey: string) {
-        if (!connection) {
+        // A separately approved persistent link can still serve an admitted call.
+        const call = connection ?? (original.crossChannelSenderId ? bindCall() : undefined);
+        if (!call) {
           throw new Error("Matrix Node requires the current Assistant Voice session");
         }
-        connection.assertInvokeSession(sessionKey);
+        call.assertInvokeSession(sessionKey);
       },
       assertCurrent() {
         connection?.signal.throwIfAborted();

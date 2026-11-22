@@ -12,6 +12,7 @@ const MAX_PENDING_SENDS = 8;
 const OPEN_TIMEOUT_MS = 20_000;
 
 type GatewayLink = {
+  assertCurrent?(): void;
   receive(frame: string): void;
   close(): void;
 };
@@ -19,6 +20,7 @@ type GatewayLink = {
 type MatrixNodeAdmission = {
   agentId: string;
   expectedNodeId?: string;
+  crossChannelSenderId?: string;
   signal?: AbortSignal;
   assertCurrent(): void;
   assertInvokeSession(sessionKey: string): void;
@@ -29,6 +31,7 @@ export type MatrixNodeCarrierAttach = (owner: {
   agentId: string;
   expectedNodeId?: string;
   roomId: string;
+  crossChannelSenderId?: string;
   signal: AbortSignal;
   assertCurrent(): void;
   assertInvokeSession(sessionKey: string): void;
@@ -107,9 +110,10 @@ export function registerMatrixNodeCarrier(params: {
       }
       try {
         previous.assertCurrent?.();
+        previous.gateway?.assertCurrent?.();
         return;
       } catch {
-        // A previous unpinned bootstrap can become invalid when the node is pinned.
+        // Pinning or revoking an owner can invalidate the previously attached link.
         retire(previous, false);
       }
     }
@@ -159,6 +163,7 @@ export function registerMatrixNodeCarrier(params: {
         agentId: admission.agentId,
         expectedNodeId: admission.expectedNodeId,
         roomId: address.room_id,
+        crossChannelSenderId: admission.crossChannelSenderId,
         signal: link.controller.signal,
         assertCurrent,
         assertInvokeSession(sessionKey) {

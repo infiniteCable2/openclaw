@@ -29,6 +29,7 @@ export function createSpeechAudioPreparation(params: {
   return {
     prepare(work: {
       isCurrent: () => boolean;
+      availability?: AbortSignal;
       synthesize: (signal: AbortSignal) => Promise<TtsTelephonyStreamResult>;
       playbackDone: Promise<void>;
     }): Promise<PreparedSpeechAudio> {
@@ -43,19 +44,22 @@ export function createSpeechAudioPreparation(params: {
           return;
         }
         const controller = new AbortController();
+        const signal = work.availability
+          ? AbortSignal.any([controller.signal, work.availability])
+          : controller.signal;
         params.activeAborts.add(controller);
-        const audio = prefetch.createChannel(controller.signal);
+        const audio = prefetch.createChannel(signal);
         let resources: ReturnType<typeof createSpeechStreamCleanup> | undefined;
         try {
           await audio.waitForCapacity();
-          controller.signal.throwIfAborted();
+          signal.throwIfAborted();
           if (!work.isCurrent()) {
             throw new Error("Speech output is no longer current");
           }
-          const result = await work.synthesize(controller.signal);
+          const result = await work.synthesize(signal);
           resources = createSpeechStreamCleanup(result, params.activeReaders);
           prepared.resolve({ result, controller, resources, audio });
-          if (!work.isCurrent() || controller.signal.aborted) {
+          if (!work.isCurrent() || signal.aborted) {
             return;
           }
           if (!result.success || !result.audioStream || !result.sampleRate) {
@@ -70,13 +74,13 @@ export function createSpeechAudioPreparation(params: {
           resources.open();
           // One producer prevents later results from filling the reservoir
           // ahead of the result the playback owner is waiting for.
-          while (work.isCurrent() && !controller.signal.aborted) {
+          while (work.isCurrent() && !signal.aborted) {
             await audio.waitForCapacity();
-            if (!work.isCurrent() || controller.signal.aborted) {
+            if (!work.isCurrent() || signal.aborted) {
               break;
             }
             const chunk = await resources.read();
-            if (!work.isCurrent() || controller.signal.aborted) {
+            if (!work.isCurrent() || signal.aborted) {
               break;
             }
             if (!chunk.done && chunk.value.byteLength > MAX_SPEECH_PREFETCH_FRAME_BYTES) {

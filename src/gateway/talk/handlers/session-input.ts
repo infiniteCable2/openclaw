@@ -3,6 +3,7 @@ import {
   ErrorCodes,
   errorShape,
   validateTalkSessionAppendAudioParams,
+  validateTalkSessionMediaParams,
   validateTalkSessionSteerParams,
   validateTalkSessionSubmitToolResultParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
@@ -33,6 +34,19 @@ function respondOk(respond: RespondFn, payload: unknown = { ok: true }) {
 
 /** Input and steering retain the exact already-admitted connection target. */
 export const talkSessionInputHandlers: GatewayRequestHandlers = {
+  "talk.session.media": defineValidatedGatewayHandler(
+    "talk.session.media",
+    validateTalkSessionMediaParams,
+    ({ params, respond, client }) => {
+      const session = getUnifiedTalkSession(params.sessionId);
+      if (session.kind !== "speech-relay") {
+        throw new Error("Talk media updates require an STT/TTS speech relay session");
+      }
+      requireUnifiedTalkSessionConn(session, client?.connId);
+      respondOk(respond, session.receiveMedia(params));
+    },
+    talkSessionError,
+  ),
   "talk.session.appendAudio": defineValidatedGatewayHandler(
     "talk.session.appendAudio",
     validateTalkSessionAppendAudioParams,

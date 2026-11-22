@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import type {
+  TalkSessionMediaParams,
+  TalkSessionMediaResult,
+} from "../../../packages/gateway-protocol/src/schema/channels.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
 import { resolveActiveTalkProviderConfig } from "../../config/talk.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -36,6 +40,7 @@ import {
 import { rememberTalkSpeechRelaySession } from "./session-registry.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 import { buildTalkTtsConfig } from "./speech-config.js";
+import { createTalkRelayMedia } from "./speech-relay-media.js";
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const PLAYBACK_READY_TIMEOUT_MS = 30_000;
@@ -47,6 +52,7 @@ export type TalkSpeechRelaySession = {
   connId: string;
   sessionTarget: PreparedTalkSessionTarget;
   appendAudio(audioBase64: string, endOfInput?: boolean, captureId?: string): Promise<void>;
+  receiveMedia(input: TalkSessionMediaParams): TalkSessionMediaResult;
   acknowledgeMark(markName: string): void;
   cancelOutput: SpeechSessionHandle["cancelOutput"];
   steer: SpeechSessionHandle["steer"];
@@ -73,6 +79,7 @@ export async function createTalkSpeechRelaySession(params: {
     | "output-gate"
     | "activity-v1"
     | "input-end"
+    | "media-availability-v1"
   )[];
   assertCurrent: () => void;
   runAuthority: TalkClientRunAuthority;
@@ -100,6 +107,9 @@ export async function createTalkSpeechRelaySession(params: {
   if (profile.inputEndMode === "client" && !params.capabilities?.includes("input-end")) {
     throw new Error("Client-ended Talk speech requires the input-end capability");
   }
+  const media = params.capabilities?.includes("media-availability-v1")
+    ? createTalkRelayMedia(profile.video)
+    : undefined;
   const id = randomUUID();
   const expiresAtMs = Date.now() + SESSION_TTL_MS;
   const readyMark = `media-ready:${randomUUID()}`;
@@ -177,6 +187,14 @@ export async function createTalkSpeechRelaySession(params: {
       activeTurnId = undefined;
     }
     const payload = talkEvent.payload;
+    if (
+      media?.textOutputAvailable() === false &&
+      (talkEvent.type === "transcript.done" ||
+        talkEvent.type === "output.text.done" ||
+        talkEvent.type === "output.text.delta")
+    ) {
+      return;
+    }
     if (
       (talkEvent.type === "transcript.done" || talkEvent.type === "output.text.done") &&
       payload &&
@@ -271,6 +289,8 @@ export async function createTalkSpeechRelaySession(params: {
     // Do not claim full duplex simply because its websocket is bidirectional.
     supportsFullDuplexInput: params.capabilities?.includes("isolated-input") === true,
     inputAudioIsolated: params.capabilities?.includes("isolated-input") === true,
+    ...(media ? { audioOutputSignal: media.audioOutputSignal } : {}),
+    ...(media?.contract.videoInput ? { startVideoInput: media.startVideoInput } : {}),
     onFatal(callback) {
       fatal = callback;
     },
@@ -290,9 +310,16 @@ export async function createTalkSpeechRelaySession(params: {
       assertActive();
     },
     async writeOutput(audio) {
+      const audioOutput = media?.audioOutputSignal();
+      if (audioOutput?.aborted) {
+        return;
+      }
       // Every output purpose, including waiting music, obeys the same readiness gate.
       await transport.waitForRemoteAudioReady?.();
       assertActive();
+      if (audioOutput?.aborted) {
+        return;
+      }
       // Keep the released relay's 20 ms PCM output envelope bounded.
       for (let offset = 0; offset < audio.byteLength; offset += 960) {
         broadcast({
@@ -326,6 +353,13 @@ export async function createTalkSpeechRelaySession(params: {
     id,
     connId: params.connId,
     sessionTarget: params.sessionTarget,
+    receiveMedia(update) {
+      assertActive();
+      if (!media) {
+        throw new Error("Talk media changes were not negotiated for this session");
+      }
+      return media.receive(update, () => broadcast({ type: "clear" }));
+    },
     async appendAudio(audioBase64, endOfInput, captureId) {
       assertActive();
       if (!readyAcknowledged || !input) {
@@ -409,6 +443,7 @@ export async function createTalkSpeechRelaySession(params: {
         return closing;
       }
       lifetime.abort(new Error("Talk speech session closed"));
+      media?.close();
       inputOutcomes.length = 0;
       latestActivity = undefined;
       connectionPreparation.current?.cancel();
@@ -520,8 +555,8 @@ export async function createTalkSpeechRelaySession(params: {
         agentId: params.sessionTarget.agentId,
         sessionKey: params.sessionTarget.canonicalKey,
       },
-      input: { audio: true },
-      output: { audio: true },
+      input: { audio: true, ...(media?.contract.videoInput ? { video: true } : {}) },
+      output: { audio: true, ...(media ? { text: true } : {}) },
       operations: ["current-turn-reply", "cancel-output"],
       assertCurrent: assertActive,
     },
@@ -536,6 +571,7 @@ export async function createTalkSpeechRelaySession(params: {
     responseStreaming: profile.responseStreaming,
     echoSuppressionTailSeconds: profile.echoSuppressionTailSeconds,
     inputEndMode: profile.inputEndMode,
+    ...(media?.contract.videoInput && profile.video ? { video: profile.video } : {}),
     ...(profile.waitingAudio ? { waitingAudio: profile.waitingAudio } : {}),
   };
   construction = (async () => {
@@ -656,6 +692,7 @@ export async function createTalkSpeechRelaySession(params: {
       outputSampleRateHz: 24000,
     },
     readyMark,
+    ...(media ? { media: media.contract } : {}),
     expiresAt: Math.floor(expiresAtMs / 1000),
   };
 }

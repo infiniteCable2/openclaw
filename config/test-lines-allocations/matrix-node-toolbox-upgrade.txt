@@ -1,0 +1,2 @@
+38
+# Cover a full Android Toolbox reconnect with an existing Maps-only pairing.

@@ -1,0 +1,2 @@
+10
+# Prove the plugin gate narrows the exact Matrix dispatch and cannot outlive the caller's profile grant.

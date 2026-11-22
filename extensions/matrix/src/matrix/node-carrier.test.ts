@@ -121,7 +121,9 @@ describe("Matrix Node carrier", () => {
   });
 
   it("binds the private Matrix device to its current Agent and native Node", async () => {
-    const device: { deviceId: string; nodeId?: string } = { deviceId: peer.deviceId };
+    const device: { deviceId: string; nodeId?: string; allowCrossChannelAccess?: boolean } = {
+      deviceId: peer.deviceId,
+    };
     const cfg: CoreConfig = {
       channels: {
         matrix: {
@@ -142,16 +144,19 @@ describe("Matrix Node carrier", () => {
         },
       },
     };
+    const callLifetime = new AbortController();
+    const call = {
+      signal: callLifetime.signal,
+      assertInvokeSession: () => {},
+    };
+    const bindNodeConnection = vi.fn((): typeof call | undefined => call);
     const admission = createMatrixNodeCarrierAdmission({
       currentConfig: () => cfg,
       accountId: "default",
       client: { isEncryptedDirectRoom: () => true },
       signal: new AbortController().signal,
       preparePrivateAudience: async () => ({ assertCurrent: () => {} }),
-      bindNodeConnection: () => ({
-        signal: new AbortController().signal,
-        assertInvokeSession: () => {},
-      }),
+      bindNodeConnection,
     });
     expect(await admission({ ...peer, deviceId: "OTHER" }, address.room_id)).toBeUndefined();
     const bootstrap = await admission(peer, address.room_id);
@@ -165,6 +170,25 @@ describe("Matrix Node carrier", () => {
     expect(listMatrixPersonalNodeBindings(cfg, "unrelated", ["default"])).toEqual([]);
     expect(() => bootstrap?.assertCurrent()).toThrow("admission changed");
     expect((await admission(peer, address.room_id))?.expectedNodeId).toBe(device.nodeId);
+
+    bindNodeConnection.mockReturnValue(undefined);
+    expect(await admission(peer, address.room_id)).toBeUndefined();
+    device.allowCrossChannelAccess = true;
+    expect(await admission({ ...peer, deviceId: "OTHER" }, address.room_id)).toBeUndefined();
+    const shared = await admission(peer, address.room_id);
+    expect(shared?.crossChannelSenderId).toBe(peer.userId);
+    expect(() => shared?.assertCurrent()).not.toThrow();
+    expect(() => shared?.assertInvokeSession("unrelated-session")).toThrow(
+      "requires the current Assistant Voice session",
+    );
+    bindNodeConnection.mockReturnValue(call);
+    const callBoundShared = await admission(peer, address.room_id);
+    expect(callBoundShared?.crossChannelSenderId).toBe(peer.userId);
+    expect(callBoundShared?.signal).toBe(callLifetime.signal);
+    callLifetime.abort();
+    expect(() => callBoundShared?.assertCurrent()).toThrow();
+    device.allowCrossChannelAccess = false;
+    expect(() => shared?.assertCurrent()).toThrow("admission changed");
   });
 
   it("carries the original deadline exclusively on a native invoke frame", () => {

@@ -31,6 +31,8 @@ export interface SpeechAudioTransport {
   ): void | Promise<void>;
   /** Optional sampled video; stop()/dispose() own both captures. Never backpressure PCM. */
   startVideoInput?(onFrame: (frame: SpeechVideoFrame) => void): void | Promise<void>;
+  /** A captured signal ends when this audio output becomes unavailable. */
+  audioOutputSignal?(): AbortSignal;
   /** Actual remote playback readiness, not merely local publication or received microphone data. */
   waitForRemoteAudioReady?(): Promise<void>;
   beginOutput?(): void;

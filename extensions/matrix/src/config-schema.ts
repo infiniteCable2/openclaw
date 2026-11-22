@@ -253,8 +253,13 @@ const matrixRtcSchema = z
                       .string()
                       .regex(/^[0-9a-f]{64}$/u)
                       .optional(),
+                    allowCrossChannelAccess: z.boolean().optional(),
                   })
-                  .strict(),
+                  .strict()
+                  .refine((device) => !device.allowCrossChannelAccess || Boolean(device.nodeId), {
+                    message: "Cross-channel access requires a pinned Matrix Node ID",
+                    path: ["allowCrossChannelAccess"],
+                  }),
               )
               .min(1)
               .max(16)

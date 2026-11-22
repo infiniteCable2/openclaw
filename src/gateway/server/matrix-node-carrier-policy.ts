@@ -1,5 +1,6 @@
 import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import type { ConnectParams } from "../../../packages/gateway-protocol/src/index.js";
+import { NODE_NETWORK_DEVICE_READ_COMMAND } from "../../infra/node-commands.js";
 
 export const MATRIX_NODE_CARRIER_MAX_BYTES = 12 * 1024;
 export const MATRIX_NODE_CARRIER_METHODS = [
@@ -7,6 +8,19 @@ export const MATRIX_NODE_CARRIER_METHODS = [
   "node.pluginTools.update",
 ] as const;
 const ANDROID_TOOLBOX_COMMANDS: ReadonlySet<unknown> = new Set([
+  "android.notifications.read",
+  "calendar.event.draft",
+  "calendar.events.list",
+  "clock.alarm.dismiss",
+  "clock.alarm.set",
+  "clock.alarm.show",
+  "clock.alarm.snooze",
+  "clock.timer.dismiss",
+  "clock.timer.set",
+  "clock.timer.show",
+  "device.sensors.read",
+  "device.status",
+  "location.get",
   "maps.search",
   "maps.directions",
   "maps.navigate",
@@ -14,7 +28,16 @@ const ANDROID_TOOLBOX_COMMANDS: ReadonlySet<unknown> = new Set([
   "maps.show",
   "maps.street_view",
   "maps.shortlist",
-  "location.get",
+  "media.item.open",
+  "media.playback.next",
+  "media.playback.pause",
+  "media.playback.play",
+  "media.playback.previous",
+  "media.playback.status",
+  "messages.email.draft",
+  "messages.sms.draft",
+  NODE_NETWORK_DEVICE_READ_COMMAND,
+  "phone.dial",
 ]);
 
 export function isMatrixNodeCarrierCommand(value: unknown): boolean {

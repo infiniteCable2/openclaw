@@ -942,6 +942,11 @@ export function isTalkSessionAppendAudioParams(
 ): value is import("typebox").Static<
   typeof import("../../schema-modules.js").TalkSessionAppendAudioParamsSchema
 >;
+export function isTalkSessionMediaParams(
+  value: unknown,
+): value is import("typebox").Static<
+  typeof import("../../schema-modules.js").TalkSessionMediaParamsSchema
+>;
 export function isTalkSessionAcknowledgeMarkParams(
   value: unknown,
 ): value is import("typebox").Static<

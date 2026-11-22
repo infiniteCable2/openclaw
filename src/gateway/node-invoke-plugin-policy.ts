@@ -28,6 +28,7 @@ import { invokeNodeWithReadinessRetry } from "./node-invoke-readiness.js";
 import type { NodeInvokeResult, NodeSession } from "./node-registry.js";
 import type { GatewayNodeInvokeStream } from "./server-methods/shared-types.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
+import { restrictMatrixNodeCarrierDispatch } from "./server/matrix-node-carrier-authority.js";
 
 function parsePayload(payloadJSON: string | null | undefined, payload: unknown): unknown {
   if (!payloadJSON) {
@@ -114,6 +115,7 @@ export async function applyPluginNodeInvokePolicy(params: {
   nodeInvokeStream?: GatewayNodeInvokeStream;
   idempotencyKey?: string;
   isInvocationCurrent?: () => boolean | Promise<boolean>;
+  matrixDispatch?: () => boolean;
   isApprovalAuthorityActive?: () => boolean;
   privateTransport?: PluginNodeInvokePrivateTransport;
   /** Internal callers carry an admitted run without inventing a client connection. */
@@ -442,6 +444,12 @@ export async function applyPluginNodeInvokePolicy(params: {
         params.nodeInvokeStream?.onDispatchReady(invokeId);
       },
     };
+    if (params.matrixDispatch) {
+      request.isDispatchAuthorized = restrictMatrixNodeCarrierDispatch(
+        params.matrixDispatch,
+        request.isDispatchAuthorized,
+      );
+    }
     const res = params.privateTransport
       ? await params.privateTransport.invoke(request)
       : await invokeNodeWithReadinessRetry(params.context.nodeRegistry, {

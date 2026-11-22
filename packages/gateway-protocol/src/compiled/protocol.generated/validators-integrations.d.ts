@@ -28,6 +28,7 @@ export {
   isTalkClientSteerParams,
   isTalkSessionCreateParams,
   isTalkSessionAppendAudioParams,
+  isTalkSessionMediaParams,
   isTalkSessionAcknowledgeMarkParams,
   isTalkSessionCancelOutputParams,
   isTalkSessionCancelOutputResult,

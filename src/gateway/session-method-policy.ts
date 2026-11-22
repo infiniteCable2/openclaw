@@ -94,6 +94,7 @@ const SESSION_TARGET_POLICY_BY_METHOD = new Map<string, SessionTargetPolicy>([
   ],
   ["talk.session.steer", { fields: ["sessionKey"], profileIndependent: true }],
   ["talk.session.appendAudio", { profileIndependent: true }],
+  ["talk.session.media", { profileIndependent: true }],
   ["talk.session.close", { profileIndependent: true }],
   ["wake", { fields: ["sessionKey"], profileIndependent: true, runStart: true }],
   ["board.action", { required: true }],

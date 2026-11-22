@@ -232,6 +232,7 @@ export const TalkSessionCreateParamsSchema = closedObject({
         Type.Literal("output-gate"),
         Type.Literal("activity-v1"),
         Type.Literal("input-end"),
+        Type.Literal("media-availability-v1"),
       ]),
       { uniqueItems: true },
     ),
@@ -268,6 +269,47 @@ export const TalkSessionAppendAudioParamsSchema = Type.Union([
     endOfInput: Type.Literal(true),
   }),
 ]);
+
+export const TALK_RELAY_VIDEO_MAX_FRAME_BYTES = 256 * 1024;
+const talkSessionMediaProperties = {
+  sessionId: NonEmptyString,
+  generation: Type.Integer({ minimum: 1, maximum: 0xffff_ffff }),
+};
+const talkSessionMediaAvailabilityProperties = {
+  ...talkSessionMediaProperties,
+  type: Type.Literal("availability"),
+  available: Type.Boolean(),
+};
+export const TalkSessionMediaParamsSchema = Type.Union([
+  closedObject({
+    ...talkSessionMediaAvailabilityProperties,
+    direction: Type.Literal("input"),
+    medium: Type.Literal("video"),
+  }),
+  closedObject({
+    ...talkSessionMediaAvailabilityProperties,
+    direction: Type.Literal("output"),
+    medium: stringLiteralUnion(["audio", "text"]),
+  }),
+  closedObject({
+    ...talkSessionMediaProperties,
+    type: Type.Literal("videoFrame"),
+    mimeType: Type.Literal("image/jpeg"),
+    imageBase64: Type.String({
+      minLength: 4,
+      maxLength: Math.ceil(TALK_RELAY_VIDEO_MAX_FRAME_BYTES / 3) * 4,
+    }),
+  }),
+]);
+export const TalkSessionMediaResultSchema = closedObject({
+  ok: Type.Literal(true),
+  status: stringLiteralUnion(["applied", "stale", "throttled"]),
+  available: closedObject({
+    videoInput: Type.Boolean(),
+    audioOutput: Type.Boolean(),
+    textOutput: Type.Boolean(),
+  }),
+});
 
 /** Cancels currently streaming Talk output without necessarily ending the turn. */
 export const TalkSessionCancelOutputParamsSchema = closedObject({
@@ -695,6 +737,8 @@ export type TalkClientMutationResult = Static<typeof TalkClientMutationResultSch
 export type TalkSessionCreateParams = Static<typeof TalkSessionCreateParamsSchema>;
 export type TalkSessionCreateResult = Static<typeof TalkSessionCreateResultSchema>;
 export type TalkSessionAppendAudioParams = Static<typeof TalkSessionAppendAudioParamsSchema>;
+export type TalkSessionMediaParams = Static<typeof TalkSessionMediaParamsSchema>;
+export type TalkSessionMediaResult = Static<typeof TalkSessionMediaResultSchema>;
 export type TalkSessionCancelOutputParams = Static<typeof TalkSessionCancelOutputParamsSchema>;
 export type TalkSessionCancelOutputResult = Static<typeof TalkSessionCancelOutputResultSchema>;
 export type TalkSessionSteerParams = Static<typeof TalkSessionSteerParamsSchema>;

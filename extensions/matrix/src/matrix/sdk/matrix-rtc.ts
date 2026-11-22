@@ -12,6 +12,8 @@ import type { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";
 import type { Room } from "matrix-js-sdk/lib/models/room.js";
 import type { ReceivedToDeviceMessage } from "matrix-js-sdk/lib/sync-accumulator.js";
 
+export const MATRIX_RTC_CONVERSATION_MEDIA_EVENT = "io.openclaw.conversation.media";
+
 type MatrixRtcSelfIdentity = {
   userId: string;
   deviceId: string;
@@ -34,6 +36,9 @@ export type MatrixRtcClientFacade = {
   onRoomAvailable(listener: (roomId: string) => void): () => void;
   onRtcMembershipEvent(listener: (roomId: string) => void): () => void;
   onIncomingMediaKey(listener: (key: MatrixRtcIncomingMediaKey) => void): () => void;
+  onConversationMedia(
+    listener: (peer: MatrixRtcSelfIdentity, content: Record<string, unknown>) => void,
+  ): () => void;
   getRoomSession(roomId: string): MatrixRTCSession | undefined;
   getJoinedUserIds(roomId: string): string[];
   getOpenIdToken(): Promise<IOpenIDToken>;
@@ -63,6 +68,23 @@ export function createMatrixRtcClientFacade(client: MatrixJsClient): MatrixRtcCl
   return {
     sendEncryptedToDevice(target, eventType, content) {
       return client.encryptAndSendToDevice(eventType, [target], content);
+    },
+    onConversationMedia(listener) {
+      const onMessage = ({ message, encryptionInfo }: ReceivedToDeviceMessage) => {
+        if (
+          message.type === MATRIX_RTC_CONVERSATION_MEDIA_EVENT &&
+          encryptionInfo?.senderVerified === true &&
+          encryptionInfo.sender === message.sender &&
+          encryptionInfo.senderDevice
+        ) {
+          listener(
+            { userId: encryptionInfo.sender, deviceId: encryptionInfo.senderDevice },
+            message.content,
+          );
+        }
+      };
+      client.on(ClientEvent.ReceivedToDeviceMessage, onMessage);
+      return () => client.off(ClientEvent.ReceivedToDeviceMessage, onMessage);
     },
     onSessionStarted(listener) {
       client.matrixRTC.on(MatrixRTCSessionManagerEvents.SessionStarted, listener);

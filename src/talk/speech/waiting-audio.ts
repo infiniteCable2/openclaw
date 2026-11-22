@@ -195,7 +195,7 @@ async function playSpeechWaitingAudio(params: {
 
 export function createSpeechWaitingAudioPlayback(params: {
   audio: PreparedSpeechWaitingAudio | undefined;
-  transport: Pick<SpeechAudioTransport, "clearOutput" | "writeOutput">;
+  transport: Pick<SpeechAudioTransport, "clearOutput" | "writeOutput" | "audioOutputSignal">;
   isStopped: () => boolean;
   onError: (error: unknown) => void;
   onActivity?: (state: "streaming" | "submitted", generation: number) => void;
@@ -232,12 +232,16 @@ export function createSpeechWaitingAudioPlayback(params: {
 
   const schedule = (delayMs = params.audio?.startDelayMs) => {
     const audio = params.audio;
-    if (!audio || params.isStopped()) {
+    const availability = params.transport.audioOutputSignal?.();
+    if (!audio || params.isStopped() || availability?.aborted) {
       return;
     }
     const previousStop = stop();
     const currentGeneration = ++generation;
     const controller = new AbortController();
+    const signal = availability
+      ? AbortSignal.any([controller.signal, availability])
+      : controller.signal;
     const current = {
       generation: currentGeneration,
       controller,
@@ -246,28 +250,28 @@ export function createSpeechWaitingAudioPlayback(params: {
     };
     current.task = (async () => {
       await previousStop;
-      if (controller.signal.aborted || params.isStopped() || currentGeneration !== generation) {
+      if (signal.aborted || params.isStopped() || currentGeneration !== generation) {
         return;
       }
       try {
-        await delay(delayMs ?? audio.startDelayMs, undefined, { signal: controller.signal });
+        await delay(delayMs ?? audio.startDelayMs, undefined, { signal });
       } catch {
         return;
       }
-      if (controller.signal.aborted || params.isStopped() || currentGeneration !== generation) {
+      if (signal.aborted || params.isStopped() || currentGeneration !== generation) {
         return;
       }
       await playSpeechWaitingAudio({
         audio,
         transport: params.transport,
-        signal: controller.signal,
+        signal,
         onStarted: () => {
           current.started = true;
           params.onActivity?.("streaming", currentGeneration);
         },
       });
     })().catch((error: unknown) => {
-      if (!controller.signal.aborted && !params.isStopped()) {
+      if (!signal.aborted && !params.isStopped()) {
         params.onError(error);
       }
     });

@@ -53,6 +53,25 @@ function acknowledgeGate(control: net.Socket, gate: "normal" | "duck" | "paused"
 }
 
 describe("MatrixRTC media output framing", () => {
+  it("aborts and clears audio while muted and resumes using a new signal", async () => {
+    const { control, controlWrite, stdin, transport } = createTransportFixture();
+    const initial = transport.audioOutputSignal();
+    const muted = transport.setAudioOutputAvailable(false);
+    const mutedWrite = transport.writeOutput(Buffer.alloc(480));
+    expect(initial.aborted).toBe(true);
+    await Promise.resolve();
+    expect(controlWrite).toHaveBeenCalledWith('{"type":"clear_output","generation":1}\n');
+    acknowledgeClear(control, 1);
+    await muted;
+    await mutedWrite;
+    expect(stdin.write).not.toHaveBeenCalled();
+    await transport.setAudioOutputAvailable(true);
+    expect(transport.audioOutputSignal()).not.toBe(initial);
+    expect(transport.audioOutputSignal().aborted).toBe(false);
+    await transport.writeOutput(Buffer.alloc(480));
+    expect(stdin.write).toHaveBeenCalledOnce();
+  });
+
   it("owns an asynchronous EPIPE after a successful non-backpressured write", async () => {
     let completeWrite!: (error?: Error | null) => void;
     const input = new Writable({

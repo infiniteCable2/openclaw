@@ -1,4 +1,5 @@
 import { EventType } from "matrix-js-sdk/lib/@types/event.js";
+import { ClientEvent } from "matrix-js-sdk/lib/client.js";
 import { CallMembership } from "matrix-js-sdk/lib/matrixrtc/CallMembership.js";
 import { MatrixRTCSessionEvent } from "matrix-js-sdk/lib/matrixrtc/MatrixRTCSession.js";
 import { MatrixEvent } from "matrix-js-sdk/lib/models/event.js";
@@ -11,6 +12,7 @@ import {
   ownerId,
   roomId,
 } from "./rtc-controller.test-helpers.js";
+import { MATRIX_RTC_CONVERSATION_MEDIA_EVENT } from "./sdk/matrix-rtc.js";
 
 const mocks = getRtcControllerMocks();
 const request = { version: 1, purpose: "assistant-voice", request_id: "call_1-uuid" };
@@ -109,8 +111,9 @@ function assistantHarness(
     h.emitter.emit(MatrixRTCSessionEvent.MembershipsChanged);
   };
   const event = (
-    type: "session.ready" | "session.error" | "session.closed",
+    type: "session.ready" | "session.error" | "session.closed" | "output.text.done",
     sessionId?: string,
+    payload = {},
   ) => {
     const engine = mocks.startMeetingAgentRealtimeEngine.mock.calls[0]![0];
     engine.onTalkEvent?.({
@@ -122,7 +125,7 @@ function assistantHarness(
       mode: "stt-tts",
       transport: "gateway-relay",
       brain: "agent-consult",
-      payload: {},
+      payload,
     });
   };
   const ready = async () => {
@@ -132,6 +135,71 @@ function assistantHarness(
   };
   return { ...h, start, syncOwn, event, ready };
 }
+
+it("controls only audio output from the verified current caller and keeps text captions", async () => {
+  const h = assistantHarness();
+  h.remoteMembership.applicationData = {
+    [MATRIX_RTC_CONVERSATION_KEY]: {
+      ...request,
+      captions: true,
+      talk_events: true,
+      audio_output_control: true,
+    },
+  };
+  try {
+    h.start();
+    await flushPromises();
+    await h.ready();
+    const engine = mocks.startMeetingAgentRealtimeEngine.mock.calls[0]![0];
+    const transport = await mocks.createMatrixRtcMediaTransport.mock.results[0]!.value;
+    const content = {
+      version: 1,
+      room_id: roomId,
+      request_id: request.request_id,
+      talk_session_id: engine.meetingSessionId,
+      type: "availability",
+      direction: "output",
+      medium: "audio",
+      generation: 1,
+      available: false,
+    };
+    const receive = (update = content, senderVerified = true, senderDevice = "OWNERDEVICE") =>
+      h.sdkEmitter.emit(ClientEvent.ReceivedToDeviceMessage, {
+        message: { type: MATRIX_RTC_CONVERSATION_MEDIA_EVENT, sender: ownerId, content: update },
+        encryptionInfo: { sender: ownerId, senderDevice, senderVerified },
+      });
+    expect(h.session.updateApplicationData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        [MATRIX_RTC_CONVERSATION_KEY]: expect.objectContaining({ audio_output_control: true }),
+      }),
+    );
+    receive(content, false);
+    receive(content, true, "OTHERDEVICE");
+    receive({ ...content, talk_session_id: "previous" });
+    expect(transport.setAudioOutputAvailable).not.toHaveBeenCalled();
+    receive();
+    await flushPromises();
+    expect(transport.setAudioOutputAvailable).toHaveBeenCalledExactlyOnceWith(false);
+    expect(h.sdkClient.encryptAndSendToDevice).toHaveBeenCalledExactlyOnceWith(
+      MATRIX_RTC_CONVERSATION_MEDIA_EVENT,
+      [{ userId: ownerId, deviceId: "OWNERDEVICE" }],
+      { ...content, type: "applied" },
+    );
+    engine.onSpeechCaption?.({ role: "assistant", text: "Do not duplicate the final caption." });
+    h.event("output.text.done", engine.meetingSessionId, { text: "Still visible." });
+    await flushPromises();
+    expect(h.sdkClient.encryptAndSendToDevice.mock.calls[1]?.[2]).toMatchObject({
+      role: "assistant",
+      text: "Still visible.",
+    });
+    receive({ ...content, generation: 2, available: true });
+    receive();
+    await flushPromises();
+    expect(transport.setAudioOutputAvailable.mock.calls).toEqual([[false], [true]]);
+  } finally {
+    await h.controller.stop();
+  }
+});
 
 it("authorizes Node delivery only for the current Assistant Voice session and device", async () => {
   const h = assistantHarness();

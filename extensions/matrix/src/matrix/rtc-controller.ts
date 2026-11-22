@@ -429,6 +429,7 @@ export function registerMatrixRtcController(params: {
           client: params.client.matrixRtc,
           logger: params.logger,
           assertCurrent: assertCurrentMembership,
+          getAudioTransport: () => mediaTransportRef.current,
           onEnd: () => endCall(roomId, call),
           dispose: (close) => disposeCallbacks.push(close),
         });

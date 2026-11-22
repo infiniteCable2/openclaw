@@ -119,6 +119,10 @@ export const validateTalkSessionAppendAudioParams = createProtocolValidator(
   S.TalkSessionAppendAudioParamsSchema,
   Checks.isTalkSessionAppendAudioParams,
 );
+export const validateTalkSessionMediaParams = createProtocolValidator(
+  S.TalkSessionMediaParamsSchema,
+  Checks.isTalkSessionMediaParams,
+);
 export const validateTalkSessionAcknowledgeMarkParams = createProtocolValidator(
   S.TalkSessionAcknowledgeMarkParamsSchema,
   Checks.isTalkSessionAcknowledgeMarkParams,

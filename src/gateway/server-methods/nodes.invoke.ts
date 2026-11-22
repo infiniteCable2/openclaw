@@ -5,6 +5,7 @@ import {
   missingScopeErrorShape,
   validateNodeInvokeParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { captureActiveEmbeddedRunPersonalToolParticipants } from "../../agents/embedded-agent-runner/run-state.js";
 import { captureNodePairingGeneration } from "../../infra/device-pairing-node-state.js";
 import {
   isAdminOnlyNodeInvokeCommand,
@@ -139,7 +140,7 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    if (nodeInvokePolicy.rejectClaudeAgentRun(command, respond)) {
+    if (nodeInvokePolicy.rejectUnsupportedRequest(command, p.params, respond)) {
       return;
     }
     if (isBrowserProxyNodeInvokeCommand(command) && isForbiddenBrowserProxyMutation(p.params)) {
@@ -324,6 +325,9 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
           );
         }
         const matrixBinding = nodeSession.client?.matrixNodeCarrier;
+        if (nodeInvokePolicy.rejectUnsupportedTransport(command, Boolean(matrixBinding), respond)) {
+          return;
+        }
         const connId = nodeSession.connId;
         let isNativeDispatchCurrent = () => isUploadAllowed();
         const identity = client?.internal?.agentRuntimeIdentity;
@@ -336,6 +340,13 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
             nodeId,
             command,
             sessionKey,
+            isPrivateRequesterProfile:
+              matrixBinding.privateRequesterProfileId && identity
+                ? (profileId) =>
+                    captureActiveEmbeddedRunPersonalToolParticipants(
+                      identity,
+                    )?.participants?.isPrivateRequesterProfile(profileId) === true
+                : undefined,
             isRequestCurrent: () =>
               !invocationLifecycle.aborted &&
               (invokeDeadlineAtMs === undefined || performance.now() < invokeDeadlineAtMs) &&
@@ -472,6 +483,7 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
               nodeCommandDispatched = true;
             },
             idempotencyKey: p.idempotencyKey,
+            matrixDispatch,
             isInvocationCurrent: async () =>
               (await isNodePairingWorkCurrent({
                 nodeId,

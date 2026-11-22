@@ -40,15 +40,40 @@ import { installGatewayTestHooks, withGatewayServer } from "./test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
 const makeIdentityPath = useAuthIdentityFixture();
-const toolboxCommands = [
+const initialToolbox = [
   "maps.search",
   "maps.directions",
   "maps.navigate",
   "maps.navigation_status",
+  "location.get",
+];
+const upgradedToolbox = [
+  "android.notifications.read",
+  "calendar.event.draft",
+  "calendar.events.list",
+  "clock.alarm.dismiss",
+  "clock.alarm.set",
+  "clock.alarm.show",
+  "clock.alarm.snooze",
+  "clock.timer.dismiss",
+  "clock.timer.set",
+  "clock.timer.show",
+  "device.sensors.read",
+  "device.status",
+  ...initialToolbox,
   "maps.show",
   "maps.street_view",
   "maps.shortlist",
-  "location.get",
+  "media.item.open",
+  "media.playback.next",
+  "media.playback.pause",
+  "media.playback.play",
+  "media.playback.previous",
+  "media.playback.status",
+  "messages.email.draft",
+  "messages.sms.draft",
+  "network.device.read",
+  "phone.dial",
 ];
 const client = { id: "node-host", version: "1.0.0", platform: "android", mode: "node" } as const;
 
@@ -67,7 +92,7 @@ type NativeFrame = {
   };
 };
 
-test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner lifetime", async () => {
+test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and owner lifetime", async () => {
   let options: wsIngress.AttachGatewayWsConnectionHandlerParams | undefined;
   const nativeWsIngress = wsIngress.attachGatewayWsConnectionHandler;
   const capture = vi
@@ -170,7 +195,7 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
         maxProtocol: PROTOCOL_VERSION,
         role,
         scopes,
-        commands: toolboxCommands,
+        commands: initialToolbox,
         auth,
         ...connectOverrides,
         device: {
@@ -200,7 +225,7 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
 
   try {
     // Keep existing command approvals in force, even when the carrier narrows them further.
-    await writeConfigFile({ gateway: { nodes: { commands: { allow: toolboxCommands } } } });
+    await writeConfigFile({ gateway: { nodes: { commands: { allow: upgradedToolbox } } } });
     await withGatewayServer(async () => {
       checkpoint = "owner-close";
       const brokenOwner = open({
@@ -286,8 +311,16 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
         false,
       );
       expect((await open().connect({ deviceToken: "invalid-device-credential" })).ok).toBe(false);
+      const legacy = open();
+      expect((await legacy.connect({ deviceToken })).ok).toBe(true);
+      expect(registry.get(identity.deviceId)?.commands.toSorted()).toEqual(
+        [...initialToolbox].toSorted(),
+      );
+      legacy.link.close();
+
+      checkpoint = "reconnect-with-upgraded-toolbox";
       const current = open();
-      const reconnected = await current.connect({ deviceToken });
+      const reconnected = await current.connect({ deviceToken }, { commands: upgradedToolbox });
       expect(reconnected.ok).toBe(true);
       expect(reconnected.payload?.auth?.method).toBe("device-token");
       expect(reconnected.payload).toMatchObject({
@@ -299,9 +332,9 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
       const connectedHelloBytes = Buffer.byteLength(JSON.stringify(reconnected));
       expect(connectedHelloBytes).toBeLessThan(12 * 1024);
       process.stdout.write(`carrier-hello-bytes:${connectedHelloBytes}\n`);
-      const tools = toolboxCommands.map((command) => ({
+      const tools = upgradedToolbox.map((command) => ({
         pluginId: "fixture-toolbox",
-        name: command.replace(".", "_"),
+        name: command.replaceAll(".", "_"),
         description: "Synthetic Android Toolbox descriptor",
         command,
       }));
@@ -309,7 +342,10 @@ test("bounds the Matrix carrier's native admission, hello, Maps RPCs and owner l
       const updated = await current.request("node.pluginTools.update", { tools });
       expect(updated.ok).toBe(true);
       expect(updated.payload?.tools?.map((tool) => tool.command).toSorted()).toEqual(
-        [...toolboxCommands].toSorted(),
+        [...initialToolbox].toSorted(),
+      );
+      expect(registry.get(identity.deviceId)?.commands.toSorted()).toEqual(
+        [...initialToolbox].toSorted(),
       );
       expect(
         (
