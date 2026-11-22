@@ -40,7 +40,9 @@ import { installGatewayTestHooks, withGatewayServer } from "./test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
 const makeIdentityPath = useAuthIdentityFixture();
-const maps = ["maps.search", "maps.directions", "maps.navigate"];
+const goV2 = "network.device.read.v2";
+const goLegacy = "network.device.read";
+const approvedCommands = ["maps.search", "maps.directions", "maps.navigate", goLegacy, goV2];
 const upgradedToolbox = [
   "android.notifications.read",
   "calendar.event.draft",
@@ -70,7 +72,8 @@ const upgradedToolbox = [
   "media.playback.status",
   "messages.email.draft",
   "messages.sms.draft",
-  "network.device.read",
+  goLegacy,
+  goV2,
   "phone.dial",
 ];
 const client = { id: "node-host", version: "1.0.0", platform: "android", mode: "node" } as const;
@@ -85,6 +88,7 @@ type NativeFrame = {
     id?: string;
     nodeId?: string;
     command?: string;
+    paramsJSON?: string;
     auth?: { method: string; role: string; scopes: string[]; deviceToken?: string };
     tools?: { command: string }[];
   };
@@ -193,7 +197,7 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
         maxProtocol: PROTOCOL_VERSION,
         role,
         scopes,
-        commands: maps,
+        commands: approvedCommands,
         auth,
         ...connectOverrides,
         device: {
@@ -223,7 +227,7 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
 
   try {
     // Keep existing command approvals in force, even when the carrier narrows them further.
-    await writeConfigFile({ gateway: { nodes: { commands: { allow: maps } } } });
+    await writeConfigFile({ gateway: { nodes: { commands: { allow: approvedCommands } } } });
     await withGatewayServer(async () => {
       checkpoint = "owner-close";
       const brokenOwner = open({
@@ -310,7 +314,9 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
       expect((await open().connect({ deviceToken: "invalid-device-credential" })).ok).toBe(false);
       const legacy = open();
       expect((await legacy.connect({ deviceToken })).ok).toBe(true);
-      expect(registry.get(identity.deviceId)?.commands.toSorted()).toEqual([...maps].toSorted());
+      expect(registry.get(identity.deviceId)?.commands.toSorted()).toEqual(
+        [...approvedCommands].toSorted(),
+      );
       legacy.link.close();
 
       checkpoint = "reconnect-with-upgraded-toolbox";
@@ -337,9 +343,11 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
       const updated = await current.request("node.pluginTools.update", { tools });
       expect(updated.ok).toBe(true);
       expect(updated.payload?.tools?.map((tool) => tool.command).toSorted()).toEqual(
-        [...maps].toSorted(),
+        approvedCommands.filter((command) => command !== goV2).toSorted(),
       );
-      expect(registry.get(identity.deviceId)?.commands.toSorted()).toEqual([...maps].toSorted());
+      expect(registry.get(identity.deviceId)?.commands.toSorted()).toEqual(
+        [...approvedCommands].toSorted(),
+      );
       expect(
         (
           await current.request("node.invoke.result", {
@@ -529,6 +537,48 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
         true,
         { ok: true, payload: { delivered: true } },
       ]);
+
+      checkpoint = "bound-device-read";
+      for (const params of [
+        {},
+        { plugin: "other", deviceKey: "012345" },
+        { plugin: "go-e", deviceKey: 123456 },
+        { plugin: "go-e", deviceKey: "１２３４５６" },
+        { plugin: "go-e", deviceKey: "012345\n" },
+        { plugin: "go-e", deviceKey: "012345", url: "https://example.invalid" },
+      ]) {
+        expect((await invoke(runtimeIdentity, { command: goV2, params }))?.[2]).toMatchObject({
+          code: "INVALID_REQUEST",
+        });
+      }
+      const target = { plugin: "go-e", deviceKey: "012345" };
+      expect(
+        (await invoke(runtimeIdentity, { command: goLegacy, params: target }))?.[2],
+      ).toMatchObject({ code: "INVALID_REQUEST" });
+      expect((await invoke(null, { command: goV2, params: target }))?.[2]).toMatchObject({
+        code: "FORBIDDEN",
+      });
+      expect(current.sent.filter((frame) => frame.event === "node.invoke.request")).toHaveLength(1);
+      for (const [command, params, payload] of [
+        [goLegacy, {}, { chargingState: "idle" }],
+        [goV2, target, { deviceKey: target.deviceKey, chargingState: "idle" }],
+      ] as const) {
+        const event = current.next((frame) => frame.event === "node.invoke.request");
+        const answer = invoke(runtimeIdentity, { command, params });
+        const frame = await Promise.race([event, answer.then(() => undefined)]);
+        expect(frame?.payload).toMatchObject({ command, paramsJSON: JSON.stringify(params) });
+        expect(
+          (
+            await current.request("node.invoke.result", {
+              id: frame?.payload?.id,
+              nodeId: identity.deviceId,
+              ok: true,
+              payload,
+            })
+          ).ok,
+        ).toBe(true);
+        expect((await answer)?.slice(0, 2)).toMatchObject([true, { ok: true, payload }]);
+      }
 
       checkpoint = "revoke-session";
       const dispatchedBeforeSessionRetirement = current.next(

@@ -883,6 +883,23 @@ describe("node.invoke APNs wake path", () => {
     },
   );
 
+  it.each([
+    { command: "network.device.read", params: {} },
+    { command: "network.device.read.v2", params: { plugin: "go-e", deviceKey: "012345" } },
+  ])("blocks $command on a connected non-Matrix node", async ({ command, params }) => {
+    const nodeRegistry = {
+      get: vi.fn(() => ({ nodeId: "direct-android", platform: "android", commands: [command] })),
+      invoke: vi.fn(async () => ({ ok: true as const })),
+    };
+    const respond = await invokeNode({
+      nodeRegistry,
+      client: createOperatorClient(),
+      requestParams: { nodeId: "direct-android", command, params },
+    });
+    expectInvokeError(respond, { code: "FORBIDDEN" });
+    expect(nodeRegistry.invoke).not.toHaveBeenCalled();
+  });
+
   registerNodeInvokeUploadTests({ mocks, invokeNode });
 
   it.each([

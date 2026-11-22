@@ -33,6 +33,8 @@ type PluginToolMeta = {
   pluginId: string;
   kind?: PluginManifestRecord["kind"];
   optional: boolean;
+  /** The tool was materialized from the host plugin registry. */
+  registeredPluginTool?: true;
   workspaceAccess?: boolean | "execute";
   replaySafe?: boolean;
   sideEffecting?: boolean;
@@ -48,7 +50,7 @@ export function setPluginToolMeta(tool: AnyAgentTool, meta: PluginToolMeta): voi
 }
 
 /** Reads plugin ownership metadata for a concrete agent tool instance. */
-export function getPluginToolMeta(tool: AnyAgentTool): PluginToolMeta | undefined {
+export function getPluginToolMeta(tool: Pick<AnyAgentTool, "name">): PluginToolMeta | undefined {
   return pluginToolMeta.get(tool);
 }
 

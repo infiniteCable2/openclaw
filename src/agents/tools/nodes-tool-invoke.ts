@@ -1,6 +1,9 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { listConnectedNodePluginTools } from "../../gateway/node-plugin-tool-snapshot.js";
-import { NODE_MCP_TOOLS_CALL_COMMAND } from "../../infra/node-commands.js";
+import {
+  NODE_MCP_TOOLS_CALL_COMMAND,
+  NODE_NETWORK_DEVICE_READ_V2_COMMAND,
+} from "../../infra/node-commands.js";
 import { addSafeTimeoutDelayGraceMs } from "../../utils/timer-delay.js";
 import { readPositiveIntegerParam } from "./common.js";
 import type { GatewayCallOptions } from "./gateway.js";
@@ -12,6 +15,7 @@ const DEDICATED_TOOL_INVOKE_COMMANDS = new Map([
   ["mobile.ui.act", "mobile_ui"],
   ["browser.proxy", "browser"],
   ["browser.proxy.upload.v1", "browser"],
+  [NODE_NETWORK_DEVICE_READ_V2_COMMAND, "goe_status"],
 ]);
 
 export function resolveNodesToolInvokeTimeouts(params: {

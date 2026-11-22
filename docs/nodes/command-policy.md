@@ -61,6 +61,10 @@ reconnect it, inspect `openclaw nodes pending`, and approve the widened surface
 with `openclaw nodes approve <nodeRequestId>`. Removing declarations does not
 grant new access or require approval for an expansion.
 
+Matrix-connected go-e nodes use `network.device.read.v2` for **read-only** status of one assigned charger. The command requires an active authorized Matrix run, explicit Gateway command allowance, and node command approval. The `goe_status` plugin chooses the configured six-digit device key and sends it with the provider field `plugin: "go-e"`. Element checks its local charger and Wi-Fi grants before reading. The generic agent Nodes tool and node-published agent descriptors do not expose this keyed command.
+
+The legacy Matrix command `network.device.read` takes an empty object and is for a single existing charger binding.
+
 ## Config (`openclaw.json`)
 
 Node-related settings live under `gateway.nodes` and `tools.exec`:

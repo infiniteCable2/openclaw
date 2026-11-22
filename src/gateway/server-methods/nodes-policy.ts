@@ -3,6 +3,7 @@ import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/i
 import {
   NODE_AGENT_CLI_CLAUDE_RUN_COMMAND,
   NODE_NETWORK_DEVICE_READ_COMMAND,
+  NODE_NETWORK_DEVICE_READ_V2_COMMAND,
 } from "../../infra/node-commands.js";
 import { ADMIN_SCOPE, PAIRING_SCOPE } from "../operator-scopes.js";
 import { respondError } from "./response.js";
@@ -18,10 +19,14 @@ export const nodeInvokePolicy = {
     return scopes.includes(ADMIN_SCOPE) || scopes.includes(PAIRING_SCOPE);
   },
   rejectUnsupportedTransport(command: string, isMatrix: boolean, respond: RespondFn): boolean {
-    if (command !== NODE_NETWORK_DEVICE_READ_COMMAND || isMatrix) {
+    if (
+      isMatrix ||
+      (command !== NODE_NETWORK_DEVICE_READ_COMMAND &&
+        command !== NODE_NETWORK_DEVICE_READ_V2_COMMAND)
+    ) {
       return false;
     }
-    respondError(respond, ErrorCodes.FORBIDDEN, "network.device.read requires a Matrix Node");
+    respondError(respond, ErrorCodes.FORBIDDEN, `${command} requires a Matrix Node`);
     return true;
   },
   rejectUnsupportedRequest(command: string, rawParams: unknown, respond: RespondFn): boolean {
@@ -32,6 +37,30 @@ export const nodeInvokePolicy = {
         return true;
       }
       return false;
+    }
+    if (command === NODE_NETWORK_DEVICE_READ_V2_COMMAND) {
+      const args = asOptionalObjectRecord(rawParams);
+      if (
+        args &&
+        !Array.isArray(args) &&
+        Object.keys(args).length === 2 &&
+        Object.hasOwn(args, "plugin") &&
+        args.plugin === "go-e" &&
+        Object.hasOwn(args, "deviceKey") &&
+        typeof args.deviceKey === "string" &&
+        /^[0-9]{6}$/u.test(args.deviceKey)
+      ) {
+        return false;
+      }
+      respondError(
+        respond,
+        ErrorCodes.INVALID_REQUEST,
+        "Invalid network.device.read.v2 parameters",
+        {
+          details: { code: "INVALID_PARAMS" },
+        },
+      );
+      return true;
     }
     if (command !== NODE_AGENT_CLI_CLAUDE_RUN_COMMAND) {
       return false;

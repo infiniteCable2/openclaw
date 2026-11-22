@@ -1,7 +1,12 @@
 import { Type, type Static, type TSchema } from "typebox";
+import {
+  bindAgentToolAvailability,
+  getAgentToolAvailabilityBinding,
+} from "../agents/agent-tool-availability.js";
 import type { AgentToolResult, AgentToolUpdateCallback } from "../agents/runtime/index.js";
 import { jsonResult, textResult } from "../agents/tools/common.js";
 import type { PluginManifestActivation } from "../plugins/manifest.js";
+import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import type { JsonSchemaObject } from "../shared/json-schema.types.js";
 import {
   buildJsonPluginConfigSchema,
@@ -16,6 +21,28 @@ export { ToolArgumentValidationError } from "../../packages/agent-core/src/error
 /** An explicitly open dictionary whose unknown-valued keys survive OpenAI compatibility normalization. */
 export function openRecord(description: string) {
   return Type.Record(Type.String(), Type.Unknown(), { description, additionalProperties: true });
+}
+
+/** Report whether a registered plugin tool won resolution and can run in this turn. */
+export function bindCallablePluginToolView<T extends AnyAgentTool>(
+  tool: T,
+  update: (isCallable: (pluginId: string, toolName: string) => boolean) => void,
+): T {
+  const existing = getAgentToolAvailabilityBinding(tool);
+  let revision = 0;
+  return bindAgentToolAvailability(tool, {
+    ...existing,
+    prepare(definition, callable, offered) {
+      const currentRevision = ++revision;
+      existing?.prepare(definition, callable, offered);
+      update((pluginId, toolName) => {
+        if (revision !== currentRevision) return false;
+        const candidate = callable.get(toolName);
+        const owner = candidate && getPluginToolMeta(candidate);
+        return owner?.registeredPluginTool === true && owner.pluginId === pluginId;
+      });
+    },
+  });
 }
 
 const EMPTY_TOOL_PLUGIN_CONFIG_SCHEMA = Type.Object({}, { additionalProperties: false });
