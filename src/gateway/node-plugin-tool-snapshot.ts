@@ -3,6 +3,7 @@ import { asOptionalRecord as normalizeRecord } from "@openclaw/normalization-cor
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { NodePluginToolDescriptor } from "../../packages/gateway-protocol/src/schema/nodes.js";
 import {
+  isPrivateGoENodeCommand,
   NODE_MCP_TOOLS_CALL_COMMAND,
   NODE_NETWORK_DEVICE_READ_V2_COMMAND,
 } from "../infra/node-commands.js";
@@ -113,6 +114,7 @@ function normalizeNodePluginToolDescriptors(params: {
       !command ||
       // The go-e tool selects the configured device outside the model-facing schema.
       command === NODE_NETWORK_DEVICE_READ_V2_COMMAND ||
+      isPrivateGoENodeCommand(command) ||
       !allowedCommands.has(command)
     ) {
       continue;

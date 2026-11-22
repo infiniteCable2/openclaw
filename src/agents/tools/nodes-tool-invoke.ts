@@ -2,6 +2,8 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 import { listConnectedNodePluginTools } from "../../gateway/node-plugin-tool-snapshot.js";
 import {
   NODE_MCP_TOOLS_CALL_COMMAND,
+  NODE_NETWORK_DEVICE_HISTORY_COMMAND,
+  NODE_NETWORK_DEVICE_STOP_COMMAND,
   NODE_NETWORK_DEVICE_READ_V2_COMMAND,
 } from "../../infra/node-commands.js";
 import { addSafeTimeoutDelayGraceMs } from "../../utils/timer-delay.js";
@@ -16,6 +18,8 @@ const DEDICATED_TOOL_INVOKE_COMMANDS = new Map([
   ["browser.proxy", "browser"],
   ["browser.proxy.upload.v1", "browser"],
   [NODE_NETWORK_DEVICE_READ_V2_COMMAND, "goe_status"],
+  [NODE_NETWORK_DEVICE_HISTORY_COMMAND, "goe_status"],
+  [NODE_NETWORK_DEVICE_STOP_COMMAND, "goe_stop"],
 ]);
 
 export function resolveNodesToolInvokeTimeouts(params: {

@@ -5,6 +5,7 @@ import {
   resolveEventSessionRoutingPolicy,
 } from "../../infra/event-session-routing.js";
 import type { ExecApprovalDecision } from "../../infra/exec-approvals.js";
+import { pluginInstanceInvocation } from "../../plugins/plugin-instance-invocation.js";
 import type { ExecApprovalManager } from "../exec-approval-manager.js";
 import type { NodeSystemRunEventSource } from "../node-invoke.types.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
@@ -56,6 +57,34 @@ export function resolveNodeInvokeRuntimeAuthorityError(params: {
     return "approved runtime authority closed before node dispatch";
   }
   return undefined;
+}
+
+/** Bind the live go-e instance and the session source guard to a single invocation. */
+export function captureGoECallerAuthority(
+  client: GatewayClient | null,
+  sessionMutationCommitGuard: GatewayRequestHandlerOptions["sessionMutationCommitGuard"],
+): () => boolean {
+  const identity = client?.internal?.agentRuntimeIdentity;
+  const pluginInvocation = pluginInstanceInvocation.getStore();
+  return () => {
+    if (
+      !identity ||
+      client?.internal?.syntheticClient !== true ||
+      pluginInvocation?.instance.pluginId !== "goe" ||
+      pluginInstanceInvocation.getStore() !== pluginInvocation ||
+      !pluginInvocation.instance.hasActiveCall ||
+      pluginInvocation.instance.lifecycle.signal.aborted ||
+      !sessionMutationCommitGuard
+    ) {
+      return false;
+    }
+    try {
+      sessionMutationCommitGuard();
+      return true;
+    } catch {
+      return false;
+    }
+  };
 }
 
 /** Capture the original caller before the node connection becomes the event producer. */

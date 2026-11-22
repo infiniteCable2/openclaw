@@ -10,7 +10,9 @@ import { captureNodePairingGeneration } from "../../infra/device-pairing-node-st
 import {
   isAdminOnlyNodeInvokeCommand,
   isBrowserProxyNodeInvokeCommand,
+  isPrivateGoENodeCommand,
   isPrivateNodeInvokeCommand,
+  NODE_NETWORK_DEVICE_STOP_COMMAND,
 } from "../../infra/node-commands.js";
 import { awaitWithinDeadline, ABSOLUTE_DEADLINE_EXPIRED } from "../../utils/absolute-deadline.js";
 import { isForbiddenBrowserProxyMutation } from "../node-browser-proxy-policy.js";
@@ -37,6 +39,7 @@ import {
   parseGatewayPayload,
 } from "./nodes.helpers.js";
 import {
+  captureGoECallerAuthority,
   captureNodeSystemRunEventSource,
   isForwardedNodeInvokeApprovalAuthorityActive,
   resolveNodeInvokeRuntimeAuthorityError,
@@ -65,6 +68,7 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
     req,
     signal,
     hasCurrentClientAuthority,
+    sessionMutationCommitGuard,
   }) => {
     if (!assertValidParams(params, validateNodeInvokeParams, "node.invoke", respond)) {
       return;
@@ -141,6 +145,19 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
       return;
     }
     if (nodeInvokePolicy.rejectUnsupportedRequest(command, p.params, respond)) {
+      return;
+    }
+    const privateGoE = isPrivateGoENodeCommand(command);
+    const identity = client?.internal?.agentRuntimeIdentity;
+    const isGoECallerCurrent = privateGoE
+      ? captureGoECallerAuthority(client, sessionMutationCommitGuard)
+      : undefined;
+    if (isGoECallerCurrent?.() === false) {
+      respondError(
+        respond,
+        ErrorCodes.FORBIDDEN,
+        "go-e command requires an active go-e plugin invocation",
+      );
       return;
     }
     if (isBrowserProxyNodeInvokeCommand(command) && isForbiddenBrowserProxyMutation(p.params)) {
@@ -330,7 +347,16 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
         }
         const connId = nodeSession.connId;
         let isNativeDispatchCurrent = () => isUploadAllowed();
-        const identity = client?.internal?.agentRuntimeIdentity;
+        const isPrivateRequesterProfile = (profileId: string) =>
+          identity !== undefined &&
+          captureActiveEmbeddedRunPersonalToolParticipants(
+            identity,
+          )?.participants?.isPrivateRequesterProfile(profileId) === true;
+        const privateProfileId = matrixBinding?.privateRequesterProfileId;
+        const isGoEPrivateDispatchCurrent = () =>
+          privateProfileId !== undefined &&
+          isGoECallerCurrent?.() === true &&
+          isPrivateRequesterProfile(privateProfileId);
         const matrixDispatch =
           matrixBinding &&
           captureMatrixNodeCarrierDispatch({
@@ -341,19 +367,15 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
             command,
             sessionKey,
             isPrivateRequesterProfile:
-              matrixBinding.privateRequesterProfileId && identity
-                ? (profileId) =>
-                    captureActiveEmbeddedRunPersonalToolParticipants(
-                      identity,
-                    )?.participants?.isPrivateRequesterProfile(profileId) === true
-                : undefined,
+              privateProfileId && identity ? isPrivateRequesterProfile : undefined,
             isRequestCurrent: () =>
               !invocationLifecycle.aborted &&
               (invokeDeadlineAtMs === undefined || performance.now() < invokeDeadlineAtMs) &&
               hasCurrentClientAuthority?.() !== false &&
               context.nodeRegistry.getForPairingGeneration(nodeId, generation.key)?.connId ===
                 connId &&
-              isNativeDispatchCurrent(),
+              isNativeDispatchCurrent() &&
+              (!privateGoE || isGoEPrivateDispatchCurrent()),
           });
         if (matrixBinding) {
           if (!matrixDispatch || !identity) {
@@ -457,43 +479,46 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
         if (rejectDisabledUpload()) {
           return;
         }
-        const policyResult = await withinInvokeDeadline(() =>
-          applyPluginNodeInvokePolicy({
-            context,
-            client,
-            nodeSession,
-            command,
-            params: forwardedParams.params,
-            ...(sessionKey ? { sessionKey } : {}),
-            turnSource: matrixBinding
-              ? turnSource
-              : {
-                  channel: p.turnSourceChannel,
-                  to: p.turnSourceTo,
-                  accountId: p.turnSourceAccountId,
-                  threadId: p.turnSourceThreadId,
-                },
-            timeoutMs: p.timeoutMs,
-            deadlineAtMs: invokeDeadlineAtMs,
-            signal: invocationLifecycle,
-            resolveRemainingTimeoutMs: resolveRemainingInvokeTimeoutMs,
-            onNodeCommandDispatched: () => {
-              // Deadline races must retain transport ownership so a command
-              // already handed to the node is never advertised as retry-safe.
-              nodeCommandDispatched = true;
-            },
-            idempotencyKey: p.idempotencyKey,
-            matrixDispatch,
-            isInvocationCurrent: async () =>
-              (await isNodePairingWorkCurrent({
-                nodeId,
-                generation,
-                lifecycle: wakeLifecycle,
-              })) && isUploadAllowed(),
-            isApprovalAuthorityActive: isForwardedApprovalAuthorityActive,
-            ...(nodeInvokeStream ? { nodeInvokeStream } : {}),
-          }),
-        );
+        // These fixed commands use only the verified carrier and exact parameters.
+        const invokeWithPluginPolicy = () =>
+          withinInvokeDeadline(() =>
+            applyPluginNodeInvokePolicy({
+              context,
+              client,
+              nodeSession,
+              command,
+              params: forwardedParams.params,
+              ...(sessionKey ? { sessionKey } : {}),
+              turnSource: matrixBinding
+                ? turnSource
+                : {
+                    channel: p.turnSourceChannel,
+                    to: p.turnSourceTo,
+                    accountId: p.turnSourceAccountId,
+                    threadId: p.turnSourceThreadId,
+                  },
+              timeoutMs: p.timeoutMs,
+              deadlineAtMs: invokeDeadlineAtMs,
+              signal: invocationLifecycle,
+              resolveRemainingTimeoutMs: resolveRemainingInvokeTimeoutMs,
+              onNodeCommandDispatched: () => {
+                // Deadline races must retain transport ownership so a command
+                // already handed to the node is never advertised as retry-safe.
+                nodeCommandDispatched = true;
+              },
+              idempotencyKey: p.idempotencyKey,
+              matrixDispatch,
+              isInvocationCurrent: async () =>
+                (await isNodePairingWorkCurrent({
+                  nodeId,
+                  generation,
+                  lifecycle: wakeLifecycle,
+                })) && isUploadAllowed(),
+              isApprovalAuthorityActive: isForwardedApprovalAuthorityActive,
+              ...(nodeInvokeStream ? { nodeInvokeStream } : {}),
+            }),
+          );
+        const policyResult = privateGoE ? undefined : await invokeWithPluginPolicy();
         if (policyResult === ABSOLUTE_DEADLINE_EXPIRED) {
           respondIfInvokeExpired();
           return;
@@ -558,7 +583,7 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
         if (rejectDisabledUpload()) {
           return;
         }
-        const res = await invokeNodeWithReadinessRetry(context.nodeRegistry, {
+        const dispatchRequest = {
           nodeId,
           expectedConnId: nodeSession.connId,
           expectedPairingGeneration: generation.key,
@@ -581,7 +606,12 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
             nodeCommandDispatched = true;
             nodeInvokeStream?.onDispatchReady(invokeId);
           },
-        });
+        } satisfies Parameters<typeof context.nodeRegistry.invoke>[0];
+        // Do not send a second stop request if the first one was sent to the phone.
+        const res =
+          command === NODE_NETWORK_DEVICE_STOP_COMMAND
+            ? await context.nodeRegistry.invoke(dispatchRequest)
+            : await invokeNodeWithReadinessRetry(context.nodeRegistry, dispatchRequest);
         if (!(await continuePairingWork())) {
           return;
         }

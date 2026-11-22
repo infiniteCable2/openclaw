@@ -1,6 +1,8 @@
 import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import type { ConnectParams } from "../../../packages/gateway-protocol/src/index.js";
 import {
+  NODE_NETWORK_DEVICE_HISTORY_COMMAND,
+  NODE_NETWORK_DEVICE_STOP_COMMAND,
   NODE_NETWORK_DEVICE_READ_COMMAND,
   NODE_NETWORK_DEVICE_READ_V2_COMMAND,
 } from "../../infra/node-commands.js";
@@ -41,6 +43,8 @@ const ANDROID_TOOLBOX_COMMANDS: ReadonlySet<unknown> = new Set([
   "messages.sms.draft",
   NODE_NETWORK_DEVICE_READ_COMMAND,
   NODE_NETWORK_DEVICE_READ_V2_COMMAND,
+  NODE_NETWORK_DEVICE_HISTORY_COMMAND,
+  NODE_NETWORK_DEVICE_STOP_COMMAND,
   "phone.dial",
 ]);
 

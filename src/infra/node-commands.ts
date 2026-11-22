@@ -102,3 +102,12 @@ export const NODE_PLUGIN_TOOL_CALL_GATEWAY_TIMEOUT_MS = NODE_PLUGIN_TOOL_CALL_TI
 
 export const NODE_NETWORK_DEVICE_READ_COMMAND = "network.device.read";
 export const NODE_NETWORK_DEVICE_READ_V2_COMMAND = "network.device.read.v2";
+export const NODE_NETWORK_DEVICE_HISTORY_COMMAND = "network.device.history.v1";
+export const NODE_NETWORK_DEVICE_STOP_COMMAND = "network.device.stop.v1";
+
+/** These commands use the go-e plugin's inventory binding and private requester authority. */
+export function isPrivateGoENodeCommand(command: string): boolean {
+  return (
+    command === NODE_NETWORK_DEVICE_HISTORY_COMMAND || command === NODE_NETWORK_DEVICE_STOP_COMMAND
+  );
+}

@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { expect, test, vi } from "vitest";
 import { buildDeviceAuthPayloadV3 } from "../../packages/gateway-client/src/device-auth.js";
 import { PROTOCOL_VERSION, type ConnectParams } from "../../packages/gateway-protocol/src/index.js";
+import * as runState from "../agents/embedded-agent-runner/run-state.js";
 import { writeConfigFile } from "../config/io.js";
 import {
   claimAgentRunDelegatedAuthority,
@@ -13,6 +14,7 @@ import {
   publicKeyRawBase64UrlFromPem,
   signDevicePayload,
 } from "../infra/device-identity.js";
+import { PluginInstance } from "../plugins/plugin-instance.js";
 import { createPluginRuntime } from "../plugins/runtime/index.js";
 import { NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE } from "../shared/device-bootstrap-profile.js";
 import {
@@ -42,6 +44,8 @@ installGatewayTestHooks({ scope: "suite" });
 const makeIdentityPath = useAuthIdentityFixture();
 const goV2 = "network.device.read.v2";
 const goLegacy = "network.device.read";
+const goHistory = "network.device.history.v1";
+const goStop = "network.device.stop.v1";
 const initialToolbox = [
   "maps.search",
   "maps.directions",
@@ -50,6 +54,8 @@ const initialToolbox = [
   "location.get",
   goLegacy,
   goV2,
+  goHistory,
+  goStop,
 ];
 const upgradedToolbox = [
   "android.notifications.read",
@@ -112,7 +118,11 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
   const roomId = "!fixture:example.invalid";
   const sessionKey = "agent:main:matrix:group:fixture";
   let activeSessionKey = sessionKey;
-  function open(overrides: Partial<MatrixNodeCarrierOwner> = {}) {
+  function open(
+    overrides: Partial<MatrixNodeCarrierOwner> & {
+      privateRequester?: { profileId: string; isCurrent(): boolean };
+    } = {},
+  ) {
     if (!options) {
       throw new Error("native gateway options unavailable");
     }
@@ -323,7 +333,9 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
       legacy.link.close();
 
       checkpoint = "reconnect-with-upgraded-toolbox";
-      const current = open();
+      const current = open({
+        privateRequester: { profileId: "fixture-owner", isCurrent: () => true },
+      });
       const reconnected = await current.connect({ deviceToken }, { commands: upgradedToolbox });
       expect(reconnected.ok).toBe(true);
       expect(reconnected.payload?.auth?.method).toBe("device-token");
@@ -346,7 +358,7 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
       const updated = await current.request("node.pluginTools.update", { tools });
       expect(updated.ok).toBe(true);
       expect(updated.payload?.tools?.map((tool) => tool.command).toSorted()).toEqual(
-        initialToolbox.filter((command) => command !== goV2).toSorted(),
+        initialToolbox.filter((command) => ![goV2, goHistory, goStop].includes(command)).toSorted(),
       );
       expect(registry.get(identity.deviceId)?.commands.toSorted()).toEqual(
         [...initialToolbox].toSorted(),
@@ -385,6 +397,7 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
       const invoke = (
         caller: AgentRuntimeIdentity | null = runtimeIdentity,
         overrides: Record<string, unknown> = {},
+        guard?: () => void,
       ) => {
         const respond = vi.fn();
         const requestId = `fixture-matrix-invoke-${++requestCount}`;
@@ -407,7 +420,9 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
                 role: "operator",
                 scopes: ["operator.write"],
               },
-              ...(caller && { internal: { agentRuntimeIdentity: caller } }),
+              ...(caller && {
+                internal: { agentRuntimeIdentity: caller, ...(guard && { syntheticClient: true }) },
+              }),
             },
             params: {
               nodeId: identity.deviceId,
@@ -417,6 +432,7 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
               idempotencyKey: requestId,
               ...overrides,
             },
+            ...(guard && { sessionMutationCommitGuard: guard }),
           }),
         ).then(() => respond.mock.calls[0]);
       };
@@ -511,12 +527,12 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
       const dispatched = current.next((frame) => frame.event === "node.invoke.request");
       const captureInvoke = vi.spyOn(registry, "invoke");
       const result = invoke(runtimeIdentity, { command: "location.get", params: {} });
-      const frame = await Promise.race([dispatched, result.then(() => undefined)]);
-      if (!frame?.payload?.id) {
+      const locationFrame = await Promise.race([dispatched, result.then(() => undefined)]);
+      if (!locationFrame?.payload?.id) {
         throw new Error("native location invoke not delivered");
       }
-      expect(frame.payload.command).toBe("location.get");
-      const pendingDispatch = current.invocations.get(frame.payload.id);
+      expect(locationFrame.payload.command).toBe("location.get");
+      const pendingDispatch = current.invocations.get(locationFrame.payload.id);
       const nativeDeadline = captureInvoke.mock.lastCall?.[0].deadlineAtMs;
       expect(nativeDeadline).toBeGreaterThan(performance.now());
       expect(pendingDispatch?.deadlineAtMs).toBe(nativeDeadline);
@@ -527,12 +543,12 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
         transport.sendNodeInvoke?.(expiredFrame, performance.now() - 1, isDispatchAuthorized),
       ).toThrow("Matrix node invoke deadline elapsed");
       expect(current.sent).toHaveLength(sentBeforeExpiredInvoke);
-      expect(frame.payload).not.toHaveProperty("expires_at_ms");
-      expect(frame.payload).not.toHaveProperty("deadlineAtMs");
+      expect(locationFrame.payload).not.toHaveProperty("expires_at_ms");
+      expect(locationFrame.payload).not.toHaveProperty("deadlineAtMs");
       expect(
         (
           await current.request("node.invoke.result", {
-            id: frame.payload.id,
+            id: locationFrame.payload.id,
             nodeId: identity.deviceId,
             ok: true,
             payload: { delivered: true },
@@ -584,6 +600,143 @@ test("bounds the Matrix carrier's native admission, hello, Toolbox upgrade and o
           ).ok,
         ).toBe(true);
         expect((await answer)?.slice(0, 2)).toMatchObject([true, { ok: true, payload }]);
+      }
+
+      checkpoint = "private-goe-history-and-stop";
+      const owner = new PluginInstance("goe");
+      const other = new PluginInstance("fixture-other");
+      let verified = true;
+      let bound = true;
+      const guard = () => {
+        if (!bound) {
+          throw new Error("fixture assignment revoked");
+        }
+      };
+      const captureParticipants = vi.spyOn(
+        runState,
+        "captureActiveEmbeddedRunPersonalToolParticipants",
+      );
+      const initialCount = current.sent.filter(
+        (frame) => frame.event === "node.invoke.request",
+      ).length;
+      try {
+        captureParticipants.mockReturnValue({
+          participants: {
+            isPrivateRequesterProfile: (profile: string) => verified && profile === "fixture-owner",
+          } as NonNullable<
+            NonNullable<
+              ReturnType<typeof runState.captureActiveEmbeddedRunPersonalToolParticipants>
+            >["participants"]
+          >,
+          assertCurrent() {},
+        });
+        for (const [command, params] of [
+          [goHistory, { ...target, limit: 0 }],
+          [goHistory, { ...target, limit: 21 }],
+          [goHistory, { ...target, limit: 1.5 }],
+          [goHistory, { ...target, limit: "3" }],
+          [goHistory, target],
+          [goHistory, { ...target, limit: 1, from: 1000.5 }],
+          [goHistory, { ...target, limit: 1, to: "2000" }],
+          [goHistory, { ...target, limit: 1, from: 2000, to: 1000 }],
+          [goHistory, { ...target, limit: 1, offset: -1 }],
+          [goHistory, { ...target, limit: 1, offset: Number.MAX_SAFE_INTEGER + 1 }],
+          [goHistory, { ...target, limit: 1, exportUrl: "https://example.invalid" }],
+          [goStop, { ...target, limit: 1 }],
+          [goStop, { ...target, confirm: true }],
+        ] as const) {
+          expect((await invoke(runtimeIdentity, { command, params }))?.[2]).toMatchObject({
+            code: "INVALID_REQUEST",
+          });
+        }
+        for (const [command, params] of [
+          [goHistory, { ...target, limit: 3 }],
+          [goStop, target],
+        ] as const) {
+          const args = { command, params };
+          for (const rejected of [
+            () => invoke(runtimeIdentity, args, guard),
+            () => other.run(() => invoke(runtimeIdentity, args, guard)),
+            () => owner.run(() => invoke(runtimeIdentity, args)),
+            () => owner.run(() => invoke(null, args, guard)),
+          ]) {
+            expect((await rejected())?.[2]).toMatchObject({ code: "FORBIDDEN" });
+          }
+          verified = false;
+          expect((await owner.run(() => invoke(runtimeIdentity, args, guard)))?.[2]).toMatchObject({
+            code: "FORBIDDEN",
+          });
+          verified = true;
+          bound = false;
+          expect((await owner.run(() => invoke(runtimeIdentity, args, guard)))?.[2]).toMatchObject({
+            code: "FORBIDDEN",
+          });
+          bound = true;
+        }
+        expect(current.sent.filter((frame) => frame.event === "node.invoke.request")).toHaveLength(
+          initialCount,
+        );
+        for (const [command, params, payload] of [
+          [goHistory, { ...target, limit: 1 }, { deviceKey: target.deviceKey, sessions: [] }],
+          [goHistory, { ...target, limit: 20 }, { deviceKey: target.deviceKey, sessions: [] }],
+          [
+            goHistory,
+            { ...target, limit: 3, from: 1000, to: 2000, offset: 4 },
+            { deviceKey: target.deviceKey, sessions: [], hasMore: true },
+          ],
+          [
+            goHistory,
+            { ...target, limit: 3, to: 2000, offset: 0 },
+            { deviceKey: target.deviceKey, sessions: [] },
+          ],
+          [goStop, target, { deviceKey: target.deviceKey, stopState: "stopped" }],
+        ] as const) {
+          const event = current.next((frame) => frame.event === "node.invoke.request");
+          const answer = owner.run(() => invoke(runtimeIdentity, { command, params }, guard));
+          const frame = await Promise.race([event, answer.then(() => undefined)]);
+          expect(frame?.payload).toMatchObject({ command, paramsJSON: JSON.stringify(params) });
+          expect(
+            (
+              await current.request("node.invoke.result", {
+                id: frame?.payload?.id,
+                nodeId: identity.deviceId,
+                ok: true,
+                payload,
+              })
+            ).ok,
+          ).toBe(true);
+          expect((await answer)?.slice(0, 2)).toMatchObject([true, { ok: true, payload }]);
+        }
+        const stopFrames = () =>
+          current.sent.filter(
+            (frame) => frame.event === "node.invoke.request" && frame.payload?.command === goStop,
+          ).length;
+        const beforeStop = stopFrames();
+        const event = current.next((frame) => frame.event === "node.invoke.request");
+        const answer = owner.run(() =>
+          invoke(runtimeIdentity, { command: goStop, params: target }, guard),
+        );
+        const stoppedFrame = await Promise.race([event, answer.then(() => undefined)]);
+        expect(stoppedFrame?.payload?.command).toBe(goStop);
+        expect(
+          (
+            await current.request("node.invoke.result", {
+              id: stoppedFrame?.payload?.id,
+              nodeId: identity.deviceId,
+              ok: false,
+              error: {
+                code: "NODE_NOT_READY",
+                message: "Synthetic phone unavailable before confirmation",
+              },
+            })
+          ).ok,
+        ).toBe(true);
+        expect((await answer)?.[2]).toMatchObject({ code: "UNAVAILABLE" });
+        expect(stopFrames()).toBe(beforeStop + 1);
+      } finally {
+        captureParticipants.mockRestore();
+        await owner.dispose();
+        await other.dispose();
       }
 
       checkpoint = "revoke-session";

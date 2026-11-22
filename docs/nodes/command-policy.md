@@ -65,6 +65,8 @@ Matrix-connected go-e nodes use `network.device.read.v2` for **read-only** statu
 
 The legacy Matrix command `network.device.read` takes an empty object and is for a single existing charger binding.
 
+The go-e plugin can request `network.device.history.v1` with `plugin: "go-e"`, the configured `deviceKey`, and an integer `limit` from 1 to 20. Optional `from` and `to` are safe integer Unix timestamps in milliseconds and bound the session start with an inclusive lower and exclusive upper bound. `offset` is an optional nonnegative safe integer. The node filters completed sessions, sorts them by end and then by start (newest first), and applies the page. `hasMore: true` signals more matching sessions. `network.device.stop.v1` takes only `plugin` and `deviceKey`. Both commands require the live go-e plugin, its current private requester turn, an admitted Matrix Node and explicit Gateway and node command approval. The generic Nodes tool cannot invoke them. The phone owns the one-time stop confirmation. The Gateway sends a stop request once.
+
 ## Config (`openclaw.json`)
 
 Node-related settings live under `gateway.nodes` and `tools.exec`:
