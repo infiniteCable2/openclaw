@@ -12,6 +12,15 @@ The entry helper for provider plugins, advanced tool plugins, hook plugins,
 and anything that is not a messaging channel. Part of the
 [Plugin entry points](/plugins/sdk-entrypoints) reference.
 
+## Callable plugin tool visibility
+
+Use `bindCallablePluginToolView(tool, update)` from `openclaw/plugin-sdk/tool-plugin`
+when a registered tool needs to reference another plugin's callable tool. The
+host calls `update` with a predicate that checks the owning plugin ID and tool
+name against the current executable catalog. A catalog refresh retires the
+previous predicate. The predicate describes availability. Tools still check
+invocation authority and provider permissions at execution time.
+
 ## `definePluginEntry`
 
 **Import:** `openclaw/plugin-sdk/plugin-entry`

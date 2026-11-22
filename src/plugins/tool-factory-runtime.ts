@@ -1,5 +1,6 @@
 /** Invokes current-context plugin tool factories and reports one assembly's timings. */
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
+import { copyAgentToolAvailability } from "../agents/agent-tool-availability.js";
 import { runWithPluginToolInvocationSource } from "../agents/agent-tool-source-execution-guard.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import { isInvalidConfigError } from "../config/io.invalid-config.js";
@@ -151,7 +152,7 @@ export function bindPluginToolCallbacks(
     preventExtensions: () => false,
   });
   copyPluginToolMeta(tool, wrapped);
-  return wrapped;
+  return copyAgentToolAvailability(tool, wrapped);
 }
 
 export function createPluginToolFactoryResolver(logError: (message: string) => void) {

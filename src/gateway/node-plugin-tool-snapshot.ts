@@ -2,7 +2,10 @@
 import { asOptionalRecord as normalizeRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { NodePluginToolDescriptor } from "../../packages/gateway-protocol/src/schema/nodes.js";
-import { NODE_MCP_TOOLS_CALL_COMMAND } from "../infra/node-commands.js";
+import {
+  NODE_MCP_TOOLS_CALL_COMMAND,
+  NODE_NETWORK_DEVICE_READ_V2_COMMAND,
+} from "../infra/node-commands.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { dedupeByKey } from "../shared/dedupe-by-key.js";
 import type { NodeSession } from "./node-session.types.js";
@@ -108,6 +111,8 @@ function normalizeNodePluginToolDescriptors(params: {
       !NODE_PLUGIN_TOOL_NAME_RE.test(name) ||
       !description ||
       !command ||
+      // The go-e tool selects the configured device outside the model-facing schema.
+      command === NODE_NETWORK_DEVICE_READ_V2_COMMAND ||
       !allowedCommands.has(command)
     ) {
       continue;

@@ -73,6 +73,16 @@ describe("generic node invoke policy", () => {
     },
   );
 
+  it("reserves keyed go-e status for the inventory-bound tool without a published descriptor", async () => {
+    await expect(
+      execute("invoke", {
+        invokeCommand: "network.device.read.v2",
+        invokeParamsJson: '{"plugin":"go-e","deviceKey":"012345"}',
+      }),
+    ).rejects.toThrow("use the dedicated goe_status tool");
+    expect(mocks.callGatewayTool).not.toHaveBeenCalled();
+  });
+
   it("blocks a typed action when the selected node publishes its command as an agent tool", async () => {
     mocks.listConnectedNodePluginTools.mockReturnValue([
       { nodeId: "node-1", descriptor: { name: "remote_status", command: "device.status" } },

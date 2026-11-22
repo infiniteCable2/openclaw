@@ -726,6 +726,7 @@ function* resolvePluginToolsFromRegistry(
         const metadata = manifestPlugin?.toolMetadata?.[name];
         setPluginToolMeta(tool, {
           pluginId: entry.pluginId,
+          registeredPluginTool: true,
           ...(manifestPlugin?.kind ? { kind: manifestPlugin.kind } : {}),
           optional: entry.optional || metadata?.optional === true,
           workspaceAccess: entry.workspaceAccess ?? true,

@@ -1,4 +1,5 @@
 import { types } from "node:util";
+import { copyAgentToolAvailability } from "../agents/agent-tool-availability.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { PluginHostObject } from "./plugin-instance-owned-values.js";
 
@@ -50,7 +51,7 @@ export function createPluginToolExecutionBinding(context: {
         views.set(tool, view);
         views.set(view, view);
         void new ToolExecutionOwner(view, context.wrapProxy);
-        return view;
+        return copyAgentToolAvailability(tool, view);
       }
     }
     const view = Object.create(Object.getPrototypeOf(tool));
@@ -101,7 +102,7 @@ export function createPluginToolExecutionBinding(context: {
       }
     }
     // SAFETY: Data fields retain their values; callable fields retain their signatures and receiver.
-    return view as T;
+    return copyAgentToolAvailability(tool, view as T);
   };
   const bindResultItem = (tool: unknown) =>
     tool !== null && (typeof tool === "object" || typeof tool === "function") ? bind(tool) : tool;
