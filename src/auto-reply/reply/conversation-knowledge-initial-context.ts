@@ -13,7 +13,10 @@ import { conversationKnowledgeContributionId } from "../../config/sessions/conve
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import type { PreparedReplySessionInitialContext } from "../../config/sessions/session-accessor.reset.js";
 import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
-import { borrowPreparedConversationKnowledgeInitialFrame } from "../../config/sessions/session-initial-context-frame.js";
+import {
+  borrowPreparedConversationKnowledgeInitialFrame,
+  type PreparedConversationKnowledgeInitialFrame,
+} from "../../config/sessions/session-initial-context-frame.js";
 import {
   createProjectedInitialSessionContextEvents,
   type PreparedProjectedInitialSessionContext,
@@ -157,6 +160,12 @@ export async function prepareConversationKnowledgeInitialContext(params: {
     cleanups.push(() => creation.release());
     check();
     const selection = { branch, participant: creation.participant };
+    // The waiter may see the frame already rejected against this creation's snapshot.
+    let rejectedFrame: PreparedConversationKnowledgeInitialFrame | undefined;
+    const coversCreation = (candidate: PreparedConversationKnowledgeInitialFrame) =>
+      candidate !== rejectedFrame &&
+      (candidate.coversRootSnapshot(creation.rootVersion) ||
+        candidate.coversCompletedSeedSuffix(creation, params.signal));
     let frame: ReturnType<typeof acquirePreparedConversationKnowledgeInitialFrame>;
     try {
       frame = acquirePreparedConversationKnowledgeInitialFrame(selection);
@@ -167,10 +176,8 @@ export async function prepareConversationKnowledgeInitialContext(params: {
     if (frame) {
       const acquired = frame;
       cleanups.push(() => acquired.release());
-      if (
-        !frame.frame.coversRootSnapshot(creation.rootVersion) &&
-        !(await frame.frame.coversCompletedSeedSuffix(creation, params.signal))
-      ) {
+      if (!(await coversCreation(frame.frame))) {
+        rejectedFrame = frame.frame;
         await frame.release();
         cleanups.pop();
         frame = undefined;
@@ -180,7 +187,7 @@ export async function prepareConversationKnowledgeInitialContext(params: {
       try {
         frame = await waitForPreparedConversationKnowledgeInitialFrame(
           selection,
-          creation.rootVersion,
+          coversCreation,
           params.signal,
         );
         if (frame) {

@@ -92,12 +92,14 @@ export function createConversationKnowledgeCheckpointFrameSlot<
     },
     acquire,
     async waitFor(
-      matches: (frame: Frame) => boolean,
+      matches: (frame: Frame) => boolean | Promise<boolean>,
       currentPreparation: () => Promise<void> | undefined,
       signal?: AbortSignal,
     ) {
       let observed: Promise<void> | undefined;
       let finished: Promise<void> | undefined;
+      // Settlement can wake this caller without publishing another frame.
+      let examined: RetainedFrame<Frame> | undefined;
       let settled = Promise.resolve();
       let next = createDeferredCore();
       const notify = () => next.resolve();
@@ -105,20 +107,24 @@ export function createConversationKnowledgeCheckpointFrameSlot<
       try {
         for (;;) {
           signal?.throwIfAborted();
-          const candidate = acquire();
           const snapshot = current;
+          const candidate = snapshot !== examined ? acquire() : undefined;
           if (candidate) {
-            let matched = false;
+            let keep = false;
             try {
-              matched = matches(candidate.frame);
-              if (matched) {
+              const match = matches(candidate.frame);
+              const covered = typeof match === "boolean" ? match : await match;
+              signal?.throwIfAborted();
+              keep = covered && current === snapshot;
+              if (keep) {
                 return candidate;
               }
             } finally {
-              if (!matched) {
+              if (!keep) {
                 await candidate.release();
               }
             }
+            examined = snapshot;
           }
           if (current !== snapshot) {
             continue;

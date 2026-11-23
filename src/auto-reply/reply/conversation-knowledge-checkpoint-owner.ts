@@ -24,8 +24,8 @@ import { conversationKnowledgeContributionId } from "../../config/sessions/conve
 import { ConversationKnowledgeRootContinuation } from "../../config/sessions/conversation-knowledge-root-cache.js";
 import type { ConversationKnowledgeBranch } from "../../config/sessions/conversation-knowledge-store.js";
 import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
+import type { PreparedConversationKnowledgeInitialFrame } from "../../config/sessions/session-initial-context-frame.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
-import type { SessionTranscriptContextVersion } from "../../config/sessions/session-transcript-context-version.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
@@ -40,6 +40,10 @@ import type { PreparedCheckpointContribution } from "./conversation-knowledge-ch
 import { createConversationKnowledgeCheckpointTail } from "./conversation-knowledge-checkpoint-tail.js";
 import { createConversationKnowledgePrefetchOwner } from "./conversation-knowledge-prefetch-owner.js";
 import { createConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
+
+type InitialFrameMatch = (
+  frame: PreparedConversationKnowledgeInitialFrame,
+) => boolean | Promise<boolean>;
 
 type Registration = {
   branch: ConversationKnowledgeBranch;
@@ -608,13 +612,9 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         owner.assertCurrent();
         return frames.acquire();
       },
-      waitForInitialFrame(version: SessionTranscriptContextVersion, signal?: AbortSignal) {
+      waitForInitialFrame(matches: InitialFrameMatch, signal?: AbortSignal) {
         owner.assertCurrent();
-        return frames.waitFor(
-          (frame) => frame.coversRootSnapshot(version),
-          owner.currentPreparation,
-          signal,
-        );
+        return frames.waitFor(matches, owner.currentPreparation, signal);
       },
       async close() {
         if (!active) {
@@ -683,10 +683,10 @@ export function acquirePreparedConversationKnowledgeInitialFrame(
 
 export function waitForPreparedConversationKnowledgeInitialFrame(
   params: Parameters<typeof selectPreparedRootOwner>[0],
-  version: SessionTranscriptContextVersion,
+  matches: InitialFrameMatch,
   signal?: AbortSignal,
 ) {
-  return selectPreparedRootOwner(params)?.waitForInitialFrame(version, signal);
+  return selectPreparedRootOwner(params)?.waitForInitialFrame(matches, signal);
 }
 
 /** Shared root preparation is independent of any one call and never changes recipient history. */

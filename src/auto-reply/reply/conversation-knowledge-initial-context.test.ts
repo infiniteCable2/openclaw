@@ -22,6 +22,7 @@ const boundary = vi.hoisted(() => ({
   sources: vi.fn(),
   warm: vi.fn(),
   acquire: vi.fn(),
+  wait: vi.fn(),
   latest: vi.fn(),
   coverage: vi.fn(),
   bind: vi.fn(),
@@ -45,7 +46,7 @@ vi.mock("./conversation-knowledge-checkpoint-source.js", () => ({
 // mock-isolation: The root cache returns detached data; it never grants permission in this suite.
 vi.mock("./conversation-knowledge-checkpoint-owner.js", () => ({
   acquirePreparedConversationKnowledgeInitialFrame: boundary.acquire,
-  waitForPreparedConversationKnowledgeInitialFrame: vi.fn(),
+  waitForPreparedConversationKnowledgeInitialFrame: boundary.wait,
   readPreparedConversationKnowledgeRootProjection: boundary.warm,
 }));
 // mock-isolation: Fixed canonical checkpoint records exercise summary coverage without a report worker.
@@ -310,6 +311,27 @@ it("releases an older prepared frame and copies the root snapshot captured at cr
   ).toEqual(["source-1", "source-2"]);
   await prepared.release();
   expect(release).toHaveBeenCalledOnce();
+});
+
+it("checks marker-only coverage on a newly published frame without revisiting the rejected frame", async () => {
+  const older = {
+    coversRootSnapshot: vi.fn(() => false),
+    coversCompletedSeedSuffix: vi.fn(async () => false),
+  };
+  const published = {
+    coversRootSnapshot: vi.fn(() => false),
+    coversCompletedSeedSuffix: vi.fn(async () => true),
+  };
+  boundary.acquire.mockReturnValue({ frame: older, release: vi.fn(async () => {}) });
+  boundary.wait.mockImplementationOnce(async (_selection, covers) => {
+    expect(await covers(older)).toBe(false);
+    expect(await covers(published)).toBe(true);
+  });
+  const prepared = await prepareConversationKnowledgeInitialContext(params());
+  expect(boundary.wait).toHaveBeenCalledOnce();
+  expect(older.coversCompletedSeedSuffix).toHaveBeenCalledOnce();
+  expect(published.coversCompletedSeedSuffix).toHaveBeenCalledOnce();
+  await prepared?.release();
 });
 
 it("releases the borrowed frame if its bounded seed proof is interrupted", async () => {

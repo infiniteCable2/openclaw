@@ -86,6 +86,40 @@ describe("root preparation custody", () => {
     expect(stale.release).toHaveBeenCalledOnce();
   });
 
+  it("keeps custody during asynchronous coverage and selects the newer publication", async () => {
+    const slot =
+      createConversationKnowledgeCheckpointFrameSlot<ReturnType<typeof fixture>["frame"]>();
+    const first = fixture();
+    const newer = fixture();
+    const preparing = createDeferredCore();
+    const proving = createDeferredCore();
+    const covered = Promise.withResolvers<boolean>();
+    const waiting = slot.waitFor(
+      (frame) => {
+        if (frame === first.frame) {
+          proving.resolve();
+          return covered.promise;
+        }
+        return frame === newer.frame;
+      },
+      () => preparing.promise,
+    );
+
+    slot.publish(first.frame, first.release);
+    await proving.promise;
+    slot.publish(newer.frame, newer.release);
+    await slot.settle();
+    expect(first.release).not.toHaveBeenCalled();
+    covered.resolve(true);
+    preparing.resolve();
+    const acquired = await waiting;
+    expect(acquired?.frame).toBe(newer.frame);
+    expect(first.release).toHaveBeenCalledOnce();
+    await acquired?.release();
+    slot.clear();
+    await slot.settle(true);
+  });
+
   it("joins the last borrower before the root closes its native source reader", async () => {
     const slot =
       createConversationKnowledgeCheckpointFrameSlot<ReturnType<typeof fixture>["frame"]>();
