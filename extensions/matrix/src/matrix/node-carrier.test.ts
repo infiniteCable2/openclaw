@@ -169,21 +169,26 @@ describe("Matrix Node carrier", () => {
     ]);
     expect(listMatrixPersonalNodeBindings(cfg, "unrelated", ["default"])).toEqual([]);
     expect(() => bootstrap?.assertCurrent()).toThrow("admission changed");
-    expect((await admission(peer, address.room_id))?.expectedNodeId).toBe(device.nodeId);
+    const callBound = await admission(peer, address.room_id);
+    expect(callBound?.expectedNodeId).toBe(device.nodeId);
+    expect(callBound?.privateRequesterSenderId).toBe(peer.userId);
+    expect(callBound?.allowCrossChannelAccess).toBe(false);
 
     bindNodeConnection.mockReturnValue(undefined);
     expect(await admission(peer, address.room_id)).toBeUndefined();
     device.allowCrossChannelAccess = true;
     expect(await admission({ ...peer, deviceId: "OTHER" }, address.room_id)).toBeUndefined();
     const shared = await admission(peer, address.room_id);
-    expect(shared?.crossChannelSenderId).toBe(peer.userId);
+    expect(shared?.privateRequesterSenderId).toBe(peer.userId);
+    expect(shared?.allowCrossChannelAccess).toBe(true);
     expect(() => shared?.assertCurrent()).not.toThrow();
     expect(() => shared?.assertInvokeSession("unrelated-session")).toThrow(
       "requires the current Assistant Voice session",
     );
     bindNodeConnection.mockReturnValue(call);
     const callBoundShared = await admission(peer, address.room_id);
-    expect(callBoundShared?.crossChannelSenderId).toBe(peer.userId);
+    expect(callBoundShared?.privateRequesterSenderId).toBe(peer.userId);
+    expect(callBoundShared?.allowCrossChannelAccess).toBe(true);
     expect(callBoundShared?.signal).toBe(callLifetime.signal);
     callLifetime.abort();
     expect(() => callBoundShared?.assertCurrent()).toThrow();

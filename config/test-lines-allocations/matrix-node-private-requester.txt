@@ -1,0 +1,2 @@
+16
+# Verify a same-call pinned Matrix Node can receive a private requester profile without cross-channel access.

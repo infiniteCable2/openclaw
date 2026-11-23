@@ -26,7 +26,7 @@ export function withMatrixNodeCarrierRuntime(params: {
   const context = {
     attachGateway(owner: MatrixNodeCarrierOwner) {
       assertAccount();
-      const { crossChannelSenderId, ...channelOwner } = owner;
+      const { privateRequesterSenderId, ...channelOwner } = owner;
       const attachOwner = (privateRequester?: MatrixNodeCarrierHostOwner["privateRequester"]) =>
         attach({
           ...channelOwner,
@@ -39,24 +39,30 @@ export function withMatrixNodeCarrierRuntime(params: {
           },
           privateRequester,
         });
-      if (!crossChannelSenderId) {
+      if (!privateRequesterSenderId) {
+        if (owner.allowCrossChannelAccess) {
+          throw new Error("Cross-channel access requires a verified Matrix requester");
+        }
         return attachOwner();
       }
       if (!owner.expectedNodeId) {
-        throw new Error("Cross-channel access requires a pinned Matrix Node ID");
+        throw new Error("A private Matrix Node requester requires a pinned Node ID");
       }
       return import("../../state/user-channel-identity-operations.js").then(
         async ({ prepareUserChannelIdentityAuthority }) => {
           const authority = await prepareUserChannelIdentityAuthority({
             channelId: "matrix",
             accountId,
-            senderId: crossChannelSenderId,
+            senderId: privateRequesterSenderId,
           });
           assertAccount();
           owner.signal.throwIfAborted();
           owner.assertCurrent();
           if (!authority?.isCurrent()) {
-            throw new Error("Matrix Node owner has no current verified person profile");
+            if (owner.allowCrossChannelAccess) {
+              throw new Error("Matrix Node owner has no current verified person profile");
+            }
+            return attachOwner();
           }
           return attachOwner({
             profileId: authority.linked.profileId,

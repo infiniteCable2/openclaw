@@ -66,8 +66,8 @@ export function createMatrixNodeCarrierAdmission(params: {
       ? {
           agentId: row.agentId,
           expectedNodeId: device.nodeId,
-          crossChannelSenderId:
-            device.nodeId && device.allowCrossChannelAccess ? peer.userId : undefined,
+          privateRequesterSenderId: device.nodeId ? peer.userId : undefined,
+          allowCrossChannelAccess: Boolean(device.nodeId && device.allowCrossChannelAccess),
         }
       : undefined;
   };
@@ -81,7 +81,7 @@ export function createMatrixNodeCarrierAdmission(params: {
     // Explicitly shared links can also be opened separately outside a call.
     const bindCall = () => params.bindNodeConnection(peer, roomId, original.agentId);
     const connection = original.expectedNodeId ? bindCall() : undefined;
-    if (original.expectedNodeId && !connection && !original.crossChannelSenderId) {
+    if (original.expectedNodeId && !connection && !original.allowCrossChannelAccess) {
       return undefined;
     }
     const audience = await params.preparePrivateAudience({ roomId, senderId: peer.userId });
@@ -90,7 +90,8 @@ export function createMatrixNodeCarrierAdmission(params: {
       return (
         current?.agentId === original.agentId &&
         current.expectedNodeId === original.expectedNodeId &&
-        current.crossChannelSenderId === original.crossChannelSenderId
+        current.privateRequesterSenderId === original.privateRequesterSenderId &&
+        current.allowCrossChannelAccess === original.allowCrossChannelAccess
       );
     };
     if (!audience || connection?.signal.aborted || !isSameAdmission()) {
@@ -101,7 +102,7 @@ export function createMatrixNodeCarrierAdmission(params: {
       signal: connection?.signal,
       assertInvokeSession(sessionKey: string) {
         // A separately approved persistent link can still serve an admitted call.
-        const call = connection ?? (original.crossChannelSenderId ? bindCall() : undefined);
+        const call = connection ?? (original.allowCrossChannelAccess ? bindCall() : undefined);
         if (!call) {
           throw new Error("Matrix Node requires the current Assistant Voice session");
         }

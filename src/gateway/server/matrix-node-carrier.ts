@@ -21,7 +21,8 @@ export type MatrixNodeCarrierOwner = {
   peerKey: string;
   agentId: string;
   expectedNodeId?: string;
-  crossChannelSenderId?: string;
+  privateRequesterSenderId?: string;
+  allowCrossChannelAccess?: boolean;
   /** Throws unless the Gateway-verified session still owns this live RTC admission. */
   assertInvokeSession?(sessionKey: string): void;
   roomId: string;
@@ -34,7 +35,10 @@ export type MatrixNodeCarrierOwner = {
   onClose(): void;
 };
 
-export type MatrixNodeCarrierHostOwner = Omit<MatrixNodeCarrierOwner, "crossChannelSenderId"> & {
+export type MatrixNodeCarrierHostOwner = Omit<
+  MatrixNodeCarrierOwner,
+  "privateRequesterSenderId"
+> & {
   accountId: string;
   privateRequester?: Readonly<{ profileId: string; isCurrent(): boolean }>;
 };
@@ -58,7 +62,7 @@ export function attachMatrixNodeCarrier(
       throw new Error("Matrix node carrier revoked");
     }
     owner.assertCurrent();
-    if (owner.privateRequester && !owner.privateRequester.isCurrent()) {
+    if (owner.allowCrossChannelAccess && !owner.privateRequester?.isCurrent()) {
       throw new Error("Matrix Node owner person profile changed");
     }
   };
@@ -69,7 +73,8 @@ export function attachMatrixNodeCarrier(
     accountId: owner.accountId,
     expectedNodeId: owner.expectedNodeId,
     assertInvokeSession: owner.assertInvokeSession?.bind(owner),
-    privateRequesterProfileId: owner.privateRequester?.profileId,
+    privateRequester: owner.privateRequester,
+    allowCrossChannelAccess: owner.allowCrossChannelAccess,
     isCurrent: () => {
       current();
       return true;

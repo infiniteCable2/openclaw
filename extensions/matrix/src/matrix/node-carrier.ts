@@ -20,7 +20,8 @@ type GatewayLink = {
 type MatrixNodeAdmission = {
   agentId: string;
   expectedNodeId?: string;
-  crossChannelSenderId?: string;
+  privateRequesterSenderId?: string;
+  allowCrossChannelAccess?: boolean;
   signal?: AbortSignal;
   assertCurrent(): void;
   assertInvokeSession(sessionKey: string): void;
@@ -31,7 +32,8 @@ export type MatrixNodeCarrierAttach = (owner: {
   agentId: string;
   expectedNodeId?: string;
   roomId: string;
-  crossChannelSenderId?: string;
+  privateRequesterSenderId?: string;
+  allowCrossChannelAccess?: boolean;
   signal: AbortSignal;
   assertCurrent(): void;
   assertInvokeSession(sessionKey: string): void;
@@ -163,7 +165,8 @@ export function registerMatrixNodeCarrier(params: {
         agentId: admission.agentId,
         expectedNodeId: admission.expectedNodeId,
         roomId: address.room_id,
-        crossChannelSenderId: admission.crossChannelSenderId,
+        privateRequesterSenderId: admission.privateRequesterSenderId,
+        allowCrossChannelAccess: admission.allowCrossChannelAccess,
         signal: link.controller.signal,
         assertCurrent,
         assertInvokeSession(sessionKey) {

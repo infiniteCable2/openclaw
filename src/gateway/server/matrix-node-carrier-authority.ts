@@ -9,7 +9,8 @@ export type MatrixNodeCarrierBinding = Readonly<{
   expectedNodeId?: string;
   assertInvokeSession?: (sessionKey: string) => void;
 
-  privateRequesterProfileId?: string;
+  privateRequester?: Readonly<{ profileId: string; isCurrent(): boolean }>;
+  allowCrossChannelAccess?: boolean;
   isCurrent: () => boolean;
 }>;
 
@@ -35,7 +36,7 @@ export function captureMatrixNodeCarrierRunScope(params: {
   ) {
     return undefined;
   }
-  const { assertInvokeSession, privateRequesterProfileId } = binding;
+  const { assertInvokeSession, privateRequester, allowCrossChannelAccess } = binding;
   const origin = readMatrixConversationRunOrigin(identity.operationalRunInstance);
   const sessionKey = identity.sessionKey;
   if (
@@ -62,10 +63,10 @@ export function captureMatrixNodeCarrierRunScope(params: {
     };
   }
   const { isPrivateRequesterProfile } = params;
-  if (privateRequesterProfileId && isPrivateRequesterProfile) {
+  if (allowCrossChannelAccess && privateRequester && isPrivateRequesterProfile) {
     return () => {
       try {
-        return binding.isCurrent() && isPrivateRequesterProfile(privateRequesterProfileId);
+        return binding.isCurrent() && isPrivateRequesterProfile(privateRequester.profileId);
       } catch {
         return false;
       }

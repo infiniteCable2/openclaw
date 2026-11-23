@@ -352,11 +352,11 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
           captureActiveEmbeddedRunPersonalToolParticipants(
             identity,
           )?.participants?.isPrivateRequesterProfile(profileId) === true;
-        const privateProfileId = matrixBinding?.privateRequesterProfileId;
+        const privateRequester = matrixBinding?.privateRequester;
         const isGoEPrivateDispatchCurrent = () =>
-          privateProfileId !== undefined &&
+          privateRequester?.isCurrent() === true &&
           isGoECallerCurrent?.() === true &&
-          isPrivateRequesterProfile(privateProfileId);
+          isPrivateRequesterProfile(privateRequester.profileId);
         const matrixDispatch =
           matrixBinding &&
           captureMatrixNodeCarrierDispatch({
@@ -367,7 +367,7 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
             command,
             sessionKey,
             isPrivateRequesterProfile:
-              privateProfileId && identity ? isPrivateRequesterProfile : undefined,
+              privateRequester && identity ? isPrivateRequesterProfile : undefined,
             isRequestCurrent: () =>
               !invocationLifecycle.aborted &&
               (invokeDeadlineAtMs === undefined || performance.now() < invokeDeadlineAtMs) &&

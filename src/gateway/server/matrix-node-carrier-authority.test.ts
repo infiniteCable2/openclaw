@@ -53,21 +53,32 @@ describe("Matrix Node access outside an Assistant Voice call", () => {
     };
     channel?.attachGateway(owner);
     expect(resolveProfile).not.toHaveBeenCalled();
-    const requestedOwner = { ...owner, crossChannelSenderId: "@owner:example.org" };
+    const requestedOwner = { ...owner, privateRequesterSenderId: "@owner:example.org" };
     resolveProfile.mockResolvedValueOnce(undefined);
-    await expect(channel?.attachGateway(requestedOwner)).rejects.toThrow("no current verified");
-    expect(attach).toHaveBeenCalledTimes(1);
+    await channel?.attachGateway(requestedOwner);
+    expect(attach.mock.lastCall?.[0].privateRequester).toBeUndefined();
     resolveProfile.mockResolvedValueOnce({
       linked: { profileId: "owner" },
       isCurrent: () => ownerCurrent,
     });
     await channel?.attachGateway(requestedOwner);
+    expect(attach.mock.lastCall?.[0].privateRequester?.profileId).toBe("owner");
+    expect(attach.mock.lastCall?.[0].allowCrossChannelAccess).toBeUndefined();
+    const sharedOwner = { ...requestedOwner, allowCrossChannelAccess: true };
+    resolveProfile.mockResolvedValueOnce(undefined);
+    await expect(channel?.attachGateway(sharedOwner)).rejects.toThrow("no current verified");
+    expect(attach).toHaveBeenCalledTimes(3);
+    resolveProfile.mockResolvedValueOnce({
+      linked: { profileId: "owner" },
+      isCurrent: () => ownerCurrent,
+    });
+    await channel?.attachGateway(sharedOwner);
     expect(resolveProfile).toHaveBeenLastCalledWith({
       channelId: "matrix",
       accountId: "secondary",
       senderId: "@owner:example.org",
     });
-    expect(attach).toHaveBeenCalledTimes(2);
+    expect(attach).toHaveBeenCalledTimes(4);
     const requester = attach.mock.lastCall?.[0].privateRequester;
     expect(requester?.profileId).toBe("owner");
     expect(requester?.isCurrent()).toBe(true);
@@ -98,7 +109,8 @@ describe("Matrix Node access outside an Assistant Voice call", () => {
       roomId: "!room:example.org",
       accountId: "default",
       expectedNodeId: "node",
-      privateRequesterProfileId: "owner",
+      privateRequester: { profileId: "owner", isCurrent: () => true },
+      allowCrossChannelAccess: true,
       isCurrent: () => live,
     };
     const attempt = {
@@ -113,9 +125,8 @@ describe("Matrix Node access outside an Assistant Voice call", () => {
     const capture = (overrides: Partial<typeof attempt> = {}) =>
       captureMatrixNodeCarrierDispatch({ ...attempt, ...overrides });
 
-    expect(
-      capture({ binding: { ...binding, privateRequesterProfileId: undefined } }),
-    ).toBeUndefined();
+    expect(capture({ binding: { ...binding, privateRequester: undefined } })).toBeUndefined();
+    expect(capture({ binding: { ...binding, allowCrossChannelAccess: false } })).toBeUndefined();
     expect(capture({ isPrivateRequesterProfile: () => false })).toBeUndefined();
     expect(capture({ identity: { ...identity, agentId: "another-agent" } })).toBeUndefined();
     expect(capture({ nodeId: "another-node" })).toBeUndefined();
