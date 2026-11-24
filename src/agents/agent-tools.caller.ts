@@ -47,7 +47,7 @@ export function createCodingToolsGatewayCaller(params: {
   const assertDelegationCurrent = options?.config
     ? captureDelegatedToolPolicyAssertion(options.config, delegatedPolicy)
     : undefined;
-  const allowedWithoutDelegation = (tool: Parameters<typeof getPluginToolMeta>[0]) =>
+  const allowedWithoutDelegation = (tool: AnyAgentTool) =>
     createToolPolicyMatcher(
       expandPolicyWithPluginGroups(
         capabilityProfile.policy.inheritedToolPolicyForSpawn,

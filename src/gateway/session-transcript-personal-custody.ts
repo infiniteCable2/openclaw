@@ -31,8 +31,8 @@ import type { InternalSessionEntry } from "../config/sessions/types.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import { PersonalConversationReadRefusedError } from "./session-mutation-authorization-error.js";
 import { resolveSessionVisibility } from "./session-sharing-policy.js";
-import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
 import {
+  preparePersonalSessionFacts,
   releasePersonalReadCustody,
   type PersonalReadCustody,
   type PersonalAdmissionBinding,
@@ -439,7 +439,17 @@ export async function preparePersonalConversationReadInternal(
   };
   const hold = async (request: { agentId: string; sessionKey: string }, root: boolean) => {
     assertCurrent();
-    const held = await prepareSessionMutationFacts({ cfg: policy(), ...request });
+    const historical =
+      !root &&
+      request.sessionKey !== target.sessionKey &&
+      custodyContributions.some((reference) => reference.source.sessionKey === request.sessionKey)
+        ? reads[0]?.expected.readSource
+        : undefined;
+    const held = await preparePersonalSessionFacts(
+      { cfg: policy(), ...request },
+      historical,
+      assertCurrent,
+    );
     releases.push(() => held.release());
     assertCurrent();
     const facts = held.readCurrent(policy());

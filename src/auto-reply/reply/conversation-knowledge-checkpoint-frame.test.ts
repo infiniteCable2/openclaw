@@ -86,6 +86,44 @@ describe("root preparation custody", () => {
     expect(stale.release).toHaveBeenCalledOnce();
   });
 
+  it("lets an aborted caller leave while its asynchronous check still owns the frame", async () => {
+    const slot =
+      createConversationKnowledgeCheckpointFrameSlot<ReturnType<typeof fixture>["frame"]>();
+    const original = fixture();
+    const entered = createDeferredCore();
+    const finish = Promise.withResolvers<boolean>();
+    const caller = new AbortController();
+    const reason = new Error("Synthetic caller stopped");
+    slot.publish(original.frame, original.release);
+    const waiting = slot.waitFor(
+      () => {
+        entered.resolve();
+        return finish.promise;
+      },
+      () => undefined,
+      caller.signal,
+    );
+    const outcome = waiting.then(
+      () => "unexpected frame",
+      (error: unknown) => error,
+    );
+    try {
+      await entered.promise;
+      caller.abort(reason);
+      slot.clear();
+      const nextTick = new Promise((resolve) => {
+        setImmediate(() => resolve("still waiting"));
+      });
+      expect(await Promise.race([outcome, nextTick])).toBe(reason);
+      expect(original.release).not.toHaveBeenCalled();
+    } finally {
+      finish.resolve(true);
+      await outcome;
+      await slot.settle(true);
+    }
+    expect(original.release).toHaveBeenCalledOnce();
+  });
+
   it("keeps custody during asynchronous coverage and selects the newer publication", async () => {
     const slot =
       createConversationKnowledgeCheckpointFrameSlot<ReturnType<typeof fixture>["frame"]>();
@@ -169,5 +207,31 @@ describe("root preparation custody", () => {
     await slot.settle(true);
     expect(source.frame.release).toHaveBeenCalledOnce();
     expect(source.release).toHaveBeenCalledTimes(2);
+  });
+
+  it("finishes a frame wait only for the exhausted snapshot of the current preparation", async () => {
+    const slot =
+      createConversationKnowledgeCheckpointFrameSlot<ReturnType<typeof fixture>["frame"]>();
+    const preparing = createDeferredCore();
+    const getPreparation = () => preparing.promise;
+    const version = { generation: "root-generation", rawSeq: 11, updatedAt: 42 };
+    const exact = slot.waitFor(() => true, getPreparation, undefined, version);
+    const newer = slot.waitFor(() => true, getPreparation, undefined, { ...version, rawSeq: 12 });
+    const rewritten = slot.waitFor(() => true, getPreparation, undefined, {
+      ...version,
+      generation: "generation-after-rewrite",
+    });
+    try {
+      slot.noteUnavailable(version, preparing.promise);
+      const nextTick = new Promise((resolve) => {
+        setImmediate(() => resolve("still waiting"));
+      });
+      expect(await Promise.race([exact, nextTick])).toBeUndefined();
+      expect(await Promise.race([newer, nextTick])).toBe("still waiting");
+      expect(await Promise.race([rewritten, nextTick])).toBe("still waiting");
+    } finally {
+      preparing.resolve();
+      await Promise.allSettled([exact, newer, rewritten]);
+    }
   });
 });

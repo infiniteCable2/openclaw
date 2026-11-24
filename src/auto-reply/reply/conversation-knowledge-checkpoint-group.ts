@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { conversationKnowledgeParticipantIdentity } from "../../config/sessions/conversation-audience.js";
 import type { PreparedConversationBranchCreation } from "../../config/sessions/conversation-branch-creation.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
@@ -24,7 +25,14 @@ import {
   type PreparedPersonalConversationContributionGroup,
 } from "../../gateway/session-transcript-personal-read.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
-import type { ConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
+import {
+  validateCheckpointCachedPackets,
+  type InvalidCheckpointCachedPacket,
+} from "./conversation-knowledge-checkpoint-range.js";
+import type {
+  ConversationKnowledgeSourceCache,
+  PreparedConversationKnowledgePacket,
+} from "./conversation-knowledge-source-cache.js";
 import {
   publishPreparedConversationKnowledgeRoot,
   type ConversationKnowledgeHeldSource,
@@ -301,4 +309,116 @@ export async function prepareCheckpointGroupRead(params: {
     finish();
     throw error;
   }
+}
+
+type SelectedCheckpointGroup =
+  | Awaited<ReturnType<typeof prepareCheckpointOwnGroup>>
+  | Awaited<ReturnType<typeof prepareCheckpointGroupRead>>;
+
+export async function validateCheckpointGroupRanges(params: {
+  selectedGroup: SelectedCheckpointGroup;
+  contributions: readonly ConversationKnowledgeReference[];
+  cachedPackets?: ReadonlyMap<string, PreparedConversationKnowledgePacket>;
+  invalidCached?: InvalidCheckpointCachedPacket;
+  workCheck(): void;
+  signal: AbortSignal;
+}) {
+  const { selectedGroup, contributions, cachedPackets, invalidCached, workCheck, signal } = params;
+  const { source, assertCurrent: assertSource } = selectedGroup;
+  if (!source?.lifecycleRevision) {
+    throw new SessionTranscriptReadFenceError("Checkpoint grouped source lifecycle is unavailable");
+  }
+  const selectedRanges = [];
+  for (const [index, reference] of contributions.entries()) {
+    if (index > 0 && index % 8 === 0) {
+      await setImmediate(undefined, { signal });
+      workCheck();
+    }
+    const range = selectedGroup.selectContribution(reference);
+    if (!range?.version) {
+      throw new SessionTranscriptReadFenceError("Checkpoint grouped source range is unavailable");
+    }
+    selectedRanges.push({
+      reference,
+      range: { ...range, version: range.version },
+      packet: cachedPackets?.get(conversationKnowledgeContributionId(reference)),
+    });
+  }
+  if (
+    !(await validateCheckpointCachedPackets({
+      selected: selectedRanges,
+      target: {
+        agentId: source.agentId,
+        sessionKey: source.canonicalKey,
+        sessionId: source.sessionId,
+        storePath: source.readSource.path,
+      },
+      signal,
+      check: () => {
+        workCheck();
+        assertSource();
+      },
+      invalidCached,
+    }))
+  ) {
+    throw new SessionTranscriptReadFenceError("Checkpoint cached source range or prefix changed");
+  }
+
+  return { source, selectedRanges, sourceLifecycleRevision: source.lifecycleRevision };
+}
+
+export function createCheckpointForeignGroupReads(
+  params: Omit<Parameters<typeof prepareCheckpointGroupRead>[0], "contributions"> & {
+    workSignal: AbortSignal;
+  },
+) {
+  return {
+    read: (contributions: readonly ConversationKnowledgeReference[]) =>
+      prepareCheckpointGroupRead({ ...params, contributions }),
+    async repair(
+      contributions: readonly ConversationKnowledgeReference[],
+      changed: ReadonlySet<string>,
+      cachedPackets: ReadonlyMap<string, PreparedConversationKnowledgePacket> | undefined,
+      invalidCached: InvalidCheckpointCachedPacket,
+    ) {
+      const neighbors = contributions.filter((reference) => {
+        const from = reference.readRange?.admission ?? reference.privateAudience?.admission;
+        const through = reference.readRange?.through ?? reference.through;
+        return (
+          cachedPackets?.has(conversationKnowledgeContributionId(reference)) &&
+          !changed.has(through.entryId) &&
+          (!from || !changed.has(from.entryId))
+        );
+      });
+      if (!neighbors.length) {
+        return;
+      }
+      // Fresh custody, no retained proofs or partial publication from this probe.
+      const readCount = params.reads.length;
+      const group = await prepareCheckpointGroupRead({
+        ...params,
+        contributions: neighbors,
+        cache: undefined,
+        manifest: undefined,
+      });
+      try {
+        await validateCheckpointGroupRanges({
+          selectedGroup: group,
+          contributions: neighbors,
+          cachedPackets,
+          invalidCached,
+          workCheck: params.workCheck,
+          signal: params.workSignal,
+        });
+      } finally {
+        try {
+          for (const borrowed of params.reads.slice(readCount).toReversed()) {
+            params.drop(borrowed);
+          }
+        } finally {
+          group.finish();
+        }
+      }
+    },
+  };
 }

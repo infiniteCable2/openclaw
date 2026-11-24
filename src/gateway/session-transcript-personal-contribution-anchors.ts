@@ -7,6 +7,12 @@ import type { TranscriptEntryAnchor } from "../config/sessions/transcript-entry-
 import { PersonalConversationReadRefusedError } from "./session-mutation-authorization-error.js";
 import type { PersonalReadSource } from "./session-transcript-personal-admission.js";
 
+export class PersonalConversationContributionAnchorsChangedError extends PersonalConversationReadRefusedError {
+  constructor(readonly entryIds: ReadonlySet<string>) {
+    super("Contribution group exact native anchor changed");
+  }
+}
+
 export type PersonalContributionAnchorPrefix = {
   source: PersonalReadSource;
   version: SessionTranscriptContextVersion;
@@ -134,6 +140,7 @@ async function validateAnchors(
       anchors.set(anchor.entryId, anchor);
     }
   }
+  const changedAnchors = new Set<string>();
   for (const expected of expectedAnchors) {
     const actual = anchors.get(expected.entryId);
     if (
@@ -153,10 +160,11 @@ async function validateAnchors(
         ] as const
       ).some((field) => actual[field] !== expected[field])
     ) {
-      throw new PersonalConversationReadRefusedError(
-        "Contribution group exact native anchor changed",
-      );
+      changedAnchors.add(expected.entryId);
     }
+  }
+  if (changedAnchors.size > 0) {
+    throw new PersonalConversationContributionAnchorsChangedError(changedAnchors);
   }
   for (let index = 0; index < expectedAnchors.length; index += 2) {
     const from = expectedAnchors[index]!,

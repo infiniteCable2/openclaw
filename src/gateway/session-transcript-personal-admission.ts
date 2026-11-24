@@ -4,7 +4,10 @@ import type { CapturedSessionEntryReadSource } from "../config/sessions/session-
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import { throwSqliteLifecycleErrors } from "../infra/sqlite-lifecycle-errors.js";
-import type { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
+import { PersonalConversationReadRefusedError } from "./session-mutation-authorization-error.js";
+import { ConfirmedCanonicalSessionAbsenceError } from "./session-sharing-facts-diagnostic.js";
+import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
+import type { SessionFactsRequest } from "./session-sharing-target.types.js";
 import type { createPersonalParticipantCustody } from "./session-transcript-personal-participant.js";
 
 export type PersonalReadSource = Readonly<{
@@ -58,4 +61,27 @@ export function releasePersonalReadCustody(custody: PersonalReadCustody, retireV
     }
   }
   throwSqliteLifecycleErrors(errors, "Personal transcript read release failed");
+}
+
+/** A missing historic donor does not make the recipient or native store unavailable. */
+export async function preparePersonalSessionFacts(
+  params: SessionFactsRequest,
+  historicalSource: CapturedSessionEntryReadSource | undefined,
+  assertCurrent: () => void,
+) {
+  try {
+    return await prepareSessionMutationFacts(params);
+  } catch (error) {
+    if (
+      historicalSource &&
+      error instanceof ConfirmedCanonicalSessionAbsenceError &&
+      error.matches(params.sessionKey, historicalSource)
+    ) {
+      assertCurrent();
+      throw new PersonalConversationReadRefusedError(
+        "Historical personal contribution has no current source row",
+      );
+    }
+    throw error;
+  }
 }

@@ -38,6 +38,7 @@ export async function backupDoctorSqliteRepair(
     | "session-window"
     | "transcript-headers"
     | "transcript-labels"
+    | "conversation-retirement"
     | "media-persistence"
     | "cold-navigation"
     | "transcript-directives",

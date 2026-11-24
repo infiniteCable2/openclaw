@@ -1,4 +1,5 @@
 import type { PreparedConversationKnowledgeInitialFrame } from "../../config/sessions/session-initial-context-frame.js";
+import type { SessionTranscriptContextVersion } from "../../config/sessions/session-transcript-context-version.types.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { createDeferredCore, type Deferred } from "../../shared/deferred.js";
 
@@ -19,6 +20,12 @@ export function createConversationKnowledgeCheckpointFrameSlot<
 >() {
   let current: RetainedFrame<Frame> | undefined;
   const retired = new Set<RetainedFrame<Frame>>();
+  let unavailable:
+    | {
+        version: Readonly<SessionTranscriptContextVersion>;
+        preparation: Promise<void>;
+      }
+    | undefined;
   const observers = new Set<() => void>();
   const retire = (value: RetainedFrame<Frame>) => {
     value.retired = true;
@@ -80,7 +87,22 @@ export function createConversationKnowledgeCheckpointFrameSlot<
     };
   };
   return {
+    beginPreparation() {
+      unavailable = undefined;
+    },
+    noteUnavailable(
+      version: Readonly<SessionTranscriptContextVersion> | undefined,
+      preparation: Promise<void> | undefined,
+    ) {
+      if (version?.generation && version.rawSeq !== null && preparation) {
+        unavailable = { version, preparation };
+        for (const notify of observers) {
+          notify();
+        }
+      }
+    },
     publish(frame: Frame, release: () => Promise<void>) {
+      unavailable = undefined;
       frame.assertCurrent();
       if (current) {
         retire(current);
@@ -95,6 +117,7 @@ export function createConversationKnowledgeCheckpointFrameSlot<
       matches: (frame: Frame) => boolean | Promise<boolean>,
       currentPreparation: () => Promise<void> | undefined,
       signal?: AbortSignal,
+      wanted?: Readonly<SessionTranscriptContextVersion>,
     ) {
       let observed: Promise<void> | undefined;
       let finished: Promise<void> | undefined;
@@ -111,9 +134,21 @@ export function createConversationKnowledgeCheckpointFrameSlot<
           const candidate = snapshot !== examined ? acquire() : undefined;
           if (candidate) {
             let keep = false;
+            let matching: Promise<boolean> | undefined;
             try {
               const match = matches(candidate.frame);
-              const covered = typeof match === "boolean" ? match : await match;
+              let covered: boolean;
+              if (typeof match === "boolean") {
+                covered = match;
+              } else {
+                matching = match;
+                covered = await racePromiseWithAbortSignal(
+                  match,
+                  signal,
+                  (aborted) => aborted.reason,
+                );
+                matching = undefined;
+              }
               signal?.throwIfAborted();
               keep = covered && current === snapshot;
               if (keep) {
@@ -121,7 +156,13 @@ export function createConversationKnowledgeCheckpointFrameSlot<
               }
             } finally {
               if (!keep) {
-                await candidate.release();
+                if (matching && signal?.aborted) {
+                  // The caller can leave while a native coverage read still owns the borrow.
+                  const release = () => candidate.release();
+                  void matching.then(release, release).catch(() => {});
+                } else {
+                  await candidate.release();
+                }
               }
             }
             examined = snapshot;
@@ -130,7 +171,15 @@ export function createConversationKnowledgeCheckpointFrameSlot<
             continue;
           }
           const preparation = currentPreparation();
-          if (!preparation || preparation === finished) {
+          if (
+            !preparation ||
+            preparation === finished ||
+            (wanted?.generation &&
+              wanted.rawSeq !== null &&
+              unavailable?.preparation === preparation &&
+              unavailable.version.generation === wanted.generation &&
+              unavailable.version.rawSeq === wanted.rawSeq)
+          ) {
             return undefined;
           }
           if (preparation !== observed) {
@@ -150,6 +199,7 @@ export function createConversationKnowledgeCheckpointFrameSlot<
       }
     },
     clear() {
+      unavailable = undefined;
       if (current) {
         retire(current);
       }

@@ -161,6 +161,46 @@ it("does not create state or identity tables while resolving absent links", asyn
   expect(tableExists(db, "user_profile_identities")).toBe(false);
 });
 
+it("reuses an exact unlinked subject until a native link publication changes it", async () => {
+  const profile = ensureProfileForEmail("confirmed-absence@example.test", options);
+  const execute = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
+  expect(await prepareUserChannelIdentityAuthority(identity, options)).toBeUndefined();
+  expect(await prepareUserChannelIdentityAuthority(identity, options)).toBeUndefined();
+  expect(execute).toHaveBeenCalledOnce();
+
+  const anotherAccount = { ...identity, accountId: "another-team-bot" };
+  expect(await prepareUserChannelIdentityAuthority(anotherAccount, options)).toBeUndefined();
+  expect(execute).toHaveBeenCalledTimes(2);
+
+  await changeCanonicalUserChannelIdentity("link", profile.id, identity, options);
+  const linked = await prepareUserChannelIdentityAuthority(identity, options);
+  expect(linked?.linked.profileId).toBe(profile.id);
+  expect(linked?.isCurrent()).toBe(true);
+  await changeCanonicalUserChannelIdentity("unlink", profile.id, identity, options);
+  expect(linked?.isCurrent()).toBe(false);
+  execute.mockClear();
+  expect(await prepareUserChannelIdentityAuthority(identity, options)).toBeUndefined();
+  expect(await prepareUserChannelIdentityAuthority(identity, options)).toBeUndefined();
+  expect(execute).toHaveBeenCalledOnce();
+});
+
+it("does not cache a missing worker response or a negative reply raced by a link commit", async () => {
+  const profile = ensureProfileForEmail("worker-race@example.test", options);
+  const read = stateReads.executeExistingOpenClawStateRead;
+  const execute = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
+  execute.mockResolvedValueOnce(undefined);
+  expect(await prepareUserChannelIdentityAuthority(identity, options)).toBeUndefined();
+  execute.mockImplementationOnce(async (...args) => {
+    const reply = await read(...args);
+    await changeCanonicalUserChannelIdentity("link", profile.id, identity, options);
+    return reply;
+  });
+  expect((await prepareUserChannelIdentityAuthority(identity, options))?.linked.profileId).toBe(
+    profile.id,
+  );
+  expect(execute).toHaveBeenCalledTimes(3);
+});
+
 it("releases an expired commit fence before retrying a channel identity change", async () => {
   const profile = ensureProfileForEmail("owner@example.test", options);
   linkUserChannelIdentity(profile.id, identity, options);

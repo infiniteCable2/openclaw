@@ -31,6 +31,7 @@ import {
   createDoctorHealthContribution,
   legacyOwnedRepair,
   recordDoctorHealthWarnings,
+  renderStructuredHealthFindings,
 } from "./doctor-health-contribution.js";
 import { appContainerSpawnCheck, nativeStatusCheck } from "./doctor-native-status-check.js";
 
@@ -555,6 +556,41 @@ export function resolveInitialDoctorHealthContributions(params: {
         });
       },
     ),
+    createDoctorHealthContribution("doctor:conversation-branches", "Conversation branches", {
+      updateWork: { kind: "inspection", scope: "agent" },
+      healthChecks: {
+        description:
+          "Inspect native conversation branch membership, root references, checkpoints, and channel identity links.",
+        defaultEnabled: false,
+        async detect(ctx) {
+          const { detectConversationBranchFindings } =
+            await import("../commands/doctor-conversation-branches.js");
+          return detectConversationBranchFindings({ cfg: ctx.cfg, env: ctx.env });
+        },
+      },
+      async run(ctx) {
+        if (!ctx.sourceConfigValid) {
+          return;
+        }
+        const { detectConversationBranchFindings } =
+          await import("../commands/doctor-conversation-branches.js");
+        const findings = await detectConversationBranchFindings({ cfg: ctx.cfg, env: ctx.env });
+        recordDoctorHealthWarnings(ctx, findings);
+        renderStructuredHealthFindings(ctx, findings);
+        const info = findings.filter((finding) => finding.severity === "info");
+        if (info.length > 0) {
+          note(
+            info
+              .map(
+                (finding) =>
+                  `- [${finding.target}] ${finding.message}${finding.fixHint ? `\n  ${finding.fixHint}` : ""}`,
+              )
+              .join("\n"),
+            "Conversation branches",
+          );
+        }
+      },
+    }),
     createDoctorHealthContribution("doctor:session-snapshots", "Session snapshots", {
       updateWork: { kind: "inspection", scope: "agent" },
       healthChecks: {

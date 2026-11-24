@@ -65,6 +65,9 @@ it("distinguishes current routing changes from storage preparation failure", asy
     }
     await expect(
       prepareSessionMutationFacts({ cfg, ...target, sessionKey: "agent:main:missing" }),
-    ).rejects.toBeInstanceOf(SessionMutationFactsUnavailableError);
+    ).rejects.toMatchObject({
+      name: "SessionMutationFactsUnavailableError",
+      diagnostic: { reason: "canonical-entry-absent" },
+    });
   });
 });

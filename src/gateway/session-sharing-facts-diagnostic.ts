@@ -1,4 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
 import type { retainPreparedSessionSharingFacts } from "../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
+import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { SessionRowChange } from "../sessions/session-row-changes.js";
 import { SessionMutationFactsUnavailableError } from "./session-sharing-incognito.js";
@@ -26,11 +28,28 @@ export type SessionFactsFailure = {
     | "invalidated"
     | "routing-changed"
     | "retained-read-unavailable"
+    | "canonical-entry-absent"
     | "source-identity-changed";
   firstInvalidation?: SessionFactsInvalidation;
   /** Observational only: a pending publication is not a revoked permission. */
   publicationPending?: boolean;
 };
+
+/** The native owner selected an existing store and confirmed absence for this exact key. */
+export class ConfirmedCanonicalSessionAbsenceError extends SessionMutationFactsUnavailableError {
+  readonly #canonicalKey: string;
+  readonly #source: CapturedSessionEntryReadSource;
+
+  constructor(canonicalKey: string, source: CapturedSessionEntryReadSource) {
+    super({ diagnostic: { reason: "canonical-entry-absent" } });
+    this.#canonicalKey = canonicalKey;
+    this.#source = source;
+  }
+
+  matches(canonicalKey: string, source: CapturedSessionEntryReadSource): boolean {
+    return this.#canonicalKey === canonicalKey && isDeepStrictEqual(this.#source, source);
+  }
+}
 
 const scopes = new Set([
   "automation",

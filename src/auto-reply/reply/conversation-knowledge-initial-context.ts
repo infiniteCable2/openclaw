@@ -189,6 +189,7 @@ export async function prepareConversationKnowledgeInitialContext(params: {
           selection,
           coversCreation,
           params.signal,
+          creation.rootVersion,
         );
         if (frame) {
           const acquired = frame;

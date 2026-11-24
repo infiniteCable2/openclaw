@@ -5,7 +5,7 @@ import type { RegisteredStateReadCommand } from "./openclaw-state-read-operation
 import type { OpenClawStateReadCommand } from "./openclaw-state-read.types.js";
 import {
   listUserChannelIdentitiesInDatabase,
-  resolveUserChannelIdentityInDatabase,
+  readUserChannelIdentityResolutionInDatabase,
 } from "./user-channel-identities.js";
 import { readUserChannelIdentityResult } from "./user-channel-identities.worker.js";
 import { readUserProfileCatalogIdentity } from "./user-profile-catalog-identity.read.js";
@@ -58,7 +58,7 @@ export function readUserProfileCommand(
     case "userProfiles.channelIdentity.resolve":
       return {
         type: command.type,
-        linked: resolveUserChannelIdentityInDatabase(db, command.identity),
+        ...readUserChannelIdentityResolutionInDatabase(db, command.identity),
       };
     case "userProfiles.reconcile":
     case "userProfiles.catalog":

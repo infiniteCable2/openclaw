@@ -26,6 +26,7 @@ import type { ConversationKnowledgeBranch } from "../../config/sessions/conversa
 import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
 import type { PreparedConversationKnowledgeInitialFrame } from "../../config/sessions/session-initial-context-frame.js";
 import type { SessionParticipantIdentity } from "../../config/sessions/session-participant-identity.js";
+import type { SessionTranscriptContextVersion } from "../../config/sessions/session-transcript-context-version.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationPrivateAudience } from "../../sessions/conversation-private-audience.js";
@@ -156,6 +157,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         ) {
           continue;
         }
+        currentBroker = broker;
         return { broker, audience: broker.audience };
       } catch {
         brokers.delete(broker);
@@ -163,9 +165,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     }
     throw new Error("Checkpoint root has no current private broker");
   };
-  const assertCurrent = () => {
-    selectBroker();
-  };
+  let currentBroker: Registration | undefined;
   // The caller installs its first proof before native scheduling begins.
   const first = { ...initial };
   brokers.add(first);
@@ -173,13 +173,14 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
     target: { ...initial.branch, env: initial.env },
     workLaneOwner: "conversation-knowledge-checkpoints",
     settle,
-    assertCurrent,
+    assertCurrent: selectBroker,
     watchesSource: (sessionKey) => sourceSessionKeys.has(sessionKey),
     clear: () => {
       inFlight?.abort();
       authorityLifetime.abort();
       frames.clear();
       brokers.clear();
+      currentBroker = undefined;
       latest = undefined;
       planning = undefined;
       tail.clear();
@@ -192,6 +193,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
       sourceCache.clear();
     },
     async prepare(parentSignal) {
+      frames.beginPreparation();
       await settle();
       parentSignal.throwIfAborted();
       const selected = selectBroker();
@@ -341,6 +343,8 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
                 loggedFrameRevision = tail.revision;
                 notify("initial-frame");
               }
+            } else {
+              frames.noteUnavailable(preparedSources.frameRootVersion, owner.currentPreparation());
             }
             return false;
           } finally {
@@ -612,9 +616,13 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         owner.assertCurrent();
         return frames.acquire();
       },
-      waitForInitialFrame(matches: InitialFrameMatch, signal?: AbortSignal) {
+      waitForInitialFrame(
+        matches: InitialFrameMatch,
+        signal?: AbortSignal,
+        wanted?: Readonly<SessionTranscriptContextVersion>,
+      ) {
         owner.assertCurrent();
-        return frames.waitFor(matches, owner.currentPreparation, signal);
+        return frames.waitFor(matches, owner.currentPreparation, signal, wanted);
       },
       async close() {
         if (!active) {
@@ -636,6 +644,7 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
   return {
     first: registration(first),
     add(params: Registration) {
+      const incumbent = currentBroker;
       const broker = { ...params };
       brokers.add(broker);
       try {
@@ -644,7 +653,11 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
         brokers.delete(broker);
         throw error;
       }
-      owner.request();
+      // Joining does not supersede the selected broker's already accepted work.
+      // Reopen after settlement or broker replacement still wakes preparation.
+      if (currentBroker !== incumbent || !owner.currentPreparation()) {
+        owner.request();
+      }
       return registration(broker);
     },
   };
@@ -685,8 +698,9 @@ export function waitForPreparedConversationKnowledgeInitialFrame(
   params: Parameters<typeof selectPreparedRootOwner>[0],
   matches: InitialFrameMatch,
   signal?: AbortSignal,
+  wanted?: Readonly<SessionTranscriptContextVersion>,
 ) {
-  return selectPreparedRootOwner(params)?.waitForInitialFrame(matches, signal);
+  return selectPreparedRootOwner(params)?.waitForInitialFrame(matches, signal, wanted);
 }
 
 /** Shared root preparation is independent of any one call and never changes recipient history. */

@@ -1,4 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import {
   executeExistingOpenClawStateRead,
@@ -236,6 +237,10 @@ export async function authorizeCanonicalUserChannelIdentity(
   return result.reference;
 }
 
+// Keep only native, current evidence of an unlinked subject.
+const confirmedUnlinkedChannelSubjects = new Map<string, () => boolean>();
+const MAX_CONFIRMED_UNLINKED_CHANNEL_SUBJECTS = 1024;
+
 /** Qualify worker-read facts against the same physical profile owner's mutation lifetime. */
 export async function prepareUserChannelIdentityAuthority(
   identity: UserChannelIdentitySelector,
@@ -247,6 +252,18 @@ export async function prepareUserChannelIdentityAuthority(
       ? undefined
       : userChannelIdentitySubject(capturedIdentity);
   const context = captureAuthorityContext(options);
+  const { identity: databaseIdentity, databasePath } = context.admission;
+  const cacheKey =
+    subject && databaseIdentity.key.startsWith("file:") && databaseIdentity.birthtime !== undefined
+      ? JSON.stringify([databasePath, databaseIdentity.key, databaseIdentity.birthtime, subject])
+      : undefined;
+  if (cacheKey) {
+    context.admission.assertCurrent();
+    if (confirmedUnlinkedChannelSubjects.get(cacheKey)?.()) {
+      return undefined;
+    }
+    confirmedUnlinkedChannelSubjects.delete(cacheKey);
+  }
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const read = await captureUserProfileAuthorityRead(context.admission, subject);
     const reply = await executeExistingOpenClawStateRead(
@@ -261,6 +278,17 @@ export async function prepareUserChannelIdentityAuthority(
       return undefined;
     }
     if (!reply.linked) {
+      if (cacheKey && reply.unlinked === true) {
+        const isCurrent = read.bind([]);
+        if (!isCurrent) {
+          continue;
+        }
+        confirmedUnlinkedChannelSubjects.set(cacheKey, isCurrent);
+        pruneMapToMaxSize(
+          confirmedUnlinkedChannelSubjects,
+          MAX_CONFIRMED_UNLINKED_CHANNEL_SUBJECTS,
+        );
+      }
       return undefined;
     }
     const isCurrent = read.bind(

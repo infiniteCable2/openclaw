@@ -44,6 +44,7 @@ import {
 } from "../state/openclaw-agent-db-resources.js";
 import { getPendingOpenClawAgentDatabasePreparation } from "../state/openclaw-agent-execution.js";
 import {
+  ConfirmedCanonicalSessionAbsenceError,
   captureSessionFactsInvalidation,
   readRetainedSessionSharingFacts,
   reportSessionFactsFailure,
@@ -560,7 +561,22 @@ export async function prepareSessionMutationFacts(
       }
     }
     if (!match) {
+      const retained = sharing && retainedReads.get(`${sharing.databaseIdentity}\0${canonicalKey}`);
       if (!params.allowMissing) {
+        const current = retained?.hasPendingPublication()
+          ? undefined
+          : retained?.readCurrent(readScope);
+        if (
+          selected.canonicalKey === params.sessionKey &&
+          readSource &&
+          current &&
+          !current.entry &&
+          !current.placeholder
+        ) {
+          assertRoutingCurrent(params.cfg);
+          inventoryRead.assertRegistryCurrent();
+          throw new ConfirmedCanonicalSessionAbsenceError(selected.canonicalKey, readSource);
+        }
         throw new SessionMutationFactsUnavailableError();
       }
       facts = {
@@ -570,7 +586,6 @@ export async function prepareSessionMutationFacts(
         sourceAgentId: sharing?.source.agentId,
         readSource,
       };
-      const retained = sharing && retainedReads.get(`${sharing.databaseIdentity}\0${canonicalKey}`);
       expectedPlaceholder = retained?.readCurrent(readScope)?.placeholder;
       adoptCreatedEntry = (entry) => {
         retained?.adoptCreatedEntry(entry);

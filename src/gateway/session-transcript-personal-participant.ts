@@ -1,4 +1,5 @@
 import { conversationKnowledgeParticipantIdentity } from "../config/sessions/conversation-audience.js";
+import { resolveSessionChannelParticipant } from "../config/sessions/session-channel-participant.js";
 import type { SessionParticipantIdentity } from "../config/sessions/session-participant-identity.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import { prepareUserChannelIdentityAuthority } from "../state/user-channel-identity-operations.js";
@@ -29,26 +30,14 @@ export function createPersonalParticipantCustody(participant: SessionParticipant
     }
   };
   const prepareLink = async (entry: InternalSessionEntry, identity: SessionParticipantIdentity) => {
-    const route = entry.delivery?.kind === "external" ? entry.delivery.route : undefined;
-    const sender = entry.delivery?.kind === "external" ? entry.delivery.origin.from : undefined;
-    const creator = entry.createdActor;
-    if (
-      identity.type !== "remote" ||
-      !route?.accountId ||
-      route.channel !== identity.pluginId ||
-      (sender !== identity.id &&
-        !(creator?.type === "human" && creator.source === "channel" && creator.id === identity.id))
-    ) {
+    const subject = resolveSessionChannelParticipant(entry, identity);
+    if (!subject) {
       return undefined;
     }
     const cohort = key(entry, identity);
     qualified.add(JSON.stringify([entry.sessionId, entry.lifecycleRevision, cohort]));
     if (!links.has(cohort)) {
-      const link = await prepareUserChannelIdentityAuthority({
-        channelId: route.channel,
-        accountId: route.accountId,
-        senderId: identity.id,
-      });
+      const link = await prepareUserChannelIdentityAuthority(subject);
       if (link) {
         links.set(cohort, { profileId: link.linked.profileId, isCurrent: link.isCurrent });
       }

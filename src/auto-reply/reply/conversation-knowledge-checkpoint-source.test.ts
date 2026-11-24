@@ -17,6 +17,7 @@ import { SessionTranscriptReadFenceError } from "../../config/sessions/session-t
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { PersonalConversationReadRefusedError } from "../../gateway/session-mutation-authorization-error.js";
 import { SessionMutationFactsUnavailableError } from "../../gateway/session-sharing-incognito.js";
+import { PersonalConversationContributionAnchorsChangedError } from "../../gateway/session-transcript-personal-contribution-anchors.js";
 import { prepareConversationKnowledgeCheckpointSources } from "./conversation-knowledge-checkpoint-source.js";
 import type { PreparedConversationKnowledgePacket } from "./conversation-knowledge-source-cache.js";
 
@@ -968,6 +969,28 @@ describe("grouped checkpoint prefix validation", () => {
     ).rejects.toThrow("Foreground work resumed");
     expect(invalid).not.toHaveBeenCalled();
     expect(verified).not.toHaveBeenCalled();
+  });
+
+  it("repairs a stale cached neighbor if one foreign source anchor changed", async () => {
+    const fixture = groupFixture(2, [100]);
+    const [missing, neighbor] = fixture.references;
+    const held = await sources();
+    const verified = vi.fn();
+    const invalid = vi.fn();
+    boundary.group.mockRejectedValueOnce(
+      new PersonalConversationContributionAnchorsChangedError(new Set([missing!.through.entryId])),
+    );
+    boundary.anchors.mockRejectedValueOnce(
+      new SessionTranscriptReadFenceError("Synthetic cached prefix no longer matches"),
+    );
+
+    expect(
+      await held.verifyAll(fixture.references, verified, fixture.packets, undefined, invalid),
+    ).toBe(false);
+    expect(invalid).toHaveBeenCalledOnce();
+    expect(invalid.mock.calls[0]?.[0]).toBe(neighbor);
+    expect(verified).not.toHaveBeenCalled();
+    expect(fixture.release).toHaveBeenCalledOnce();
   });
 
   it("continues independent healthy donors after an earlier group is unavailable", async () => {

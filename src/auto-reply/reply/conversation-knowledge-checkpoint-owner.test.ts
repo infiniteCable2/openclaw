@@ -70,6 +70,8 @@ const boundary = vi.hoisted(() => ({
   load: vi.fn(),
   warn: vi.fn(),
   preparationYield: vi.fn(),
+  request: vi.fn(),
+  currentPreparation: vi.fn<() => Promise<void> | undefined>(),
 }));
 // mock-isolation: Own the cooperative boundary without real timers or changing source custody.
 vi.mock("node:timers/promises", async (importOriginal) => ({
@@ -80,6 +82,7 @@ vi.mock("node:timers/promises", async (importOriginal) => ({
 vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
   createConversationKnowledgePrefetchOwner: (params: NonNullable<typeof boundary.owner>) => {
     boundary.owner = params;
+    params.assertCurrent();
     let closed = false;
     return {
       assertCurrent() {
@@ -88,7 +91,8 @@ vi.mock("./conversation-knowledge-prefetch-owner.js", () => ({
         }
         params.assertCurrent();
       },
-      request() {},
+      request: boundary.request,
+      currentPreparation: boundary.currentPreparation,
       pausePreparation: () => () => {},
       async close() {
         closed = true;
@@ -317,6 +321,29 @@ afterEach(async () => {
 });
 
 describe("shared root projection preparation", () => {
+  it("keeps the in-flight preparation when another endpoint joins its current broker", () => {
+    const first = register();
+    boundary.currentPreparation.mockReturnValue(new Promise<void>(() => {}));
+    register({
+      ...branch,
+      sessionKey: "agent:example:voice",
+      sessionId: "voice-instance",
+    });
+    expect(boundary.request).not.toHaveBeenCalled();
+
+    first.expire();
+    register({
+      ...branch,
+      sessionKey: "agent:example:assistant",
+      sessionId: "assistant-instance",
+    });
+    expect(boundary.request).toHaveBeenCalledTimes(1);
+
+    boundary.currentPreparation.mockReturnValue(undefined);
+    register();
+    expect(boundary.request).toHaveBeenCalledTimes(2);
+  });
+
   it("signals prepared text before pending frame verification and signals the completed frame", async () => {
     const f = register();
     const entered = createDeferredCore(),

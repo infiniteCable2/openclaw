@@ -352,31 +352,34 @@ export function listUserChannelIdentitiesInDatabase(
 }
 
 /** Reads the current person and login grant subjects; channel links never become login aliases. */
-export function resolveUserChannelIdentityInDatabase(
+export function readUserChannelIdentityResolutionInDatabase(
   db: EngineConnection,
   identity: UserChannelIdentitySelector,
-): UserChannelIdentityAuthorityFacts | undefined {
+): { linked?: UserChannelIdentityAuthorityFacts; unlinked?: true } {
   return runSqliteReadSnapshotSync(
     db,
     () => {
       if (!hasIdentityTables(db)) {
-        return undefined;
+        return {};
       }
       let authorization: UserChannelAuthorization | undefined;
       let subject: string;
       if ("authorizationId" in identity) {
         authorization = readAuthorization(db, identity.authorizationId, identity.policy);
         if (!authorization) {
-          return undefined;
+          return {};
         }
         subject = authorization.subject;
       } else {
         subject = userChannelIdentitySubject(identity);
       }
       const link = selectLink(db, subject);
-      const profile = link ? selectResolvedUserProfileMetadataById(db, link.profile_id) : undefined;
+      if (!link) {
+        return "authorizationId" in identity ? {} : { unlinked: true };
+      }
+      const profile = selectResolvedUserProfileMetadataById(db, link.profile_id);
       if (!profile || profile.id === GATEWAY_OWNER_PROFILE_ID) {
-        return undefined;
+        return {};
       }
       const kysely = userProfilesDb(db);
       const emails = selectUserProfileEmails(db, profile.id);
@@ -406,22 +409,47 @@ export function resolveUserChannelIdentityInDatabase(
       const githubLogins =
         githubAccounts?.map((account) => `${account.login.toLowerCase()}@github`) ?? [];
       return {
-        ...(authorization ? { authorization } : {}),
-        profileId: profile.id,
-        displayName: profile.display_name,
-        role: profile.role ?? null,
-        emails,
-        ...(githubAccounts?.length
-          ? { githubAccountIds: githubAccounts.map(({ accountId }) => accountId) }
-          : {}),
-        ...(githubIdentity?.primary ? { githubLogin: githubIdentity.primary.login } : {}),
-        loginIdentities: [
-          ...new Set([...loginEmails, ...providerLogins, ...githubLogins]),
-        ].toSorted(),
+        linked: {
+          ...(authorization ? { authorization } : {}),
+          profileId: profile.id,
+          displayName: profile.display_name,
+          role: profile.role ?? null,
+          emails,
+          ...(githubAccounts?.length
+            ? { githubAccountIds: githubAccounts.map(({ accountId }) => accountId) }
+            : {}),
+          ...(githubIdentity?.primary ? { githubLogin: githubIdentity.primary.login } : {}),
+          loginIdentities: [
+            ...new Set([...loginEmails, ...providerLogins, ...githubLogins]),
+          ].toSorted(),
+        },
       };
     },
     { operationLabel: "user-channel-identities.resolve" },
   );
+}
+
+export function resolveUserChannelIdentityInDatabase(
+  db: EngineConnection,
+  identity: UserChannelIdentitySelector,
+): UserChannelIdentityAuthorityFacts | undefined {
+  return readUserChannelIdentityResolutionInDatabase(db, identity).linked;
+}
+
+/** Diagnostic only. The presence of a link is not a current authorization lease. */
+export function inspectUserChannelIdentityLinkInDatabase(
+  db: EngineConnection,
+  identity: UserChannelIdentity,
+): "unavailable" | "unlinked" | "unusable" | "linked" {
+  if (!hasIdentityTables(db)) {
+    return "unavailable";
+  }
+  const link = selectLink(db, userChannelIdentitySubject(identity));
+  if (!link) {
+    return "unlinked";
+  }
+  const profile = selectResolvedUserProfileMetadataById(db, link.profile_id);
+  return profile && profile.id !== GATEWAY_OWNER_PROFILE_ID ? "linked" : "unusable";
 }
 
 export function resolveUserChannelIdentity(
