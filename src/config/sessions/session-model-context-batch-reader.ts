@@ -45,7 +45,7 @@ export type PreparedTranscriptContextRange = {
   header?: Pick<ContextEntry, "seq">;
 };
 
-/** Two historical ranges share navigation only inside this exact SQLite read snapshot. */
+/** Historical ranges share navigation only inside this exact SQLite read snapshot. */
 export function readSessionTranscriptModelContextRanges(
   scope: SessionTranscriptReadScope,
   ranges: readonly SessionTranscriptModelContextRange[],

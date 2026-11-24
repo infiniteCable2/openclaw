@@ -437,12 +437,10 @@ function createRootOwner(initial: Registration, audienceKey: string, dispose: ()
             check();
           }
           const id = conversationKnowledgeContributionId(reference);
-          const published = frameTail.get(id);
-          let cached =
-            tail.get(id) ??
-            (isDeepStrictEqual(published?.reference, reference) ? published : undefined);
+          let cached = tail.lookup(reference, frameTail, id);
           if (!cached) {
-            const value = await sources.read(reference, false);
+            const ahead = tail.unpreparedSuccessors(remaining, index, frameTail);
+            const value = await sources.read(reference, false, ahead);
             if (!value) {
               // An unverified original cannot enter coverage, but must not
               // prevent later valid originals from reaching the shared tail.

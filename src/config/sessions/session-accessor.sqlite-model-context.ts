@@ -118,7 +118,7 @@ export type {
   SessionTranscriptModelContextRangeResult,
 } from "./session-model-context-batch-reader.js";
 
-/** Two historical ranges share navigation only inside this exact SQLite read snapshot. */
+/** Historical ranges share navigation only inside this exact SQLite read snapshot. */
 export function readSessionTranscriptModelContexts(
   scope: SessionTranscriptReadScope,
   ranges: readonly SessionTranscriptModelContextRange[],

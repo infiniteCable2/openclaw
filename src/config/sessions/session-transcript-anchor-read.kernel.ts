@@ -29,6 +29,7 @@ import {
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { readSessionTranscriptWatermarkInDatabase } from "./session-accessor.sqlite-transcript-watermark.js";
 import type { SessionEntrySummary } from "./session-accessor.types.js";
+import { MAX_SESSION_MODEL_CONTEXT_BATCH_RANGES } from "./session-model-context-batch-limits.js";
 import type {
   SessionTranscriptAnchorEntry,
   SessionTranscriptAnchorFacts,
@@ -58,6 +59,10 @@ export type SessionTranscriptAnchorSelection = {
   includeMessagePresence?: boolean;
   includeMetadata?: boolean;
   contextValidation?: Parameters<typeof validateSessionTranscriptContextInDatabase>[2];
+  /** Durable batch publication validates each range in one owner snapshot. */
+  contextValidationBatch?: readonly Parameters<
+    typeof validateSessionTranscriptContextInDatabase
+  >[2][];
   /** Durable history only; independent cached-prefix verdicts in this same bounded snapshot. */
   contextPrefixVersions?: readonly SessionTranscriptContextVersion[];
   contextAuthority?: true | { permissionMode: InternalSessionEntry["permissionMode"] };
@@ -141,6 +146,13 @@ export function readSessionTranscriptAnchorFactsInDatabase(
   preparedEntry?: SessionTranscriptAnchorEntry,
   messagePresence?: true,
 ): SessionTranscriptAnchorFacts {
+  if (
+    selection.contextValidationBatch &&
+    (selection.contextValidation ||
+      selection.contextValidationBatch.length > MAX_SESSION_MODEL_CONTEXT_BATCH_RANGES)
+  ) {
+    throw new RangeError("Invalid transcript context validation batch");
+  }
   if (
     selection.contextPrefixVersions !== undefined &&
     selection.entryIds.length + selection.contextPrefixVersions.length > MAX_SESSION_ROW_FACTS_KEYS
@@ -226,8 +238,10 @@ export function readSessionTranscriptAnchorFactsInDatabase(
           resolveSqliteSessionTranscriptReadFence({ database, ...resolved }),
         )
       : undefined;
-    const context = selection.contextValidation;
-    if (context) {
+    const contexts =
+      selection.contextValidationBatch ??
+      (selection.contextValidation ? [selection.contextValidation] : []);
+    for (const context of contexts) {
       // Appends can supersede or complete a prepared replay; only snapshots retain a prefix.
       validateSessionTranscriptContextInDatabase(
         database,
@@ -254,7 +268,7 @@ export function readSessionTranscriptAnchorFactsInDatabase(
           }
         : {}),
       ...(contextAuthority ? { contextAuthority } : {}),
-      ...(context ? { contextValidated: true as const } : {}),
+      ...(contexts.length > 0 ? { contextValidated: true as const } : {}),
       ...(selection.contextPrefixVersions !== undefined
         ? {
             contextPrefixMatches: readSessionTranscriptPrefixMatchesInDatabase(

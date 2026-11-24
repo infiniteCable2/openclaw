@@ -16,6 +16,7 @@ import {
 } from "./session-accessor.sqlite-model-context.js";
 import { readActiveTranscriptEntryAnchor } from "./session-accessor.sqlite-transcript-admitted-read.js";
 import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.test-support.js";
+import { MAX_SESSION_MODEL_CONTEXT_BATCH_RANGES } from "./session-model-context-batch-limits.js";
 import { readSessionTranscriptModelContextsAsync } from "./session-transcript-context-read.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence.js";
 import * as transcriptReadSource from "./session-transcript-read-source.js";
@@ -124,7 +125,7 @@ it("rejects process-held batch scheduling overflow before opening its source or 
   const consume = vi.fn();
   try {
     for (const ranges of [
-      [range, range, range],
+      Array.from({ length: MAX_SESSION_MODEL_CONTEXT_BATCH_RANGES + 1 }, () => range),
       [range, { ...range, limits: { ...range.limits, maxBytes: range.limits.maxBytes + 1 } }],
     ]) {
       await expect(
@@ -151,13 +152,15 @@ it("reads overlapping long-source navigation once while preserving exact range o
       touchSessionEntry: false,
     });
     await waitForSessionTranscriptProjection(scope);
-    const ranges = [598, 599].map((index) => {
-      const through = readActiveTranscriptEntryAnchor({ ...scope, entryId: `entry-${index}` });
-      if (!through) {
-        throw new Error("Synthetic range anchor missing");
-      }
-      return { through, limits: { from: through, maxBytes: 2_048, maxEvents: 1 } };
-    });
+    const ranges = [599, 596, 598, 597, 594, 593, 592, 595]
+      .slice(0, MAX_SESSION_MODEL_CONTEXT_BATCH_RANGES)
+      .map((index) => {
+        const through = readActiveTranscriptEntryAnchor({ ...scope, entryId: `entry-${index}` });
+        if (!through) {
+          throw new Error("Synthetic range anchor missing");
+        }
+        return { through, limits: { from: through, maxBytes: 2_048, maxEvents: 1 } };
+      });
     const { db } = openOpenClawAgentDatabase({ agentId: scope.agentId });
     const counter = trackSqliteStatementExecutions(
       requireNativeSqliteDatabase(db),
@@ -167,12 +170,12 @@ it("reads overlapping long-source navigation once while preserving exact range o
     );
     try {
       const expected = ranges.map((range) => individual(scope, range));
-      expect(counter.counts.navigation).toBe(2);
+      expect(counter.counts.navigation).toBe(ranges.length);
       const beforeRows = counter.rowCounts.navigation;
       const actual = readSessionTranscriptModelContexts(scope, ranges);
       expect(actual).toEqual(expected);
       expect(actual.every((result) => result.ok)).toBe(true);
-      expect(counter.counts.navigation).toBe(3);
+      expect(counter.counts.navigation).toBe(ranges.length + 1);
       const batchRows = counter.rowCounts.navigation - beforeRows;
       expect(batchRows).toBeGreaterThanOrEqual(600);
       expect(batchRows).toBeLessThan(beforeRows);
@@ -267,9 +270,12 @@ it("isolates invalid and over-capacity ranges without acknowledging or suppressi
         await readSessionTranscriptModelContextsAsync(scope, ranges, (value) => value),
       ).toEqual(expected);
     }
-    expect(() => readSessionTranscriptModelContexts(scope, [valid, valid, valid])).toThrow(
-      "scheduling budget",
-    );
+    expect(() =>
+      readSessionTranscriptModelContexts(
+        scope,
+        Array.from({ length: MAX_SESSION_MODEL_CONTEXT_BATCH_RANGES + 1 }, () => valid),
+      ),
+    ).toThrow("scheduling budget");
     expect(readSessionTranscriptModelContext(scope, small, valid.limits).events).not.toEqual([]);
   });
 });

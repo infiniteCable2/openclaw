@@ -1,9 +1,11 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   sameConversationKnowledgeCheckpointRange,
   type PreparedConversationKnowledgeCheckpointCoverage,
 } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import { conversationKnowledgeContributionId } from "../../config/sessions/conversation-knowledge-identity.js";
 import type { ConversationKnowledgeReference } from "../../config/sessions/conversation-knowledge.js";
+import { MAX_SESSION_MODEL_CONTEXT_BATCH_RANGES } from "../../config/sessions/session-model-context-batch-limits.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
 import type { PreparedRootKnowledgeContribution } from "./conversation-knowledge-checkpoint-range.js";
 
@@ -29,6 +31,20 @@ export function createConversationKnowledgeCheckpointTail() {
     revision++;
     return true;
   };
+  const lookup = (
+    reference: ConversationKnowledgeReference | undefined,
+    published: ReadonlyMap<string, PreparedRootKnowledgeContribution>,
+    id = reference && conversationKnowledgeContributionId(reference),
+  ) => {
+    if (!id || !reference) {
+      return undefined;
+    }
+    const previous = published.get(id);
+    return (
+      entries.get(id)?.value ??
+      (isDeepStrictEqual(previous?.reference, reference) ? previous : undefined)
+    );
+  };
   return {
     get revision() {
       return revision;
@@ -41,6 +57,29 @@ export function createConversationKnowledgeCheckpointTail() {
     },
     get(id: string) {
       return entries.get(id)?.value;
+    },
+    lookup,
+    unpreparedSuccessors(
+      references: readonly ConversationKnowledgeReference[],
+      index: number,
+      published: ReadonlyMap<string, PreparedRootKnowledgeContribution>,
+    ) {
+      const current = references[index]!;
+      const next: ConversationKnowledgeReference[] = [];
+      for (let offset = 1; offset < MAX_SESSION_MODEL_CONTEXT_BATCH_RANGES; offset++) {
+        const reference = references[index + offset];
+        if (
+          !reference ||
+          reference.source.sessionId !== current.source.sessionId ||
+          reference.source.sessionKey !== current.source.sessionKey ||
+          reference.through.generation !== current.through.generation ||
+          lookup(reference, published)
+        ) {
+          break;
+        }
+        next.push(reference);
+      }
+      return next;
     },
     assertRange(value: PreparedRootKnowledgeContribution) {
       if (

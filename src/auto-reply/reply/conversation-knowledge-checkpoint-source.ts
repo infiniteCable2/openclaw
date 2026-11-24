@@ -275,7 +275,11 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
     };
     const ownSource = (reference: ConversationKnowledgeReference) =>
       readCheckpointOwnSource({ branch, reference, audienceKey, reader: params.reader, check });
-    const read = async (reference: ConversationKnowledgeReference, retainText = true) => {
+    const read = async (
+      reference: ConversationKnowledgeReference,
+      retainText: boolean,
+      nextReferences?: readonly ConversationKnowledgeReference[],
+    ) => {
       check();
       assertNativeKnowledgeRootContribution(events.evidence, branch, reference);
       const contributionId = conversationKnowledgeContributionId(reference);
@@ -317,8 +321,8 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
           current.source,
           current.projection,
           reference,
-          undefined,
-          false,
+          nextReferences,
+          "checkpoint",
         );
         proofs.push(current.source.sourceAssertion);
         nativeAuthority = current.source.sourceAssertion;
@@ -471,8 +475,11 @@ export async function prepareConversationKnowledgeCheckpointSources(params: {
       frameRootVersion: rootSnapshot?.version,
       audienceKey,
       references: rootReferences,
-      read: (reference: ConversationKnowledgeReference, retainText = true) =>
-        readAvailableSource(reference, () => read(reference, retainText)),
+      read: (
+        reference: ConversationKnowledgeReference,
+        retainText = true,
+        nextReferences?: readonly ConversationKnowledgeReference[],
+      ) => readAvailableSource(reference, () => read(reference, retainText, nextReferences)),
       validate: (
         reference: ConversationKnowledgeReference,
         packet?: PreparedConversationKnowledgePacket,

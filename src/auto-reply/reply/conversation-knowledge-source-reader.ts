@@ -42,10 +42,7 @@ import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
-import {
-  readSessionTranscriptModelContextAsync,
-  readSessionTranscriptModelContextsAsync,
-} from "../../config/sessions/session-transcript-context-read.js";
+import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-transcript-context-read.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -56,6 +53,7 @@ import {
   prepareConversationKnowledgeBranchFacts,
   unavailableConversationKnowledge,
 } from "./conversation-knowledge-authority.js";
+import { readConversationKnowledgeSourceBatch } from "./conversation-knowledge-source-batch.js";
 import type {
   ConversationKnowledgeSourceCache,
   ConversationKnowledgeSourceSelection,
@@ -555,12 +553,15 @@ export function createConversationKnowledgeSourceReader(
   const { branch, targetFacts, reads } = params;
   const prepareSource = createConversationKnowledgeSourceCustody(params);
   type PreparedSource = NonNullable<Awaited<ReturnType<typeof prepareSource>>>;
-  const preparedSources = new Map<string, PreparedSource>();
+
   const preparedRanges: Parameters<
     typeof logConversationKnowledgePreparedRanges
   >[0]["ranges"][number][] = [];
-  // At most the current and next range are hydrated; future grants are not an eager all-source scan.
-  const preparedProjections = new Map<string, SessionTranscriptModelContextRangeResult>();
+  // Prefetch is confined to the current bounded window of consecutive ranges.
+  const prepared = new Map<
+    string,
+    { source: PreparedSource; projection: SessionTranscriptModelContextRangeResult }
+  >();
   const acceptProjection = (result: SessionTranscriptModelContextRangeResult) => {
     if (result.ok) {
       return result.context;
@@ -648,24 +649,24 @@ export function createConversationKnowledgeSourceReader(
     },
     async take(receipt: ConversationKnowledgeReference) {
       const contributionId = conversationKnowledgeContributionId(receipt);
-      const cachedSource = preparedSources.get(contributionId);
-      const source =
-        cachedSource && reads.includes(cachedSource.read)
-          ? cachedSource
-          : await prepareSource(receipt);
-      preparedSources.delete(contributionId);
-      const projection = preparedProjections.get(contributionId);
-      preparedProjections.delete(contributionId);
-      return { source, projection };
+      const prefetched = prepared.get(contributionId);
+      prepared.delete(contributionId);
+      if (prefetched && reads.includes(prefetched.source.read)) {
+        return prefetched;
+      }
+      return { source: await prepareSource(receipt), projection: undefined };
     },
     async load(
       preparedSource: PreparedSource,
       preparedProjection: SessionTranscriptModelContextRangeResult | undefined,
       receipt: ConversationKnowledgeReference,
-      nextReceipt: ConversationKnowledgeReference | undefined,
-      canReadAhead: boolean,
+      nextReceipt:
+        | ConversationKnowledgeReference
+        | readonly ConversationKnowledgeReference[]
+        | undefined,
+      canReadAhead: boolean | "checkpoint",
     ) {
-      const { grant, sourceAssertion, projectionTarget, through, from } = preparedSource;
+      const { grant, sourceAssertion, projectionTarget, through } = preparedSource;
       const loadSingleProjection = () =>
         readSessionTranscriptModelContextAsync(
           projectionTarget,
@@ -681,55 +682,39 @@ export function createConversationKnowledgeSourceReader(
             ...(grant.contributionRange ? { from: grant.contributionRange.from } : {}),
           },
         );
-      const loadProjection = async () => {
-        if (preparedProjection) {
-          return acceptProjection(preparedProjection);
-        }
-        const nextId = nextReceipt && conversationKnowledgeContributionId(nextReceipt);
-        if (
-          !params.sourceCache ||
-          !nextReceipt ||
-          !nextId ||
-          params.hasRetainedContribution(nextId) ||
-          !canReadAhead ||
-          nextReceipt.source.sessionId !== receipt.source.sessionId ||
-          nextReceipt.source.sessionKey !== receipt.source.sessionKey ||
-          nextReceipt.through.generation !== receipt.through.generation
-        ) {
-          return loadSingleProjection();
-        }
-        const next = await prepareSource(nextReceipt);
-        if (!next) {
-          return loadSingleProjection();
-        }
-        preparedSources.set(nextId, next);
-        const results = await readSessionTranscriptModelContextsAsync(
-          projectionTarget,
-          [
-            {
-              through,
-              limits: { ...CONVERSATION_KNOWLEDGE_SOURCE_LIMITS, ...(from ? { from } : {}) },
-            },
-            {
-              through: next.through,
-              limits: {
-                ...CONVERSATION_KNOWLEDGE_SOURCE_LIMITS,
-                ...(next.from ? { from: next.from } : {}),
-              },
-            },
-          ],
-          (contexts) => {
-            sourceAssertion();
-            next.sourceAssertion();
-            return contexts;
-          },
-          params.signal,
-        );
-        preparedProjections.set(nextId, results[1]!);
-        return acceptProjection(results[0]!);
-      };
-
-      return loadProjection();
+      if (preparedProjection) {
+        sourceAssertion();
+        return acceptProjection(preparedProjection);
+      }
+      if (!canReadAhead || (!params.sourceCache && canReadAhead !== "checkpoint") || !nextReceipt) {
+        return loadSingleProjection();
+      }
+      const successors = "source" in nextReceipt ? [nextReceipt] : nextReceipt;
+      const batch = await readConversationKnowledgeSourceBatch({
+        current: preparedSource,
+        receipt,
+        successors,
+        prepareNext: async (next) => {
+          const id = conversationKnowledgeContributionId(next);
+          return prepared.has(id) || params.hasRetainedContribution(id)
+            ? undefined
+            : prepareSource(next);
+        },
+        drop: params.drop,
+        assertCurrent: () => {
+          params.assertCurrent();
+          targetFacts.assertCurrent();
+          sourceAssertion();
+        },
+        signal: params.signal,
+      });
+      if (!batch) {
+        return loadSingleProjection();
+      }
+      for (const next of batch.next) {
+        prepared.set(conversationKnowledgeContributionId(next.receipt), next);
+      }
+      return batch.context;
     },
   };
 }

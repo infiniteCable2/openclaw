@@ -109,31 +109,34 @@ export async function readSessionTranscriptModelContextsAsync<T>(
       if (contexts.length !== requests.length) {
         throw new Error("Session context batch omitted a requested range");
       }
-      for (const [index, result] of contexts.entries()) {
-        if (!result.ok) {
-          continue;
-        }
+      const validations = contexts.flatMap((result, index) =>
+        result.ok
+          ? [
+              {
+                version: result.context.version,
+                admission,
+                through: requests[index]!.through,
+                from: requests[index]!.limits.from,
+              },
+            ]
+          : [],
+      );
+      if (validations.length > 0) {
+        let accepted = false;
         await readSessionTranscriptAnchorsFromSource(
           { ...source, scope: selected },
-          {
-            entryIds: [],
-            contextValidation: {
-              version: result.context.version,
-              admission,
-              through: requests[index]!.through,
-              from: requests[index]!.limits.from,
-            },
-          },
+          { entryIds: [], contextValidationBatch: validations },
           signal,
           (facts) => {
             source.assertCurrent();
-            if (!facts.contextValidated) {
-              throw new SessionTranscriptReadFenceError(
-                "Session transcript changed during context batch read",
-              );
-            }
+            accepted = facts.contextValidated === true;
           },
         );
+        if (!accepted) {
+          throw new SessionTranscriptReadFenceError(
+            "Session transcript changed during context batch read",
+          );
+        }
       }
       source.assertCurrent();
       // As in the native single-range reader, the consumer owns its effects after acceptance.
