@@ -1,4 +1,5 @@
 import { EmbeddedBlockChunker } from "../agents/embedded-agent-block-chunker.js";
+import { hasSpeechSentenceTerminal } from "../agents/embedded-agent-block-chunker.speech.js";
 import { parseSpeechExpression } from "./expression.js";
 import type {
   SpeechExpression,
@@ -25,6 +26,7 @@ export function prepareSpeechSegments(
   text: string,
   profile: SpeechSegmentationProfile,
   expression?: SpeechExpression,
+  breakPreference?: "sentence",
 ): SpeechSynthesisSegment[] {
   assertSpeechSegmentationProfile(profile);
   const protectedSpans: Array<{ start: number; end: number }> = [];
@@ -43,6 +45,7 @@ export function prepareSpeechSegments(
     minChars: profile.minChars,
     maxChars: profile.maxChars,
     speech: profile,
+    breakPreference,
     speechProtectedSpans: protectedSpans,
   });
   const result: SpeechSynthesisSegment[] = [];
@@ -51,9 +54,13 @@ export function prepareSpeechSegments(
     force: true,
     emit: (chunk, metadata) => {
       const after = text.slice(metadata!.sourceEnd);
+      const endsSentence =
+        breakPreference === "sentence"
+          ? hasSpeechSentenceTerminal(chunk)
+          : /[.!?]["'»”’)]*$/u.test(chunk);
       const pauseMs = /^\s*\n[\t ]*\n/u.test(after)
         ? profile.pauses.paragraph
-        : /[.!?]["'»”’)]*$/u.test(chunk)
+        : endsSentence
           ? profile.pauses.sentence
           : /[,;:–—]$/u.test(chunk)
             ? profile.pauses.clause
@@ -62,6 +69,10 @@ export function prepareSpeechSegments(
     },
   });
   if (result.length > 128) {
+    // The wire limit is per synthesis request, even when the text fits the model.
+    if (breakPreference === "sentence") {
+      return prepareSpeechSegments(text, profile, expression);
+    }
     throw new Error("Speech request exceeds its prepared segment budget");
   }
   return result;

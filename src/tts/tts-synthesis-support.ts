@@ -260,6 +260,7 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
   providers: VoiceProviderCandidate[];
   synthesisText: string;
   expression?: SpeechExpression;
+  segmentBySentence?: boolean;
   speechContext?: { agentId?: string; channelId?: string };
   providerOverrides?: Record<string, SpeechProviderOverrides>;
   timeoutMs?: number;
@@ -516,7 +517,12 @@ export async function executeTtsProviderAttempts<TSynthesis, TResult>(params: {
             ...prepared,
             ...(segmentationProfile && prepared.text.trim()
               ? {
-                  segments: prepareSpeechSegments(prepared.text, segmentationProfile, expression),
+                  segments: prepareSpeechSegments(
+                    prepared.text,
+                    segmentationProfile,
+                    expression,
+                    params.segmentBySentence ? "sentence" : undefined,
+                  ),
                 }
               : {}),
             ...(expression ? { expression } : {}),

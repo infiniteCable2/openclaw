@@ -268,6 +268,7 @@ export class EmbeddedBlockChunker {
             start: span.start - offset,
             end: span.end - offset,
           })),
+          chunking.breakPreference === "sentence",
         );
         if (end === 0) {
           break;

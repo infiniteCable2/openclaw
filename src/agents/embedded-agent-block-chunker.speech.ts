@@ -6,6 +6,10 @@ export type SpeechProtectedSpan = { start: number; end: number };
 let sentences: Intl.Segmenter | undefined;
 let words: Intl.Segmenter | undefined;
 
+export function hasSpeechSentenceTerminal(text: string): boolean {
+  return /\p{Sentence_Terminal}[\p{Pe}\p{Pf}"'«»“”’]*$/u.test(text);
+}
+
 /** Same Unicode letter/number/underscore groups as standalone Python's Unicode \w budget. */
 function countSpeechWords(text: string): number {
   return [...text.matchAll(/[\p{L}\p{N}_]+/gu)].length;
@@ -32,6 +36,7 @@ export function findSpeechChunkEnd(
   profile: SpeechSegmentationProfile,
   force: boolean,
   protectedSpans: readonly SpeechProtectedSpan[] = [],
+  preferSentence = false,
 ): number {
   const safe = (at: number) => !protectedSpans.some((span) => at > span.start && at < span.end);
   const candidates = new Set<number>();
@@ -42,7 +47,9 @@ export function findSpeechChunkEnd(
     if (
       isSentenceBoundary(text, end) &&
       !/^\s*\d+[.)]\s*$/u.test(part.segment) &&
-      (force || part.index + part.segment.length < text.length)
+      (!preferSentence || hasSpeechSentenceTerminal(part.segment.trimEnd())) &&
+      // A following separator is enough lookahead for a completed sentence.
+      (force || (preferSentence ? end : part.index + part.segment.length) < text.length)
     ) {
       candidates.add(end);
     }
@@ -53,8 +60,11 @@ export function findSpeechChunkEnd(
   const fits = (at: number) =>
     at <= profile.maxChars && countSpeechWords(text.slice(0, at)) <= profile.maxWords;
   const eligible = [...candidates]
-    .filter((at) => at > 0 && safe(at) && fits(at) && at >= profile.minChars)
+    .filter((at) => at > 0 && safe(at) && fits(at) && (preferSentence || at >= profile.minChars))
     .toSorted((a, b) => a - b);
+  if (preferSentence && eligible.length > 0) {
+    return eligible[0]!;
+  }
   // Chatterbox's established paragraph units stay independent. Backends with a
   // minimum synthesis size may instead accumulate several short paragraphs.
   const paragraph = eligible.find((at) => /^\n[\t ]*\n/u.test(text.slice(at)));

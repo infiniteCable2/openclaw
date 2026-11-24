@@ -50,17 +50,67 @@ describe("native model-specific speech segmentation", () => {
     expect(chunks).toEqual(["Guten Morgen!"]);
   });
 
-  it("uses word and character hard budgets without dropping source text", () => {
-    const text = Array.from({ length: 24 }, (_, index) => `Wort${index}`).join(" ");
-    const limits = { ...profile, targetWords: 4, maxWords: 6, maxChars: 64 };
-    const segments = prepareSpeechSegments(text, limits);
-    expect(segments.length).toBeGreaterThan(1);
-    expect(segments.map((segment) => segment.text).join(" ")).toBe(text);
-    for (const segment of segments) {
-      expect(segment.text.split(/\s+/u).length).toBeLessThanOrEqual(6);
-      expect(segment.text.length).toBeLessThanOrEqual(64);
-    }
+  it("sends each safely completed sentence without waiting for the backend minimum", () => {
+    const kitten = { ...profile, minChars: 130 };
+    const text = "Dr. Müller kommt, wenn die Lampe leuchtet. Ja. Wir warten.";
+    const stream = new EmbeddedBlockChunker({
+      minChars: kitten.minChars,
+      maxChars: kitten.maxChars,
+      breakPreference: "sentence",
+      speech: kitten,
+    });
+    const emitted: string[] = [];
+    const drain = (force = false) => stream.drain({ force, emit: (part) => emitted.push(part) });
+    stream.append("Dr. ");
+    drain();
+    stream.append("Müller kommt, ");
+    drain();
+    expect(emitted).toEqual([]);
+    stream.append("wenn die Lampe leuchtet. ");
+    drain();
+    expect(emitted).toEqual(["Dr. Müller kommt, wenn die Lampe leuchtet."]);
+    stream.append("Ja. Wir warten.");
+    drain();
+    expect(emitted).toEqual(["Dr. Müller kommt, wenn die Lampe leuchtet.", "Ja."]);
+    drain(true);
+    expect(emitted).toEqual(["Dr. Müller kommt, wenn die Lampe leuchtet.", "Ja.", "Wir warten."]);
+    expect(
+      prepareSpeechSegments(text, kitten, undefined, "sentence").map((part) => part.text),
+    ).toEqual(emitted);
   });
+
+  it("uses the same completed boundaries and pauses for quoted and Unicode sentences", () => {
+    const text = "„Hallo.“ 下一句。 هل هذا واضح؟";
+    expect(prepareSpeechSegments(text, profile, undefined, "sentence")).toEqual([
+      { text: "„Hallo.“", pauseMs: 180 },
+      { text: "下一句。", pauseMs: 180 },
+      { text: "هل هذا واضح؟", pauseMs: 180 },
+    ]);
+  });
+
+  it("uses the provider fallback when sentence mode exceeds the wire segment limit", () => {
+    const text = "Ja. ".repeat(129).trimEnd();
+    const kitten = { ...profile, minChars: 130 };
+    const result = prepareSpeechSegments(text, kitten, undefined, "sentence");
+    expect(result).toEqual(prepareSpeechSegments(text, kitten));
+    expect(result.length).toBeLessThanOrEqual(128);
+    expect(result.map((part) => part.text).join(" ")).toBe(text);
+  });
+
+  it.each([undefined, "sentence"] as const)(
+    "uses word and character hard budgets without dropping source text with %s boundaries",
+    (breakPreference) => {
+      const text = Array.from({ length: 24 }, (_, index) => `Wort${index}`).join(" ");
+      const limits = { ...profile, targetWords: 4, maxWords: 6, maxChars: 64 };
+      const segments = prepareSpeechSegments(text, limits, undefined, breakPreference);
+      expect(segments.length).toBeGreaterThan(1);
+      expect(segments.map((segment) => segment.text).join(" ")).toBe(text);
+      for (const segment of segments) {
+        expect(segment.text.split(/\s+/u).length).toBeLessThanOrEqual(6);
+        expect(segment.text.length).toBeLessThanOrEqual(64);
+      }
+    },
+  );
 
   it.each([0, 130])(
     "buffers unfinished streamed sentences with a %i-character minimum",

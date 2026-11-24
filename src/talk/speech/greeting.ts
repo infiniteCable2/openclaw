@@ -316,6 +316,7 @@ async function prepareGreeting(
     params.signal.throwIfAborted();
     return params.runtime.tts.streamTextToSpeechTelephony({
       text,
+      segmentBySentence: true,
       ...(speech?.expression ? { overrides: { expression: speech.expression } } : {}),
       ...(localServiceAdmission ? { localServiceAdmission } : {}),
       ...(expectedSpeechSelection ? { expectedSpeechSelection } : {}),

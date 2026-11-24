@@ -222,6 +222,7 @@ export function createSpeechOutput(params: {
       synthesize: (signal) =>
         params.runtime.tts.streamTextToSpeechTelephony({
           text: normalized,
+          segmentBySentence: true,
           ...(speech?.expression ? { overrides: { expression: speech.expression } } : {}),
           ...(localServiceAdmission ? { localServiceAdmission } : {}),
           ...(expectedSpeechSelection ? { expectedSpeechSelection } : {}),

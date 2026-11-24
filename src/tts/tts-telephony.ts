@@ -145,7 +145,7 @@ function streamBufferedTelephonyResult(result: SpeechTelephonySynthesisResult): 
 }
 
 export async function streamTextToSpeechTelephony(
-  params: TtsTelephonyContext & { text: string; signal?: AbortSignal },
+  params: TtsTelephonyContext & { text: string; segmentBySentence?: boolean; signal?: AbortSignal },
 ): Promise<TtsTelephonyStreamResult> {
   assertSpeechRuntimeAvailable();
   const acquired = await acquireTtsRequest({
@@ -161,6 +161,7 @@ export async function streamTextToSpeechTelephony(
       executeTtsProviderAttempts({
         ...acquired.setup,
         synthesisText: params.text,
+        segmentBySentence: params.segmentBySentence,
         expression: params.overrides?.expression,
         localServiceAdmission: params.localServiceAdmission,
         expectedSpeechSelection: params.expectedSpeechSelection,

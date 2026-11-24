@@ -5,6 +5,7 @@ import {
   installSpeechProviders,
   synthesizeMock,
   synthesizeSpeech,
+  streamTextToSpeechTelephony,
   textToSpeechStream,
   resetTtsRuntime,
 } from "./tts-runtime.test-support.js";
@@ -50,6 +51,49 @@ it("prepares source-slice segments from the selected model profile before buffer
   });
   expect(result.success).toBe(true);
   expect(order).toEqual(["prepare", "read", "synthesize"]);
+});
+
+it("passes Talk sentence units to the provider without changing direct synthesis defaults", async () => {
+  const text = "Die Lampe leuchtet. Das Fenster ist geschlossen.";
+  const defaultSegments = [{ text, pauseMs: 180 }];
+  const talkSegments = [
+    { text: "Die Lampe leuchtet.", pauseMs: 180 },
+    { text: "Das Fenster ist geschlossen.", pauseMs: 180 },
+  ];
+  const seen: unknown[] = [];
+  installSpeechProviders([
+    createMockSpeechProvider("mock", {
+      prepareSegmentationProfile: async () => undefined,
+      getSegmentationProfile: () => ({
+        minChars: 130,
+        targetWords: 32,
+        maxWords: 45,
+        maxChars: 400,
+        pauses: { paragraph: 320, sentence: 180, clause: 80, fragment: 60 },
+      }),
+      streamSynthesizeTelephony: async ({ segments }) => {
+        seen.push(segments);
+        return {
+          audioStream: new ReadableStream({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          outputFormat: "pcm_24000",
+          sampleRate: 24000,
+        };
+      },
+    }),
+  ]);
+  const cfg = { tts: { enabled: true, provider: "mock" } };
+  for (const segmentBySentence of [undefined, true]) {
+    const result = await streamTextToSpeechTelephony({ text, cfg, segmentBySentence });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      await result.audioStream.cancel();
+    }
+  }
+  expect(seen).toEqual([defaultSegments, talkSegments]);
 });
 
 it("refuses synthesis when an opted-in model profile was not admitted", async () => {
