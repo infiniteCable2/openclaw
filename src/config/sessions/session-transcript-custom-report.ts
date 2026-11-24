@@ -26,6 +26,9 @@ export async function appendCustomTranscriptReportWithWorker(params: {
     suppressWhenAssistantRun: report.suppressWhenAssistantRun,
   };
   const limits = params.contextAdmission && structuredClone(params.contextAdmission.limits);
+  // Exact receipt selection validates the encoded report's type before the worker appends it.
+  const customReportType =
+    selection.receipt && selection.customTypes.length === 1 ? selection.customTypes[0] : undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
     const prepared = await operation.execute({ type: "prepare", input: selection });
     assertCurrent();
@@ -54,8 +57,16 @@ export async function appendCustomTranscriptReportWithWorker(params: {
       params.contextAdmission?.onDeferred();
       return ok(undefined);
     }
-    if (result.value.committed) {
-      params.publish(result.value);
+    const publication = result.value;
+    if (publication.committed) {
+      params.publish(
+        customReportType && publication.transcriptUpdate && !publication.cliHistoryChanged
+          ? {
+              ...publication,
+              transcriptUpdate: { ...publication.transcriptUpdate, customReportType },
+            }
+          : publication,
+      );
       return ok(undefined);
     }
     // Only a proven no-write revision mismatch permits another selection.

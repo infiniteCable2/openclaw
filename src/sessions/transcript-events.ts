@@ -22,6 +22,8 @@ export type InternalSessionTranscriptUpdate = {
   sessionId?: string;
   /** Committed lifecycle owner; internal delivery must not expose it publicly. */
   lifecycleRevision?: string;
+  /** Type of an exact single custom report confirmed by the native writer. */
+  customReportType?: string;
   message?: unknown;
   messageId?: string;
   messageSeq?: number;
@@ -32,7 +34,7 @@ export type InternalSessionTranscriptUpdate = {
 
 export type SessionTranscriptUpdate = Omit<
   InternalSessionTranscriptUpdate,
-  "sessionFile" | "lifecycleRevision" | "target" | "assistantItemIds"
+  "sessionFile" | "lifecycleRevision" | "target" | "assistantItemIds" | "customReportType"
 > & {
   target: Omit<SessionTranscriptUpdateTarget, "storePath">;
 };
@@ -164,6 +166,7 @@ function normalizeSessionTranscriptUpdate(
   const agentId = normalizeOptionalString(update.agentId) ?? target?.agentId;
   const sessionId = normalizeOptionalString(update.sessionId) ?? target?.sessionId;
   const lifecycleRevision = normalizeOptionalString(update.lifecycleRevision);
+  const { customReportType } = update;
   const messageId = normalizeOptionalString(update.messageId);
   const runId = normalizeOptionalString(update.runId);
   return {
@@ -173,6 +176,7 @@ function normalizeSessionTranscriptUpdate(
     ...(agentId ? { agentId } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(lifecycleRevision ? { lifecycleRevision } : {}),
+    ...(customReportType ? { customReportType } : {}),
     ...(update.message !== undefined ? { message: update.message } : {}),
     ...(messageId ? { messageId } : {}),
     ...(messageSeq !== undefined ? { messageSeq } : {}),

@@ -2,6 +2,7 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { cloneEnvWithPlatformSemantics } from "../../config/config-env-vars.js";
+import { CONVERSATION_KNOWLEDGE_SEED } from "../../config/sessions/conversation-knowledge-context-kinds.js";
 import { readPreparedSessionTranscriptChange } from "../../config/sessions/session-transcript-authority.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getBackgroundOwnerLane } from "../../process/background-work.js";
@@ -396,7 +397,14 @@ export function createConversationKnowledgePrefetchOwner(params: {
         changed.storePath &&
         path.resolve(changed.storePath) === target.storePath
       ) {
-        request("source", "root-transcript");
+        // The shared root advances its raw position. A seed receipt adds no source
+        // contribution, so existing recipients can retain their prepared selection.
+        const markerOnly =
+          update.customReportType === CONVERSATION_KNOWLEDGE_SEED &&
+          update.lifecycleRevision === root.lifecycleRevision;
+        if (!markerOnly || !params.watchRecipientRuntime) {
+          request("source", "root-transcript");
+        }
       }
     });
     unsubscribeRecipient = sessionChanges.subscribeProjection((change) => {

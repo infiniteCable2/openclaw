@@ -17,7 +17,10 @@ import { runWithSqliteWorkerStateContext } from "../../infra/sqlite-worker-state
 import type { AssistantMessage } from "../../llm/types.js";
 import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
 import { resetSecretRedactionRegistryForTest } from "../../logging/secret-redaction-registry.test-support.js";
-import { onInternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
+import {
+  onInternalSessionTranscriptUpdate,
+  onSessionTranscriptUpdate,
+} from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -504,6 +507,29 @@ describe("SQLite report payload selection", () => {
       parentId: "competitor",
       content: competitor.content,
     });
+  });
+
+  it("adds the exact report type only to the internal notification for a committed receipt", async () => {
+    await seedReports();
+    const internal = vi.fn();
+    const outward = vi.fn();
+    onTestFinished(onInternalSessionTranscriptUpdate(internal));
+    onTestFinished(onSessionTranscriptUpdate(outward));
+
+    const report = {
+      ...custom((existing) =>
+        existing ? undefined : { ...statusReport("new receipt"), details: { id: "receipt-1" } },
+      ),
+      receipt: { field: "id", value: "receipt-1" },
+    };
+    await expectReport(report);
+    await expectReport(report);
+
+    expect(internal).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ customReportType: "status", sessionId: scope.sessionId }),
+    );
+    expect(outward).toHaveBeenCalledOnce();
+    expect(outward.mock.calls[0]?.[0]).not.toHaveProperty("customReportType");
   });
 
   it("serializes reports before worker transfer", async () => {

@@ -3,6 +3,7 @@ import path from "node:path";
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { beginForegroundSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
+import { CONVERSATION_KNOWLEDGE_SEED } from "../../config/sessions/conversation-knowledge-context-kinds.js";
 import { SessionEntryChangedDuringReadError } from "../../config/sessions/session-entry-read-errors.js";
 import type { SessionTranscriptAuthority } from "../../config/sessions/session-transcript-authority.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
@@ -99,6 +100,10 @@ function gate() {
 
 function rootUpdate(
   overrides: Partial<NonNullable<Parameters<typeof emitSessionTranscriptUpdate>[0]["target"]>> = {},
+  metadata: Pick<
+    Parameters<typeof emitSessionTranscriptUpdate>[0],
+    "customReportType" | "lifecycleRevision"
+  > = {},
 ) {
   emitSessionTranscriptUpdate({
     target: {
@@ -109,14 +114,21 @@ function rootUpdate(
       ...overrides,
     },
     lifecycleRevision: target.root.lifecycleRevision,
+    ...metadata,
   });
 }
 
-function fixture() {
+function fixture(watchRecipientRuntime = false) {
   const prepare = vi.fn(async (_signal: AbortSignal, _prepareSources?: boolean) => {});
   const clear = vi.fn();
   const assertCurrent = vi.fn();
-  const owner = createConversationKnowledgePrefetchOwner({ target, prepare, clear, assertCurrent });
+  const owner = createConversationKnowledgePrefetchOwner({
+    target,
+    prepare,
+    clear,
+    assertCurrent,
+    watchRecipientRuntime,
+  });
   return { owner, prepare, clear, assertCurrent };
 }
 
@@ -606,6 +618,30 @@ describe("conversation knowledge prefetch lifecycle", () => {
     await owner.wait();
     expect(prepare).toHaveBeenCalledTimes(2);
     expect(clear).not.toHaveBeenCalled();
+  });
+
+  it("leaves current seed receipts to the shared root and still wakes recipients for source reports", async () => {
+    const rootOwner = fixture();
+    const recipient = fixture(true);
+    const settle = () => Promise.all([rootOwner.owner.wait(), recipient.owner.wait()]);
+    await settle();
+
+    rootUpdate({}, { customReportType: CONVERSATION_KNOWLEDGE_SEED });
+    await settle();
+    expect(rootOwner.prepare).toHaveBeenCalledTimes(2);
+    expect(recipient.prepare).toHaveBeenCalledOnce();
+
+    rootUpdate();
+    await settle();
+    expect(recipient.prepare).toHaveBeenCalledTimes(2);
+
+    rootUpdate({}, { customReportType: CONVERSATION_KNOWLEDGE_SEED, lifecycleRevision: undefined });
+    await settle();
+    expect(recipient.prepare).toHaveBeenCalledTimes(3);
+
+    rootUpdate({}, { customReportType: ` ${CONVERSATION_KNOWLEDGE_SEED} ` });
+    await settle();
+    expect(recipient.prepare).toHaveBeenCalledTimes(4);
   });
 
   it("ignores other roots, physical stores, agents and incomplete target metadata", async () => {

@@ -130,9 +130,11 @@ export type TranscriptReportCommit = {
   abortedPartial?: AbortedSessionTranscriptPartialResult;
   sessionEntryChanged?: boolean;
   /** Exact committed target; metadata-only wakeups never re-resolve a caller's selector. */
-  transcriptUpdate?: {
+  transcriptUpdate?: Pick<
+    InternalSessionTranscriptUpdate,
+    "lifecycleRevision" | "customReportType"
+  > & {
     target: NonNullable<InternalSessionTranscriptUpdate["target"]>;
-    lifecycleRevision?: string;
   };
   entry?: InternalSessionEntry;
   fullEntry?: InternalSessionEntry;
