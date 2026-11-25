@@ -172,20 +172,25 @@ export function readSessionTranscriptMaintenance(
   return readWithCanonicalSessionAdmission(database, () =>
     runSqliteReadSnapshotSync(
       database.db,
-      (): SessionTranscriptMaintenanceFacts =>
-        request.operation === "identity"
-          ? {
-              kind: "transcript-maintenance",
-              seq: readTranscriptIdentityByEventId(database, target.sessionId, request.eventId)
-                ?.seq,
-            }
+      (): SessionTranscriptMaintenanceFacts => {
+        const kind = "transcript-maintenance";
+        if (request.operation === "identity") {
+          return {
+            kind,
+            seq: readTranscriptIdentityByEventId(database, target.sessionId, request.eventId)?.seq,
+          };
+        }
+        const version = readTranscriptContextVersionInTransaction(database, target.sessionId);
+        return request.contextOnly
+          ? { kind, version }
           : {
-              kind: "transcript-maintenance",
-              version: readTranscriptContextVersionInTransaction(database, target.sessionId),
+              kind,
+              version,
               lifecycleRevision: readSessionEntryIdentity(database, target.sessionKey)
                 ?.lifecycleRevision,
               appendParentId: resolveTranscriptMessageAppendParent(database, target.sessionId, {}),
-            },
+            };
+      },
       { databaseLabel: database.path, operationLabel: "session transcript maintenance read" },
     ),
   );

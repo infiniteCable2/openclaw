@@ -214,7 +214,7 @@ export async function readConversationKnowledgeInputs(params: {
       { ...target, env: params.reader.database.env },
       undefined,
       params.signal,
-    ).readMaintenance({ operation: "version" });
+    ).readMaintenance({ operation: "version", contextOnly: true });
     check();
     if (!facts.version) {
       throw new Error("Conversation preparation input version is unavailable");

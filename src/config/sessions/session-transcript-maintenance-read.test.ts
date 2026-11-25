@@ -208,3 +208,16 @@ it("reads only append work and rejects later checkpoints across branches and adm
       reads.restore();
     }
   }));
+
+it("reads the same context version without requiring the writable append parent", () =>
+  withSessionState("maintenance-context-version", async ({ scope }) => {
+    const manager = await SessionManager.openAsync(scope);
+    await manager.appendMessageAsync(makeUserMessage("One committed message", 1));
+    const reader = hydration.prepareSessionTranscriptHydration(scope);
+    const full = await reader.readMaintenance({ operation: "version" });
+    expect(full.appendParentId).toEqual(expect.any(String));
+    expect(await reader.readMaintenance({ operation: "version", contextOnly: true })).toEqual({
+      kind: "transcript-maintenance",
+      version: full.version,
+    });
+  }));

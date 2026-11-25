@@ -245,6 +245,9 @@ function maintenance(
     };
   }
 
+  if (request.operation === "version" && request.contextOnly) {
+    return { kind, version: window.hot.transcript.version };
+  }
   const navigation = createSessionActorMemoryHistoryNavigation(window);
   switch (request.operation) {
     case "previous":

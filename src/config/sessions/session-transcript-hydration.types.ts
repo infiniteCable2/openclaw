@@ -36,7 +36,7 @@ export type SessionTranscriptMaintenanceRead =
     }
   | { operation: "previous"; beforeSeq: number }
   | { operation: "identity"; eventId: string }
-  | { operation: "version" }
+  | { operation: "version"; contextOnly?: boolean }
   | { operation: "custom-branch"; leafEntryId: string | null; customType: string }
   | {
       operation: "nested-activity";
