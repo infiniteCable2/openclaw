@@ -194,6 +194,18 @@ it("uses selected native placement and exact transcript custody only for one gen
   expect(mocks.compact).toHaveBeenCalledTimes(3);
 });
 
+it("stops before summary generation when the native recipient has since been archived", async () => {
+  const f = fixture();
+  const recipientStillIdle = vi.fn(async () => false);
+  await expect(
+    compactConversationKnowledgeWhileIdle({ ...f.params, recipientStillIdle }),
+  ).resolves.toBe(false);
+  expect(recipientStillIdle).toHaveBeenCalledOnce();
+  expect(mocks.compact).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ budgetPreflight: expect.objectContaining({ checkOnly: true }) }),
+  );
+});
+
 it.each(["active-model", "historical"] as const)(
   "never compacts a previously committed %s carrier",
   async (status) => {

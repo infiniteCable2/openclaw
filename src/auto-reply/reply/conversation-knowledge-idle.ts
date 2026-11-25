@@ -558,6 +558,15 @@ export async function admitPreparedConversationKnowledgeWhileIdle(
                             assertCurrent: check,
                             signal: owner.signal,
                             onNativeDecision: recordCapacity,
+                            recipientStillIdle: () =>
+                              reader.withRead(
+                                { sessionKeys: [branch.sessionKey], snapshotFields: [] },
+                                check,
+                                (facts) => {
+                                  const current = facts.entries[0]?.entry;
+                                  return isIdleEntry(current, branch) && !executing(current);
+                                },
+                              ),
                             onReady: async (nativeBudget, version) => {
                               const current = await readContext();
                               check();

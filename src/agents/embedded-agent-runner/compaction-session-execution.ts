@@ -1,7 +1,10 @@
 import { resolveCompactionReplayEligibility } from "@openclaw/ai/transports";
 import { floorPositiveFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
-import { captureOwnedTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
+import {
+  captureOwnedTranscriptWriteAssertion,
+  requiresNativeCompactionSourceChecks,
+} from "../../config/sessions/transcript-write-context.js";
 import type { ContextEngineSessionTarget } from "../../context-engine/types.js";
 import { resolveDiagnosticModelContentCapturePolicy } from "../../infra/diagnostic-llm-content.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -439,28 +442,30 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
             compactionKind: "server-endpoint",
           });
         };
-        const serverResult = params.seedCompaction
-          ? undefined
-          : await attemptServerEndpointCompaction({
-              trigger,
-              streamFn: session.agent.streamFn,
-              model: effectiveModel,
-              context: { systemPrompt: systemPromptText, messages: session.messages },
-              sessionManager,
-              extraParams: effectiveExtraParams,
-              requestBudget,
-              customInstructions: params.customInstructions,
-              onUsage: recordUsage,
-              onCompactionCommitted: recordServerCompaction,
-              assertActive,
-              requestOptions: {
-                apiKey: transportApiKey,
-                sessionId: params.sessionId,
-                authProfileId: runtimePlan.auth.forwardedAuthProfileId,
-                timeoutMs: compactionTimeoutMs,
-                signal: params.abortSignal,
-              },
-            });
+        // Endpoint rewrites do not publish through the conditional summary append.
+        const serverResult =
+          params.seedCompaction || requiresNativeCompactionSourceChecks(sessionTarget)
+            ? undefined
+            : await attemptServerEndpointCompaction({
+                trigger,
+                streamFn: session.agent.streamFn,
+                model: effectiveModel,
+                context: { systemPrompt: systemPromptText, messages: session.messages },
+                sessionManager,
+                extraParams: effectiveExtraParams,
+                requestBudget,
+                customInstructions: params.customInstructions,
+                onUsage: recordUsage,
+                onCompactionCommitted: recordServerCompaction,
+                assertActive,
+                requestOptions: {
+                  apiKey: transportApiKey,
+                  sessionId: params.sessionId,
+                  authProfileId: runtimePlan.auth.forwardedAuthProfileId,
+                  timeoutMs: compactionTimeoutMs,
+                  signal: params.abortSignal,
+                },
+              });
         const activeSession = session;
         let clientResult: Awaited<ReturnType<typeof activeSession.compact>> | undefined;
         // A timeout after generation is persistence; recovery would discard a real summary.

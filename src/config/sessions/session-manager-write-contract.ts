@@ -34,6 +34,7 @@ import type {
   SessionPendingInputWorkerFacts,
   SessionPendingInputWorkerReceipt,
 } from "./session-pending-input.types.js";
+import type { SessionSourcePredicate } from "./session-source-authority.js";
 import type {
   InitialSessionTranscriptWriter,
   SessionTranscriptWriterFence,
@@ -172,6 +173,8 @@ export type SessionMetadataOperations = SessionMaintenanceOperations &
         scope: MetadataTarget;
         event: Omit<SessionMessageEntry, "message"> | string;
         initialModel?: ModelChangeEntry;
+        /** Prepared native source predicates for a compaction at the admitted version. */
+        compactionSources?: SessionSourcePredicate[];
         cliWriter?: CliHistoryWriterFacts;
         message?: {
           messageJson: string;

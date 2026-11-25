@@ -1,6 +1,7 @@
 // Transcript write contexts carry the admitted run fence and teardown tracking
 // through nested session-manager callbacks.
 import path from "node:path";
+import { AsyncContext } from "../../shared/async-context.js";
 import { runWithAsyncStore } from "../../shared/async-store.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { getCliHistoryWriter } from "./cli-history-boundary.js";
@@ -26,6 +27,7 @@ import {
   captureSessionTranscriptTargetBinding,
   sameSessionTranscriptStorageEnvironment,
   sameSessionTranscriptTargetBinding,
+  type SessionTranscriptTargetBinding,
 } from "./transcript-target-binding.js";
 import {
   ownedTranscriptWriteContext,
@@ -49,6 +51,25 @@ type SessionTranscriptWriteRequest = Pick<
   OwnedSessionTranscriptWriteContext,
   "sessionFile" | "sessionKey" | "sessionTarget"
 >;
+
+const nativeCompactionSourceTarget = new AsyncContext<SessionTranscriptTargetBinding>(
+  Symbol("nativeCompactionSourceTarget"),
+);
+
+/** Opt in when compaction custody and all native predicates belong to this admitted target. */
+export function withNativeCompactionSourceChecks<T>(
+  target: SessionTranscriptTargetBinding,
+  run: () => T,
+): T {
+  return nativeCompactionSourceTarget.run(target, run);
+}
+
+export function requiresNativeCompactionSourceChecks(
+  target: SessionTranscriptTargetBinding,
+): boolean {
+  const selected = nativeCompactionSourceTarget.getStore();
+  return selected !== undefined && sameSessionTranscriptTargetBinding(selected, target);
+}
 
 /** Bind an initiating write's acknowledged source before fallible publication observers. */
 export async function withSessionTranscriptSourcePublication<T>(

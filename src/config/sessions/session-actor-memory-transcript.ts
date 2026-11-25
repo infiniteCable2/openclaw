@@ -131,6 +131,12 @@ export function createSessionActorMemoryTranscript(options: {
   ): SessionMetadataOperations["session.metadata.append"]["output"] => {
     bindScope(input.scope);
     const event = decodeMetadataAppendEvent(input);
+    if (
+      input.compactionSources?.length &&
+      (event.type !== "compaction" || validateSources(input.compactionSources).refusedSource)
+    ) {
+      throw new SessionTranscriptWriterClaimReboundError();
+    }
     const before = version();
     let result:
       | TranscriptMessageAppendResult<SessionMessageEntry["message"] | undefined>

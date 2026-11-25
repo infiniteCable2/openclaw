@@ -9,6 +9,8 @@ import {
 import { isReadableSessionMessage } from "../../config/sessions/session-entry-codec.js";
 import type { SessionMetadataOperations } from "../../config/sessions/session-manager-write-contract.js";
 import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
+import { readSessionSourceValidation } from "../../config/sessions/session-source-predicate.worker.js";
+import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/session-transcript-writer-claim-error.js";
 import { prepareTranscriptPayloadForReuse } from "../../config/sessions/transcript-payload.js";
 import type { EngineConnection } from "../../infra/sql-connection.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
@@ -59,6 +61,13 @@ export function applySessionMetadataAppendInTransaction(
   cursor?: TranscriptAppendCursor,
 ): SessionMetadataOperations["session.metadata.append"]["output"] {
   const event = preparation?.event ?? decodeMetadataAppendEvent(input);
+  if (
+    input.compactionSources?.length &&
+    (event.type !== "compaction" ||
+      readSessionSourceValidation(database, input.compactionSources).refusedSource)
+  ) {
+    throw new SessionTranscriptWriterClaimReboundError();
+  }
   let projectionNeedsReconcile = false;
   const projection = {
     persistActorMutation,

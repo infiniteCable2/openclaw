@@ -17,7 +17,10 @@ import {
   type PreparedSessionSourceAuthority,
 } from "../../config/sessions/session-source-authority.js";
 import type { SessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
-import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
+import {
+  withNativeCompactionSourceChecks,
+  withSessionTranscriptWriteAssertion,
+} from "../../config/sessions/transcript-write-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
@@ -36,6 +39,7 @@ type NativeMaintenanceParams = {
   assertCurrent: SessionSourceAssertion;
   signal: AbortSignal;
   request: CompactEmbeddedAgentSessionRuntimeParams;
+  recipientStillIdle?(): Promise<boolean>;
 };
 
 /** One native writer/cleanup boundary for warm and cold idle maintenance requests. */
@@ -72,23 +76,34 @@ export async function runIdleConversationKnowledgeNativeMaintenance(
   const { compactEmbeddedAgentSessionDirect } =
     await import("../../agents/embedded-agent-runner/compact.js");
   check();
+  if (
+    !params.request.budgetPreflight?.checkOnly &&
+    params.recipientStillIdle &&
+    !(await params.recipientStillIdle())
+  ) {
+    check();
+    return { ok: false, compacted: false };
+  }
+  check();
   const work = new AsyncWorkScope();
   try {
     const result = await work.track(() =>
-      withSessionTranscriptWriteAssertion(params.target, source, () =>
-        withCompleteCompactionSummary(() =>
-          compactEmbeddedAgentSessionDirect({
-            ...params.request,
-            sessionTarget: params.target,
-            sessionId: params.target.sessionId,
-            sessionKey: params.target.sessionKey,
-            agentId: params.target.agentId,
-            sessionFile: params.target.sessionKey,
-            abortSignal: params.signal,
-            disableTools: true,
-            modelFallbacksOverride: [],
-            trigger: "budget",
-          }),
+      withNativeCompactionSourceChecks(params.target, () =>
+        withSessionTranscriptWriteAssertion(params.target, source, () =>
+          withCompleteCompactionSummary(() =>
+            compactEmbeddedAgentSessionDirect({
+              ...params.request,
+              sessionTarget: params.target,
+              sessionId: params.target.sessionId,
+              sessionKey: params.target.sessionKey,
+              agentId: params.target.agentId,
+              sessionFile: params.target.sessionKey,
+              abortSignal: params.signal,
+              disableTools: true,
+              modelFallbacksOverride: [],
+              trigger: "budget",
+            }),
+          ),
         ),
       ),
     );
@@ -116,6 +131,7 @@ export async function compactConversationKnowledgeWhileIdle(params: {
   state: IdleConversationKnowledgeCompactionState;
   assertCurrent: SessionSourceAssertion;
   signal: AbortSignal;
+  recipientStillIdle?(): Promise<boolean>;
   readContext(): Promise<{
     messages: AgentMessage[];
     version?: SessionTranscriptContextVersion;

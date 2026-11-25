@@ -10,6 +10,11 @@ import type {
 } from "../../config/sessions/session-manager-write-contract.js";
 import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
 import {
+  prepareSessionSourceAuthority,
+  type SessionSourceAssertion,
+  type SessionSourcePredicate,
+} from "../../config/sessions/session-source-authority.js";
+import {
   captureSessionTranscriptQuestionAnswers,
   resolveSessionTranscriptReadFence,
 } from "../../config/sessions/session-transcript-read-fence.js";
@@ -21,6 +26,7 @@ import {
 import {
   assertSessionTranscriptInitialWriter,
   captureOwnedTranscriptWriteAssertion,
+  requiresNativeCompactionSourceChecks,
   SessionTranscriptWriterClaimReboundError,
   withOwnedSessionTranscriptWriterFence,
   withSessionTranscriptWriteAssertion,
@@ -77,6 +83,30 @@ function requireCommittedMetadataAppend(
   return { ...snapshot.value, result: snapshot.value.result };
 }
 
+async function withCompactionSourcePredicates<T>(
+  required: boolean,
+  source: SessionSourceAssertion,
+  append: (predicates: SessionSourcePredicate[] | undefined) => Promise<T>,
+): Promise<T> {
+  if (!required) {
+    return append(undefined);
+  }
+  const authority = await prepareSessionSourceAuthority(source);
+  let predicates: SessionSourcePredicate[] | undefined;
+  try {
+    authority.assertCurrent();
+    if (!authority.checks.length) {
+      throw new SessionTranscriptWriterClaimReboundError();
+    }
+    predicates = authority.checks.map(({ predicate }) => predicate);
+  } finally {
+    // Release preparation resources before the write. The admitted owner stays
+    // live through the append, and the native transaction rechecks the predicates.
+    await authority.release?.();
+  }
+  return append(predicates);
+}
+
 export class SessionManagerPersistence extends SessionManagerNativePersistence {
   protected async persistWorkerRecord(
     entry: SessionEntry | SessionLeafControl,
@@ -120,6 +150,8 @@ export class SessionManagerPersistence extends SessionManagerNativePersistence {
         )
       : undefined;
     const assertOwned = captureOwnedTranscriptWriteAssertion(identity);
+    const requireCompactionSources =
+      entry.type === "compaction" && requiresNativeCompactionSourceChecks(identity);
     const assertBinding = () => {
       const current = this.persistenceTarget;
       if (
@@ -260,87 +292,90 @@ export class SessionManagerPersistence extends SessionManagerNativePersistence {
       }
       let loadedVersion = this.transcriptVersion;
       const append = (mutationAt: number | null | undefined) =>
-        appendSessionManagerActor({
-          actor,
-          assertCurrent,
-          beforeFreshMessageCommit,
-          toolResult: entry.type === "message" && entry.message.role === "toolResult",
-          message: entry.type === "message" ? entry.message : null,
-          append: {
-            kind: "metadata",
-            ...(modelPromptProjection ? { modelPromptProjection } : {}),
-            input: {
-              scope: captured,
-              event: wireEvent,
-              ...(initialModel ? { initialModel } : {}),
-              ...(wireMessage ? { message: wireMessage } : {}),
-              options: {
-                ...(appendIntent ? { appendIntent } : {}),
-                // The atomic header checks the preimage; this event follows its new watermark.
-                ...(!this.persistenceHeaderPending && mutationAt !== undefined
-                  ? { expectedMutationAt: mutationAt }
+        withCompactionSourcePredicates(requireCompactionSources, assertOwned, (compactionSources) =>
+          appendSessionManagerActor({
+            actor,
+            assertCurrent,
+            beforeFreshMessageCommit,
+            toolResult: entry.type === "message" && entry.message.role === "toolResult",
+            message: entry.type === "message" ? entry.message : null,
+            append: {
+              kind: "metadata",
+              ...(modelPromptProjection ? { modelPromptProjection } : {}),
+              input: {
+                scope: captured,
+                event: wireEvent,
+                ...(compactionSources ? { compactionSources } : {}),
+                ...(initialModel ? { initialModel } : {}),
+                ...(wireMessage ? { message: wireMessage } : {}),
+                options: {
+                  ...(appendIntent ? { appendIntent } : {}),
+                  // The atomic header checks the preimage; this event follows its new watermark.
+                  ...(!this.persistenceHeaderPending && mutationAt !== undefined
+                    ? { expectedMutationAt: mutationAt }
+                    : {}),
+                },
+                ...(view === "reload"
+                  ? {
+                      view: {
+                        loadedVersion,
+                        limits: this.boundedContextLimits,
+                        admission,
+                        questionAnswers: questionAnswers?.answers,
+                      },
+                    }
                   : {}),
               },
-              ...(view === "reload"
+              ...(this.persistenceHeaderPending || (initialWriter && !initialWriter.committedFence)
                 ? {
-                    view: {
-                      loadedVersion,
-                      limits: this.boundedContextLimits,
-                      admission,
-                      questionAnswers: questionAnswers?.answers,
+                    initialization: {
+                      scope: captured,
+                      entry: { sessionId: captured.sessionId, updatedAt: Date.now() },
+                      ...(initialWriter && !initialWriter.committedFence
+                        ? { initialWriterRunId: initialWriter.writerRunId }
+                        : {}),
+                    },
+                  }
+                : {}),
+              ...(this.persistenceHeaderPending
+                ? {
+                    header: {
+                      scope: captured,
+                      event: JSON.stringify(header),
+                      options: mutationAt !== undefined ? { expectedMutationAt: mutationAt } : {},
                     },
                   }
                 : {}),
             },
-            ...(this.persistenceHeaderPending || (initialWriter && !initialWriter.committedFence)
-              ? {
-                  initialization: {
-                    scope: captured,
-                    entry: { sessionId: captured.sessionId, updatedAt: Date.now() },
-                    ...(initialWriter && !initialWriter.committedFence
-                      ? { initialWriterRunId: initialWriter.writerRunId }
-                      : {}),
-                  },
-                }
-              : {}),
-            ...(this.persistenceHeaderPending
-              ? {
-                  header: {
-                    scope: captured,
-                    event: JSON.stringify(header),
-                    options: mutationAt !== undefined ? { expectedMutationAt: mutationAt } : {},
-                  },
-                }
-              : {}),
-          },
-          onCommitted: (committed) => {
-            if (committed.initialEntry?.fence) {
-              initialWriter?.recordCommitted(committed.initialEntry.fence);
-              Object.assign(target, committed.initialEntry.fence);
-              Object.assign(captured, committed.initialEntry.fence);
-            }
-            const committedHeader = committed.header?.snapshot;
-            if (committedHeader?.ok && committedHeader.value.result?.appended) {
-              assertBinding();
-              this.persistenceHeaderPending = false;
-              loadedVersion = committedHeader.value.after;
-            }
-            // Identity observers may cancel the run; retain its claim and header first.
-            const committedIdentity = committed.initialEntry?.identity;
-            if (committedIdentity) {
-              const databaseIdentity = actor.target.database;
-              publishCommittedSessionIdentity(
-                captured.agentId,
-                databaseIdentity.kind === "file"
-                  ? databaseIdentity.physicalIdentity
-                  : databaseIdentity.incarnation,
-                committedIdentity.previous,
-                committedIdentity.current,
-              );
-              assertCurrent();
-            }
-          },
-        });
+            onCommitted: (committed) => {
+              if (committed.initialEntry?.fence) {
+                initialWriter?.recordCommitted(committed.initialEntry.fence);
+                Object.assign(target, committed.initialEntry.fence);
+                Object.assign(captured, committed.initialEntry.fence);
+              }
+              const committedHeader = committed.header?.snapshot;
+              if (committedHeader?.ok && committedHeader.value.result?.appended) {
+                assertBinding();
+                this.persistenceHeaderPending = false;
+                loadedVersion = committedHeader.value.after;
+              }
+              // Identity observers may cancel the run; retain its claim and header first.
+              const committedIdentity = committed.initialEntry?.identity;
+              if (committedIdentity) {
+                const databaseIdentity = actor.target.database;
+                publishCommittedSessionIdentity(
+                  captured.agentId,
+                  databaseIdentity.kind === "file"
+                    ? databaseIdentity.physicalIdentity
+                    : databaseIdentity.incarnation,
+                  committedIdentity.previous,
+                  committedIdentity.current,
+                );
+                assertCurrent();
+              }
+            },
+          }),
+        );
       const authority = { assertCurrent, authorize: assertCurrent };
       let mutationAt =
         expectedMutationAt !== undefined ? expectedMutationAt : this.transcriptMutationAt;
@@ -467,30 +502,36 @@ export class SessionManagerPersistence extends SessionManagerNativePersistence {
           mutationAt: number | null | undefined,
           intent?: "active-branch",
         ) => {
-          const receipt = await receiveSessionManagerCommit("session.metadata.append", () =>
-            worker.execute({
-              type: "session.metadata.append",
-              input: {
-                scope: captured,
-                event: bytes,
-                ...(initialModel && event.type !== "session" ? { initialModel } : {}),
-                ...(event.type === "message" ? { message: wireMessage } : {}),
-                options: {
-                  ...(intent ? { appendIntent: intent } : {}),
-                  ...(mutationAt !== undefined ? { expectedMutationAt: mutationAt } : {}),
-                },
-                ...(view === "reload" && event.type !== "session"
-                  ? {
-                      view: {
-                        loadedVersion: this.transcriptVersion,
-                        limits: this.boundedContextLimits,
-                        admission,
-                        questionAnswers: questionAnswers?.answers,
-                      },
-                    }
-                  : {}),
-              },
-            }),
+          const receipt = await withCompactionSourcePredicates(
+            event.type === "compaction" && requireCompactionSources,
+            assertOwned,
+            (compactionSources) =>
+              receiveSessionManagerCommit("session.metadata.append", () =>
+                worker.execute({
+                  type: "session.metadata.append",
+                  input: {
+                    scope: captured,
+                    event: bytes,
+                    ...(compactionSources ? { compactionSources } : {}),
+                    ...(initialModel && event.type !== "session" ? { initialModel } : {}),
+                    ...(event.type === "message" ? { message: wireMessage } : {}),
+                    options: {
+                      ...(intent ? { appendIntent: intent } : {}),
+                      ...(mutationAt !== undefined ? { expectedMutationAt: mutationAt } : {}),
+                    },
+                    ...(view === "reload" && event.type !== "session"
+                      ? {
+                          view: {
+                            loadedVersion: this.transcriptVersion,
+                            limits: this.boundedContextLimits,
+                            admission,
+                            questionAnswers: questionAnswers?.answers,
+                          },
+                        }
+                      : {}),
+                  },
+                }),
+              ),
           );
           const result = receipt.value;
           if (result.projectionNeedsReconcile && !receipt.failure) {

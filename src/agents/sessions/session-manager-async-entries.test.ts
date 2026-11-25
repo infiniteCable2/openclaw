@@ -11,13 +11,20 @@ import {
 import { persistCompactionBoundaryWithSessionEntryAsync } from "../../config/sessions/session-accessor.sqlite-compaction-runtime.js";
 import * as hostTranscriptWriter from "../../config/sessions/session-accessor.sqlite-transcript-write.kernel.js";
 import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
-import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
+import { captureSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.js";
+import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import { captureSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
+import {
+  withNativeCompactionSourceChecks,
+  withSessionTranscriptWriteAssertion,
+} from "../../config/sessions/transcript-write-context.js";
 import {
   onInternalDiagnosticEvent,
   waitForDiagnosticEventsDrained,
 } from "../../infra/diagnostic-events.js";
 import { SessionManager } from "../../plugin-sdk/agent-sessions.js";
 import { withPluginRuntimePluginScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { withSessionCompactionPersistenceAsync } from "./session-compaction-persistence.js";
 import * as actorAppend from "./session-manager-actor-append.js";
@@ -457,3 +464,55 @@ it("deduplicates legacy session methods across managers while preserving immedia
     );
   }
 });
+
+it.each(["worker", "actor"] as const)(
+  "commits compaction only while the native archive predicate matches (%s)",
+  async (backend) => {
+    await withFixture("compaction-source-archive", async ({ target, seed, reopen }) => {
+      const database = openOpenClawAgentDatabase({ agentId: "main", path: target.storePath });
+      const source = captureSessionEntryReadSource(database, undefined);
+      const assertCurrent: SessionSourceAssertion = Object.assign(() => {}, {
+        prepareSessionSource: async () => ({
+          assertCurrent() {},
+          checks: [
+            {
+              predicate: {
+                source,
+                sessionKey: target.sessionKey!,
+                fields: ["sessionId", "archivedAt"] as const,
+                expected: { sessionId: target.sessionId },
+              },
+              refuse: () => {
+                throw new Error("Synthetic archival changed");
+              },
+            },
+          ],
+        }),
+      });
+      const append = async (summary: string) => {
+        const run = async () => {
+          const manager = await reopen();
+          return withNativeCompactionSourceChecks(
+            captureSessionTranscriptTargetBinding(target),
+            () =>
+              withSessionTranscriptWriteAssertion(target, assertCurrent, () =>
+                manager.appendCompactionAsync(summary, seed, 10),
+              ),
+          );
+        };
+        return backend === "actor" ? withSelectedTranscriptReader(target, run, true) : run();
+      };
+      await expect(append("Current context")).resolves.toEqual(expect.any(String));
+      const before = await loadTranscriptEvents(target);
+      await replaceSessionEntry(target, {
+        sessionId: target.sessionId,
+        updatedAt: 2,
+        archivedAt: 2,
+      });
+      await expect(append("Stale summary")).rejects.toThrow(
+        "session writer claim changed before transcript persistence",
+      );
+      expect(await loadTranscriptEvents(target)).toEqual(before);
+    });
+  },
+);
