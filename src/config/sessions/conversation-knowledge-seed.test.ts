@@ -8,7 +8,6 @@ import {
   conversationKnowledgeOrigin,
   CONVERSATION_KNOWLEDGE_REPORT,
   CONVERSATION_KNOWLEDGE_SOURCE_LIMITS,
-  CONVERSATION_UTTERANCE_REPORT,
 } from "./conversation-knowledge.js";
 import type { TranscriptReport } from "./session-accessor.sqlite-transcript-reports.types.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
@@ -255,6 +254,9 @@ describe("explicit native conversation history seed", () => {
     expect(mocks.delta).not.toHaveBeenCalled();
     expect(mocks.record).not.toHaveBeenCalled();
     expect(mocks.voice).not.toHaveBeenCalled();
+    expect(mocks.reports).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ customTypes: [CONVERSATION_KNOWLEDGE_SEED] }),
+    );
     expect(savedReports).toHaveLength(1);
     expect(savedReports[0]?.details).toMatchObject({
       complete: true,
@@ -344,14 +346,10 @@ describe("explicit native conversation history seed", () => {
         through: anchor,
       },
     });
-    expect((await ensureConversationKnowledgeSeed(params)).status).toBe("resumed");
+    expect((await ensureConversationKnowledgeSeed(params)).status).toBe("seeded");
     expect(mocks.record).toHaveBeenCalledTimes(1);
-    expect(mocks.reports).toHaveBeenCalledTimes(2);
-    expect(mocks.reports).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        customTypes: [CONVERSATION_KNOWLEDGE_REPORT, CONVERSATION_UTTERANCE_REPORT],
-      }),
+    expect(mocks.reports).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ customTypes: [CONVERSATION_KNOWLEDGE_SEED] }),
     );
   });
 
@@ -369,7 +367,7 @@ describe("explicit native conversation history seed", () => {
       mocks.reports.mockClear();
       expect((await ensureConversationKnowledgeSeed(params)).status).toBe("seeded");
       expect(mocks.raw).toHaveBeenCalledTimes(1);
-      expect(mocks.reports).toHaveBeenCalledTimes(2);
+      expect(mocks.reports).toHaveBeenCalledTimes(1);
     },
   );
 

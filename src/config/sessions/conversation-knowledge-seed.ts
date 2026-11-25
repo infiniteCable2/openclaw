@@ -15,13 +15,9 @@ import {
   type ConversationKnowledgeBranch,
 } from "./conversation-knowledge-store.js";
 import {
-  CONVERSATION_KNOWLEDGE_REPORT,
   CONVERSATION_KNOWLEDGE_SOURCE_LIMITS,
-  CONVERSATION_UTTERANCE_REPORT,
   conversationKnowledgeOrigin,
   isConversationUtteranceObservation,
-  readConversationKnowledgeReceipt,
-  readConversationUtteranceObservation,
   type ConversationUtteranceObservation,
 } from "./conversation-knowledge.js";
 import { appendSessionTranscriptReport } from "./session-accessor.sqlite-transcript-reports.js";
@@ -119,7 +115,7 @@ export async function ensureConversationKnowledgeSeed(params: {
   assertCurrent: SessionSourceAssertion;
   signal?: AbortSignal;
 }): Promise<{
-  status: "not-enrolled" | "already-seeded" | "seeded" | "resumed" | "pending";
+  status: "not-enrolled" | "already-seeded" | "seeded" | "pending";
   reason?: "source-capacity";
   recorded: number;
   skipped: number;
@@ -169,24 +165,6 @@ export async function ensureConversationKnowledgeSeed(params: {
     }
     return { status: "already-seeded", recorded: 0, skipped: 0 };
   }
-  const reports = await readConversationKnowledgeReports({
-    target: root,
-    customTypes: [CONVERSATION_KNOWLEDGE_REPORT, CONVERSATION_UTTERANCE_REPORT],
-    assertCurrent: check,
-    signal: params.signal,
-  });
-  check();
-  const resumed = reports.some((event) => {
-    const record = asOptionalRecord(event);
-    const receipt =
-      readConversationKnowledgeReceipt(record?.details) ??
-      readConversationUtteranceObservation(record?.details);
-    return (
-      receipt?.sourceMode === "native" &&
-      receipt.source.sessionId === branch.sessionId &&
-      receipt.source.lifecycleRevision === branch.lifecycleRevision
-    );
-  });
   // Pin the complete native version before paging, including opaque navigation
   // changes that preserve generation and sequence but advance updatedAt.
   const metadata = prepareSessionTranscriptHydration(branch, undefined, params.signal);
@@ -419,5 +397,5 @@ export async function ensureConversationKnowledgeSeed(params: {
   if (!result.ok) {
     throw new Error("Conversation knowledge seed completion was refused");
   }
-  return { status: resumed ? "resumed" : "seeded", recorded, skipped };
+  return { status: "seeded", recorded, skipped };
 }
