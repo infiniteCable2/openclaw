@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/user-profile-constants.js";
 import type { ConversationKnowledgeReference } from "./conversation-knowledge.js";
 import {
   participantIdentityNamespace,
@@ -74,6 +75,17 @@ function conversationKnowledgeCurrentPersonIdentity(entry: Partial<InternalSessi
     participants,
     participantCount: participants.length,
   });
+}
+
+/** Legacy receipts rely on an exact private person recorded on the canonical source. */
+export function conversationKnowledgeLegacySourceNeedsPrivateProof(
+  entry: Partial<InternalSessionEntry>,
+) {
+  const identity = entry.participants?.[0]?.identity;
+  return (
+    !conversationKnowledgeAudienceIdentity(entry) ||
+    (identity?.type === "profile" && identity.id === GATEWAY_OWNER_PROFILE_ID)
+  );
 }
 
 /** A native saved contribution can attest only its exact turn, never the older session. */

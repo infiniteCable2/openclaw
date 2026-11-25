@@ -1,5 +1,6 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, onTestFinished, vi } from "vitest";
+import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/user-profile-constants.js";
 import { withinTest } from "../../../test/helpers/promise.js";
 import { createConversationContextCapacity } from "../../agents/embedded-agent-runner/run/prepared-conversation-context.js";
 import {
@@ -14,7 +15,9 @@ import {
 import * as knowledgeStoreReads from "../../config/sessions/conversation-knowledge-store.js";
 import { loadTranscriptEvents } from "../../config/sessions/session-accessor.js";
 import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.sqlite-transcript-write.test-support.js";
+import { recordSessionParticipantInWorker } from "../../config/sessions/session-sharing-store.async.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
+import * as sharing from "../../gateway/session-sharing-preparation.js";
 import { getBackgroundOwnerLane } from "../../process/background-work.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -47,9 +50,11 @@ for (const initialNeighbors of [false, true]) {
       let prefetch: ReturnType<typeof prepareConversationKnowledgeRecipient>;
       const preparation = vi.spyOn(knowledgePreparation, "prepareReplyConversationKnowledge");
       const roots = vi.spyOn(knowledgeStoreReads, "readConversationKnowledgeRoot");
+      const nativeReads = vi.spyOn(sharing, "prepareSessionMutationFacts");
       onTestFinished(() => {
         preparation.mockRestore();
         roots.mockRestore();
+        nativeReads.mockRestore();
       });
       budget.compact.mockClear();
       try {
@@ -80,10 +85,14 @@ for (const initialNeighbors of [false, true]) {
         // A missing saved audience alone is not denial: a current same-person
         // native roster can authorize ordinary history. This old source has neither.
         const legacy = await fixture.branch("unconfirmed-legacy", null);
+        const ownerLegacy = await fixture.branch("owner-only-legacy", {
+          type: "profile",
+          id: GATEWAY_OWNER_PROFILE_ID,
+        });
         const unlinked = await fixture.branch("unlinked-legacy", otherPerson);
         const owners = new Map(
           await Promise.all(
-            [valid, legacy, unlinked].map(
+            [valid, legacy, ownerLegacy, unlinked].map(
               async (source) => [source, await fixture.claim(source)] as const,
             ),
           ),
@@ -104,7 +113,7 @@ for (const initialNeighbors of [false, true]) {
             await recordConversationKnowledgeTurn({
               ...owners.get(source)!,
               ...terminal,
-              ...(source === legacy
+              ...(source === legacy || source === ownerLegacy
                 ? {}
                 : {
                     privateAudience: {
@@ -124,6 +133,7 @@ for (const initialNeighbors of [false, true]) {
         const expected = initialNeighbors ? [await publish(valid, "first-valid")] : [];
         for (let index = 0; index < 17; index++) {
           await publish(legacy, `unaudienced-${index}`);
+          await publish(ownerLegacy, `owner-only-${index}`);
         }
         for (let index = 0; index < 3; index++) {
           await publish(unlinked, `unlinked-${index}`);
@@ -196,7 +206,11 @@ for (const initialNeighbors of [false, true]) {
           prefetch!.cache.revision,
           prefetch!.cache.consumptionRevision,
         ];
+        const countReads = (source: typeof legacy) =>
+          nativeReads.mock.calls.filter(([request]) => request.sessionKey === source.sessionKey)
+            .length;
         await settle("initial");
+        const afterInitial = [countReads(legacy), countReads(ownerLegacy)];
         expect(await packets()).toEqual(expected);
         expect(prefetch.cache.preparedPackets(1)).toEqual([]);
         const quiet = counters();
@@ -208,8 +222,23 @@ for (const initialNeighbors of [false, true]) {
         stage = "publish:later-original";
         expected.push(await publish(valid, "later-valid-original"));
         await settle("later");
+        const afterAppend = [countReads(legacy), countReads(ownerLegacy)];
+        expect(afterInitial).toEqual([1, 1]);
+        expect(afterAppend).toEqual(afterInitial);
         expect(await packets()).toEqual(expected);
         expect(preparation.mock.calls.length).toBeGreaterThan(quiet[0]!);
+        expect(
+          await recordSessionParticipantInWorker(legacy, {
+            identity: person,
+            promptedAt: Date.now(),
+            sessionAgentId: legacy.agentId,
+            expectedSession: legacy,
+          }),
+        ).toBe("inserted");
+        await settle("restored-participant");
+        expect(countReads(legacy)).toBeGreaterThan(afterAppend[0]!);
+        expect((await packets()).length).toBeGreaterThan(expected.length);
+        expect(countReads(ownerLegacy)).toBe(afterAppend[1]);
         expect(budget.compact).not.toHaveBeenCalled();
         expect(streamMocks.streamSimple).not.toHaveBeenCalled();
       } finally {

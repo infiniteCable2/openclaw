@@ -9,8 +9,13 @@ import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-ent
 import type {
   PreparedPersonalConversationAdmission,
   PreparedPersonalConversationContributionGroup,
+  RetainedLegacyConversationSourceDenial,
 } from "../../gateway/session-transcript-personal-read.js";
 import type { PreparedRecipientConversationCheckpoint } from "./conversation-knowledge-checkpoint-recipient.js";
+import {
+  admissionKey,
+  createLegacySourceDenials,
+} from "./conversation-knowledge-legacy-source-denials.js";
 import {
   prepareConversationKnowledgeProgressInput,
   type ConversationKnowledgeProgressBase,
@@ -47,7 +52,10 @@ export function createConversationKnowledgeSourceCache<
   >();
   let bytes = 0;
   let admissionBytes = 0;
-  type ReleasableAdmission = Admission | PreparedPersonalConversationContributionGroup;
+  type ReleasableAdmission =
+    | Admission
+    | PreparedPersonalConversationContributionGroup
+    | RetainedLegacyConversationSourceDenial;
   const admissions = new Map<string, ConversationKnowledgeCachedAdmission<Admission>>();
   const admissionSources = new Map<string, string>();
   const retiringAdmissions = new Set<ReleasableAdmission>();
@@ -88,14 +96,7 @@ export function createConversationKnowledgeSourceCache<
       throw new AggregateError(errors, "Prepared conversation admission cleanup remains pending");
     }
   };
-  const admissionKey = (source: SessionTranscriptRuntimeTarget & { lifecycleRevision: string }) =>
-    JSON.stringify([
-      source.agentId,
-      source.storePath,
-      source.sessionKey,
-      source.sessionId,
-      source.lifecycleRevision,
-    ]);
+  const legacyDenials = createLegacySourceDenials(releaseAdmissions);
   const releaseUnusedAdmissions = () => {
     const selected = new Set(admissionSources.values());
     const retired: ReleasableAdmission[] = [];
@@ -294,6 +295,7 @@ export function createConversationKnowledgeSourceCache<
       // limit must not turn a large exact coverage ledger into a permanent reread loop.
       checkpointCoverage.set(id, coverage);
     },
+    ...legacyDenials.reader,
     preparedAdmission(source: SessionTranscriptRuntimeTarget & { lifecycleRevision: string }) {
       const entry = admissions.get(admissionKey(source));
       return entry?.kind === "single" ? entry.value : undefined;
@@ -619,6 +621,7 @@ export function createConversationKnowledgeSourceCache<
       preparedCheckpoint = undefined;
       checkpointCoverage.clear();
       const retired = [...admissions.values()].map((entry) => entry.value);
+      legacyDenials.clear((proof) => retiringAdmissions.add(proof));
       admissions.clear();
       admissionSources.clear();
       admissionBytes = 0;

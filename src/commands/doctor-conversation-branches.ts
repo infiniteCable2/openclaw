@@ -1,6 +1,7 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { listAgentIds } from "../agents/agent-roster.js";
 import { resolveAgentConversationMode } from "../config/agent-conversation-mode.js";
+import { conversationKnowledgeLegacySourceNeedsPrivateProof } from "../config/sessions/conversation-audience.js";
 import {
   CONVERSATION_KNOWLEDGE_CHECKPOINT,
   prepareConversationKnowledgeCheckpointCoverage,
@@ -64,6 +65,10 @@ const findingsByCode = {
     "info",
     "Contribution references have retained history for a source session instance that is no longer current.",
   ],
+  "source-audience-unavailable": [
+    "warning",
+    "Retained contribution references lack both a saved private scope and a verifiable private source participant.",
+  ],
   "anchor-unresolved": [
     "info",
     "Contribution anchors do not match the current source projection. Native history reads may still recover the range.",
@@ -87,6 +92,7 @@ type SubjectGroup = { identity: UserChannelIdentity; references: number };
 type BranchScan = {
   counts: Map<FindingCode, number>;
   missingSourceSessions: Set<string>;
+  unattributedSourceSessions: Set<string>;
   historicalWithoutPrivateRange: number;
   subjects: Map<string, SubjectGroup>;
 };
@@ -147,6 +153,7 @@ function scanAgent(
   const scan: BranchScan = {
     counts: new Map(),
     missingSourceSessions: new Set(),
+    unattributedSourceSessions: new Set(),
     historicalWithoutPrivateRange: 0,
     subjects: new Map(),
   };
@@ -324,6 +331,14 @@ function scanAgent(
       }
       continue;
     }
+    if (
+      !reference.privateAudience &&
+      !reference.readRange &&
+      conversationKnowledgeLegacySourceNeedsPrivateProof(facts.current)
+    ) {
+      count("source-audience-unavailable");
+      scan.unattributedSourceSessions.add(key);
+    }
     const participant = reference.privateAudience?.participant;
     const identity = participant && resolveSessionChannelParticipant(facts.current, participant);
     if (identity) {
@@ -399,8 +414,11 @@ export async function detectConversationBranchFindings(params: {
               const [severity, message] = findingsByCode[code];
               const details: Record<string, number> = { count };
               let summary = `${message} Count: ${count}.`;
-              if (code === "source-missing") {
-                const sourceSessions = read.value.missingSourceSessions.size;
+              if (code === "source-missing" || code === "source-audience-unavailable") {
+                const sourceSessions =
+                  code === "source-missing"
+                    ? read.value.missingSourceSessions.size
+                    : read.value.unattributedSourceSessions.size;
                 details.sourceSessions = sourceSessions;
                 summary = `${message} References: ${count}. Source sessions: ${sourceSessions}.`;
               }

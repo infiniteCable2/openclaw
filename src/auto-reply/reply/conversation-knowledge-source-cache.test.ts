@@ -71,6 +71,33 @@ const input = () => ({
   assertCurrent: vi.fn(),
 });
 
+it("releases legacy denial facts on source replacement, invalidation and clearing", () => {
+  const cache = createConversationKnowledgeSourceCache();
+  const exact = { ...target, lifecycleRevision: "first-life" };
+  const initial = { isCurrent: vi.fn(() => true), release: vi.fn() };
+  const changed = { ...exact, lifecycleRevision: "next-life" };
+  const replacement = { isCurrent: vi.fn(() => true), release: vi.fn() };
+  const late = cache.prepareLegacyDenialRetention(exact);
+  expect(cache.prepareLegacyDenialRetention(exact)(initial)).toBe(true);
+  expect(cache.hasCurrentLegacyDenial(exact, {})).toBe(true);
+  expect(cache.hasCurrentLegacyDenial(changed, {})).toBe(false);
+  expect(cache.prepareLegacyDenialRetention(changed)(replacement)).toBe(true);
+  expect(initial.release).toHaveBeenCalledOnce();
+  expect(cache.watchesLegacyDeniedSource(exact.sessionKey)).toBe(true);
+
+  replacement.isCurrent.mockImplementationOnce(() => {
+    throw new SessionTranscriptReadFenceError("Native source publication is pending");
+  });
+  expect(cache.hasCurrentLegacyDenial(changed, {})).toBe(false);
+  expect(replacement.release).toHaveBeenCalledOnce();
+  const beforeClear = { isCurrent: vi.fn(() => true), release: vi.fn() };
+  expect(cache.prepareLegacyDenialRetention(changed)(beforeClear)).toBe(true);
+  cache.clear();
+  expect(beforeClear.release).toHaveBeenCalledOnce();
+  expect(late(initial)).toBe(false);
+  expect(cache.watchesLegacyDeniedSource(exact.sessionKey)).toBe(false);
+});
+
 beforeEach(() => {
   boundary.read.mockReset();
   boundary.read.mockImplementation(async (_target, _selection, _signal, consume) => {

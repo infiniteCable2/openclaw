@@ -262,7 +262,8 @@ export function prepareConversationKnowledgeRecipient(params: {
       target: { ...branch, env: params.env },
       watchRecipientRuntime: true,
       assertCurrent: checkAudience,
-      watchesSource: rootCheckpoint.watchesSource,
+      watchesSource: (sessionKey) =>
+        rootCheckpoint.watchesSource(sessionKey) || cache.watchesLegacyDeniedSource(sessionKey),
       settle: () => rootCheckpoint.close(),
       clear: () => {
         unsubscribeAvailability();

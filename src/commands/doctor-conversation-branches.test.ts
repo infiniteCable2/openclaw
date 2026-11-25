@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/user-profile-constants.js";
 import { CONVERSATION_KNOWLEDGE_CHECKPOINT } from "../config/sessions/conversation-knowledge-checkpoint.js";
 import {
   CONVERSATION_KNOWLEDGE_REPORT,
@@ -6,6 +7,7 @@ import {
   type ConversationKnowledgeReceipt,
 } from "../config/sessions/conversation-knowledge.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry-replace.js";
+import { recordSessionParticipant } from "../config/sessions/session-accessor.sqlite-participants.native.js";
 import { readActiveTranscriptEntryAnchorInTransaction } from "../config/sessions/session-accessor.sqlite-transcript-anchor.js";
 import { replaceSqliteTranscriptEventsInTransaction } from "../config/sessions/session-accessor.sqlite-transcript-store.js";
 import { resolveAgentConversationRootSessionKey } from "../config/sessions/session-conversation-root-key.js";
@@ -73,6 +75,7 @@ it("reports branch integrity separately from exact channel profile links and lea
         {
           ...source,
           updatedAt: 1,
+          chatType: "direct",
           createdActor: { type: "human", source: "channel", id: participant.id },
           delivery: {
             kind: "external",
@@ -88,6 +91,10 @@ it("reports branch integrity separately from exact channel profile links and lea
             rootSessionLifecycleRevision: "superseded-root-life",
           },
         },
+      );
+      recordSessionParticipant(
+        { ...source, env },
+        { identity: { type: "profile", id: GATEWAY_OWNER_PROFILE_ID }, promptedAt: 1 },
       );
       const anchors = runOpenClawAgentWriteTransaction((owner) => {
         const timestamp = new Date(1).toISOString();
@@ -157,37 +164,45 @@ it("reports branch integrity separately from exact channel profile links and lea
         customType,
         details,
       });
-      runOpenClawAgentWriteTransaction((owner) => {
-        replaceSqliteTranscriptEventsInTransaction(owner, root, [
-          createSessionTranscriptHeader({ sessionId: root.sessionId }),
-          custom("exact", null, receipt),
-          custom("duplicate", "exact", receipt),
-          custom("stale", "duplicate", {
-            ...receipt,
-            through: { ...second, generation: "old" },
-            privateAudience: { participant, admission: { ...first, generation: "old" } },
-          }),
-          custom("missing", "stale", missingReceipt),
-          custom("missing-next", "missing", {
-            ...missingReceipt,
-            through: { ...second, ...missing },
-          }),
-          custom("historical", "missing-next", {
-            ...receipt,
-            source: historicalSource,
-            origin: conversationKnowledgeOrigin(historicalSource),
-          }),
-          custom("historical-no-range", "historical", {
-            ...receipt,
-            source: historicalSource,
-            origin: conversationKnowledgeOrigin(historicalSource),
-            through: second,
-            privateAudience: undefined,
-          }),
-          custom("malformed", "historical-no-range", {}),
-          custom("checkpoint", "malformed", {}, CONVERSATION_KNOWLEDGE_CHECKPOINT),
-        ]);
-      }, options);
+      const rootEvents = [
+        createSessionTranscriptHeader({ sessionId: root.sessionId }),
+        custom("exact", null, receipt),
+        custom("duplicate", "exact", receipt),
+        custom("stale", "duplicate", {
+          ...receipt,
+          through: { ...second, generation: "old" },
+          privateAudience: { participant, admission: { ...first, generation: "old" } },
+        }),
+        custom("missing", "stale", missingReceipt),
+        custom("missing-next", "missing", {
+          ...missingReceipt,
+          through: { ...second, ...missing },
+        }),
+        custom("historical", "missing-next", {
+          ...receipt,
+          source: historicalSource,
+          origin: conversationKnowledgeOrigin(historicalSource),
+        }),
+        custom("historical-no-range", "historical", {
+          ...receipt,
+          source: historicalSource,
+          origin: conversationKnowledgeOrigin(historicalSource),
+          through: second,
+          privateAudience: undefined,
+        }),
+        custom("current-no-audience", "historical-no-range", {
+          ...receipt,
+          through: second,
+          privateAudience: undefined,
+        }),
+        custom("malformed", "current-no-audience", {}),
+        custom("checkpoint", "malformed", {}, CONVERSATION_KNOWLEDGE_CHECKPOINT),
+      ];
+      const replaceRoot = (events: typeof rootEvents) =>
+        runOpenClawAgentWriteTransaction((owner) => {
+          replaceSqliteTranscriptEventsInTransaction(owner, root, events);
+        }, options);
+      replaceRoot(rootEvents);
       const check = () => detectConversationBranchFindings({ cfg, env });
       const withoutStore = await check();
       expect(withoutStore.map((finding) => finding.errorCode)).toContain(
@@ -208,6 +223,10 @@ it("reports branch integrity separately from exact channel profile links and lea
           expect.objectContaining({
             errorCode: "source-historical",
             details: { count: 2, referencesWithoutPrivateRange: 1 },
+          }),
+          expect.objectContaining({
+            errorCode: "source-audience-unavailable",
+            details: { count: 1, sourceSessions: 1 },
           }),
           expect.objectContaining({ errorCode: "reference-invalid", details: { count: 1 } }),
           expect.objectContaining({ errorCode: "checkpoint-invalid", details: { count: 1 } }),

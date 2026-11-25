@@ -32,7 +32,6 @@ import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-
 import { PersonalConversationReadRefusedError } from "./session-mutation-authorization-error.js";
 import { resolveSessionVisibility } from "./session-sharing-policy.js";
 import {
-  preparePersonalSessionFacts,
   releasePersonalReadCustody,
   type PersonalReadCustody,
   type PersonalAdmissionBinding,
@@ -44,6 +43,7 @@ import {
 } from "./session-transcript-personal-contribution-group.js";
 import { createPersonalParticipantCustody } from "./session-transcript-personal-participant.js";
 import type { PersonalConversationReadParams } from "./session-transcript-personal-read.js";
+import { preparePersonalReadSource } from "./session-transcript-personal-source.js";
 
 const personalAdmissionIssuer = Symbol("native-personal-admission");
 /** Retains native row publications, never a former caller's execution or disclosure proof. */
@@ -445,27 +445,16 @@ export async function preparePersonalConversationReadInternal(
       custodyContributions.some((reference) => reference.source.sessionKey === request.sessionKey)
         ? reads[0]?.expected.readSource
         : undefined;
-    const held = await preparePersonalSessionFacts(
-      { cfg: policy(), ...request },
-      historical,
+    const { current, held, members, readSource } = await preparePersonalReadSource({
+      request,
+      policy,
       assertCurrent,
-    );
-    releases.push(() => held.release());
-    assertCurrent();
-    const facts = held.readCurrent(policy());
-    const current = facts.target;
-    const members = [...facts.membership].toSorted();
-    if (
-      current.agentId !== target.agentId ||
-      current.canonicalKey !== request.sessionKey ||
-      current.readSource?.path !== target.storePath ||
-      typeof current.readSource.databaseIdentity !== "string" ||
-      isIncognitoSessionKey(current.canonicalKey)
-    ) {
-      throw new PersonalConversationReadRefusedError(
-        "Personal conversation source physical ownership changed",
-      );
-    }
+      historical,
+      target,
+      legacy: root || contributions.length ? undefined : contribution,
+      retainLegacySourceDenial: params.retainLegacySourceDenial,
+      releases,
+    });
     const entry = structuredClone(current.entry);
     if (!root) {
       await custody.participants.prepare(
@@ -491,10 +480,10 @@ export async function preparePersonalConversationReadInternal(
       agentId: current.agentId,
       canonicalKey: current.canonicalKey,
       // Transcript consumers require the held physical source, not its logical selector.
-      storePath: current.readSource.path,
+      storePath: readSource.path,
       sessionId: current.entry.sessionId,
       lifecycleRevision: current.entry.lifecycleRevision,
-      readSource: Object.freeze({ ...current.readSource }),
+      readSource: Object.freeze({ ...readSource }),
     });
     reads.push({
       held,

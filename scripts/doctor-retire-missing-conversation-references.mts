@@ -6,6 +6,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { withDoctorSqliteMaintenanceLock } from "../src/commands/doctor-sqlite-maintenance-lock.js";
 import { resolveAgentConversationMode } from "../src/config/agent-conversation-mode.js";
 import { loadConfig } from "../src/config/config.js";
+import { conversationKnowledgeLegacySourceNeedsPrivateProof } from "../src/config/sessions/conversation-audience.js";
 import { conversationKnowledgeContributionId } from "../src/config/sessions/conversation-knowledge-identity.js";
 import { selectConversationKnowledgeReceipts } from "../src/config/sessions/conversation-knowledge-selection.js";
 import {
@@ -58,6 +59,7 @@ function planRetirement(
   rootKey: string,
   ownerPath: string,
   includeHistorical: boolean,
+  selectedLegacySources: ReadonlySet<string>,
 ) {
   const sql = getSessionKysely(database.db);
   const one = executeSqliteQueryTakeFirstSync;
@@ -120,6 +122,15 @@ function planRetirement(
   const decisions = new Map<string, PlannedReason>();
   const missingSources = new Set<string>();
   const historicalSources = new Set<string>();
+  const legacySources = new Set<string>();
+  const scopedReferences = new Set(
+    rows
+      .filter(
+        ({ reference }) =>
+          !reference.retirement && (reference.privateAudience || reference.readRange),
+      )
+      .map(({ reference }) => conversationKnowledgeContributionId(reference)),
+  );
   const currentRows = new Map<string, ReturnType<typeof readExactSessionEntryRow>>();
   const checkedProjections = new Map<string, boolean>();
   for (const reference of selectConversationKnowledgeReceipts(
@@ -134,6 +145,26 @@ function planRetirement(
       sourceAgent !== agentId ||
       // Artifact-preserving inspection may give the reader a private snapshot path.
       !isSameOpenClawAgentDatabasePath(reference.through.storePath, ownerPath)
+    ) {
+      continue;
+    }
+    const sourceSelector = selectedLegacySources.size
+      ? sha256Hex(
+          JSON.stringify([
+            reference.source.sessionKey,
+            sessionId,
+            reference.source.lifecycleRevision,
+          ]),
+        )
+      : undefined;
+    const explicitlySelectedLegacy =
+      sourceSelector !== undefined && selectedLegacySources.has(sourceSelector);
+    if (
+      selectedLegacySources.size &&
+      (!explicitlySelectedLegacy ||
+        reference.privateAudience ||
+        reference.readRange ||
+        scopedReferences.has(conversationKnowledgeContributionId(reference)))
     ) {
       continue;
     }
@@ -170,11 +201,15 @@ function planRetirement(
       isRetained.set(sessionId, retained);
     }
     if (isRetained.get(sessionId) === false) {
+      if (explicitlySelectedLegacy) {
+        // The reviewed cohort still has its original source. Never widen it to missing sources.
+        continue;
+      }
       decisions.set(conversationKnowledgeContributionId(reference), "source-missing-confirmed");
       missingSources.add(sessionId);
       continue;
     }
-    if (!includeHistorical || reference.privateAudience) {
+    if ((!includeHistorical && !explicitlySelectedLegacy) || reference.privateAudience) {
       continue;
     }
     const { sessionKey, lifecycleRevision } = reference.source;
@@ -185,7 +220,10 @@ function planRetirement(
     if (
       current?.sessionId !== sessionId ||
       !current.lifecycleRevision ||
-      current.lifecycleRevision === lifecycleRevision
+      (explicitlySelectedLegacy
+        ? current.lifecycleRevision !== lifecycleRevision ||
+          !conversationKnowledgeLegacySourceNeedsPrivateProof(current)
+        : current.lifecycleRevision === lifecycleRevision)
     ) {
       continue;
     }
@@ -212,7 +250,11 @@ function planRetirement(
         conversationKnowledgeContributionId(reference),
         "historical-private-range-unverified",
       );
-      historicalSources.add(JSON.stringify([sessionKey, sessionId, lifecycleRevision]));
+      if (explicitlySelectedLegacy) {
+        legacySources.add(sourceSelector!);
+      } else {
+        historicalSources.add(JSON.stringify([sessionKey, sessionId, lifecycleRevision]));
+      }
     }
   }
 
@@ -226,6 +268,7 @@ function planRetirement(
       scope,
       root.lifecycleRevision,
       includeHistorical,
+      ...(selectedLegacySources.size ? [[...selectedLegacySources].toSorted()] : []),
       changes.map(({ seq, expectedEventJson }) => [seq, sha256Hex(expectedEventJson)]),
     ]),
   );
@@ -237,8 +280,11 @@ function planRetirement(
     summary: {
       references: decisions.size,
       sources: missingSources.size,
-      historicalReferences,
+      historicalReferences: selectedLegacySources.size ? 0 : historicalReferences,
       historicalSources: historicalSources.size,
+      ...(selectedLegacySources.size
+        ? { legacyReferences: historicalReferences, legacySources: legacySources.size }
+        : {}),
       rows: changes.length,
       planSha256,
       targetsSha256: sha256Hex(JSON.stringify([...decisions].toSorted())),
@@ -267,16 +313,23 @@ async function main() {
       agent: { type: "string" },
       apply: { type: "string" },
       "include-historical": { type: "boolean", default: false },
+      "legacy-source": { type: "string", multiple: true },
     },
   });
   const agentId = values.agent;
+  const selectedLegacy = values["legacy-source"] ?? [];
+  const selectedLegacySources = new Set(selectedLegacy);
   if (
     !agentId ||
     normalizeAgentId(agentId) !== agentId ||
+    selectedLegacy.length !== selectedLegacySources.size ||
+    selectedLegacy.length > 8 ||
+    selectedLegacy.some((source) => !/^[a-f0-9]{64}$/u.test(source)) ||
+    (selectedLegacy.length > 0 && values["include-historical"]) ||
     (values.apply !== undefined && !/^[a-f0-9]{64}$/u.test(values.apply))
   ) {
     throw new Error(
-      "Use --agent <canonical-agent-id> [--include-historical] [--apply <reviewed-plan-sha256>].",
+      "Use --agent <canonical-agent-id> [--include-historical | --legacy-source <source-sha256> ...] [--apply <reviewed-plan-sha256>].",
     );
   }
   const includeHistorical = values["include-historical"];
@@ -295,7 +348,15 @@ async function main() {
     withArtifactPreservingStateReads(
       () => {
         const result = withOpenClawAgentDatabaseReadOnly(
-          (db) => planRetirement(db, agentId, rootKey, databasePath, includeHistorical),
+          (db) =>
+            planRetirement(
+              db,
+              agentId,
+              rootKey,
+              databasePath,
+              includeHistorical,
+              selectedLegacySources,
+            ),
           options,
           { snapshot: true },
         );
@@ -315,7 +376,11 @@ async function main() {
     protectedPaths: [databasePath],
     run: async (authority) => {
       const planned = readPlan().summary;
-      if (planned.planSha256 !== values.apply || planned.rows === 0) {
+      if (
+        planned.planSha256 !== values.apply ||
+        planned.rows === 0 ||
+        (selectedLegacySources.size > 0 && planned.legacySources !== selectedLegacySources.size)
+      ) {
         throw new Error("The reviewed plan no longer matches the eligible references.");
       }
       authority.assertCurrent();
@@ -332,6 +397,7 @@ async function main() {
             rootKey,
             databasePath,
             includeHistorical,
+            selectedLegacySources,
           );
           if (current.summary.planSha256 !== values.apply) {
             throw new Error("The reviewed plan changed before the write transaction.");

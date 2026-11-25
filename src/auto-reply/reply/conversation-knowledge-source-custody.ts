@@ -162,11 +162,29 @@ export function createConversationKnowledgeSourceCustody(
     if (params.readyOnly && !preparedAdmission && !group) {
       return undefined;
     }
+    const canRetainLegacyDenial =
+      !params.readyOnly && !group && !receipt.privateAudience && !receipt.readRange;
     let grant: ConversationKnowledgeHeldSource["grant"];
     let groupedSourceAssertion: SessionSourceAssertion | undefined;
     let read: ConversationKnowledgeHeldSource | undefined;
     try {
+      if (
+        canRetainLegacyDenial &&
+        params.sourceCache?.hasCurrentLegacyDenial(sourceTarget, params.getRuntimeConfig())
+      ) {
+        params.assertCurrent();
+        targetFacts.assertCurrent();
+        params.signal?.throwIfAborted();
+        return undefined;
+      }
+      const retainLegacyDenial = canRetainLegacyDenial
+        ? params.sourceCache?.prepareLegacyDenialRetention(sourceTarget)
+        : undefined;
       const request = {
+        retainLegacySourceDenial: retainLegacyDenial
+          ? (denial: Parameters<typeof retainLegacyDenial>[0]) =>
+              !params.signal?.aborted && retainLegacyDenial(denial)
+          : undefined,
         purpose: "conversation-differences",
         personal: {
           originalParticipant,

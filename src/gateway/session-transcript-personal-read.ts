@@ -21,7 +21,14 @@ import {
 export { PersonalConversationReadRefusedError };
 export type { PreparedPersonalConversationAdmission };
 
+/** A denial-only view of the native source publication, never a read grant. */
+export type RetainedLegacyConversationSourceDenial = {
+  isCurrent(cfg: OpenClawConfig): boolean;
+  release(): void;
+};
+
 export type PersonalConversationReadParams = {
+  retainLegacySourceDenial?(denial: RetainedLegacyConversationSourceDenial): boolean;
   purpose: "conversation-differences";
   signal?: AbortSignal;
   /** Internal native custody only; the current caller still supplies all disclosure proofs. */
