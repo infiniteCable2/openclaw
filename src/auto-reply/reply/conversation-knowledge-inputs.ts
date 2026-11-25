@@ -22,10 +22,19 @@ import {
 } from "../../config/sessions/conversation-knowledge-store.js";
 import type { SessionEntryCohortReader } from "../../config/sessions/session-entry-read-runtime.types.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import type { SessionTranscriptContextVersion } from "../../config/sessions/session-transcript-context-version.types.js";
+import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ConversationKnowledgeSourceCache } from "./conversation-knowledge-source-cache.js";
 
 const log = createSubsystemLogger("conversation-knowledge");
+
+type RecipientProgress = Awaited<ReturnType<typeof readConversationKnowledgePacketProgress>>;
+const pendingRecipientProgress = new WeakMap<
+  ConversationKnowledgeSourceCache,
+  { key: string; done: Promise<RecipientProgress> }
+>();
 
 /** Only background/legacy readers enumerate history; live boundaries rebind bounded provenance. */
 export async function readConversationKnowledgeInputs(params: {
@@ -195,22 +204,11 @@ export async function readConversationKnowledgeInputs(params: {
         return prepared;
       },
     });
-  const readProgress = async () => {
-    if (!cache) {
-      return readDurableProgress();
-    }
-    let version = await readVersion(params.branch);
-    const cached = cache.preparationProgress(version);
-    if (cached) {
-      // Even equal native versions cannot authorize a replacement physical store.
-      await rebind(cached.manifest);
-      const current = await readVersion(params.branch);
-      if (isDeepStrictEqual(version, current)) {
-        return cached.progress;
-      }
-      version = current;
-    }
-    const base = cache.preparationProgressBase();
+  const collectProgress = async (
+    targetCache: ConversationKnowledgeSourceCache,
+    version: SessionTranscriptContextVersion,
+  ): Promise<RecipientProgress> => {
+    const base = targetCache.preparationProgressBase();
     let extension: Parameters<typeof readConversationKnowledgePacketProgress>[0]["extension"];
     if (
       base &&
@@ -259,10 +257,10 @@ export async function readConversationKnowledgeInputs(params: {
     }
     if (stable) {
       try {
-        cache.retainPreparationProgress(
+        targetCache.retainPreparationProgress(
           current,
           issuePreparedKnowledgeRootCandidates(events.evidence, [], {
-            maxBytes: cache.maxPreparedRootBytes,
+            maxBytes: targetCache.maxPreparedRootBytes,
           }),
           progress,
           epoch,
@@ -284,6 +282,45 @@ export async function readConversationKnowledgeInputs(params: {
       }
     }
     return progress;
+  };
+  const readProgress = async (waitForPeer = true): Promise<RecipientProgress> => {
+    // A current-turn fence may clip the same physical version differently.
+    if (!cache || resolveSessionTranscriptReadFence(params.branch)) {
+      return readDurableProgress();
+    }
+    let version = await readVersion(params.branch);
+    const cached = cache.preparationProgress(version);
+    if (cached) {
+      // Even equal native versions cannot authorize a replacement physical store.
+      await rebind(cached.manifest);
+      const current = await readVersion(params.branch);
+      if (
+        isDeepStrictEqual(version, current) &&
+        cache.preparationProgress(version)?.progress === cached.progress
+      ) {
+        return cached.progress;
+      }
+      version = current;
+    }
+    const key = JSON.stringify([params.branch, version, epoch]);
+    const pending = pendingRecipientProgress.get(cache);
+    if (waitForPeer && pending?.key === key && cache.consumptionRevision === epoch) {
+      // A peer failure or cancellation belongs to its own reader. Return only
+      // published progress via our own native rebind and complete version check.
+      await racePromiseWithAbortSignal(pending.done, params.signal).catch(() => undefined);
+      check();
+      return readProgress(false);
+    }
+
+    const flight = { key, done: collectProgress(cache, version) };
+    pendingRecipientProgress.set(cache, flight);
+    try {
+      return await flight.done;
+    } finally {
+      if (pendingRecipientProgress.get(cache) === flight) {
+        pendingRecipientProgress.delete(cache);
+      }
+    }
   };
   const retained =
     (params.retainInHistory && !params.readyOnly) || params.preparationOnly

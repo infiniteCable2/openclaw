@@ -15,7 +15,9 @@ import {
   readSessionTranscriptModelContextsAsync,
 } from "../../config/sessions/session-transcript-context-read.js";
 import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
+import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { SessionMutationAuthorizationChangedError } from "../../gateway/session-mutation-authorization-error.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import type { OpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import { createConversationKnowledgePrefetchOwner } from "./conversation-knowledge-prefetch-owner.js";
@@ -375,8 +377,9 @@ describe("versioned background input snapshots", () => {
         throw new Error("Only the mocked native snapshot boundaries may read this fixture");
       },
     };
-    const read = () =>
+    const read = (signal?: AbortSignal) =>
       readConversationKnowledgeInputs({
+        signal,
         branch,
         reader,
         assertCurrent() {},
@@ -398,6 +401,122 @@ describe("versioned background input snapshots", () => {
     expect(boundary.progress).toHaveBeenCalledOnce();
     expect(boundary.rebind).toHaveBeenCalledTimes(2);
     expect(boundary.version).toHaveBeenCalledTimes(8);
+  });
+
+  async function waitForTwoRecipientLookups() {
+    await vi.waitFor(() => {
+      expect(
+        boundary.version.mock.calls.filter(([target]) => target.sessionId === "recipient").length,
+      ).toBeGreaterThanOrEqual(2);
+    });
+  }
+
+  it("joins equal in-flight native recipient progress and rebinds the published version", async () => {
+    const f = inputs();
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    boundary.progress.mockImplementationOnce(async () => {
+      started.resolve();
+      await release.promise;
+      return f.progress;
+    });
+    const first = f.read();
+    await started.promise;
+    const second = f.read();
+    try {
+      await waitForTwoRecipientLookups();
+      expect(boundary.progress).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+    }
+    expect((await first)?.retained?.get("existing")).toEqual(f.progress.get("existing"));
+    expect((await second)?.retained?.get("existing")).toEqual(f.progress.get("existing"));
+    expect(boundary.progress).toHaveBeenCalledOnce();
+    expect(boundary.rebind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        manifest: f.cache.preparationProgress(f.versions.recipient)?.manifest,
+      }),
+    );
+  });
+
+  it.each(["producer", "waiter"] as const)(
+    "keeps the live peer independent when cancelling the %s",
+    async (side) => {
+      const f = inputs();
+      const producer = new AbortController();
+      const waiter = new AbortController();
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      boundary.progress.mockImplementationOnce(async ({ signal }) => {
+        started.resolve();
+        await racePromiseWithAbortSignal(release.promise, signal, () => signal.reason);
+        return f.progress;
+      });
+      const pending = f.read(producer.signal);
+      await started.promise;
+      const joined = f.read(waiter.signal);
+      const cancelled = side === "producer" ? pending : joined;
+      const live = side === "producer" ? joined : pending;
+      const reason = new Error("Synthetic reader cancelled");
+      const rejected = expect(cancelled).rejects.toBe(reason);
+      try {
+        await waitForTwoRecipientLookups();
+        expect(boundary.progress).toHaveBeenCalledOnce();
+        (side === "producer" ? producer : waiter).abort(reason);
+        await rejected;
+      } finally {
+        release.resolve();
+      }
+      expect((await live)?.retained?.get("existing")).toEqual(f.progress.get("existing"));
+      expect(boundary.progress).toHaveBeenCalledTimes(side === "producer" ? 2 : 1);
+    },
+  );
+
+  it("keeps current-turn fenced progress outside the shared versioned view", async () => {
+    const f = inputs();
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const bounded = new Map([["fenced", { complete: false, nextOffset: 2 }]]);
+    boundary.progress
+      .mockImplementationOnce(async () => {
+        started.resolve();
+        await release.promise;
+        return f.progress;
+      })
+      .mockResolvedValueOnce(bounded);
+    const outside = f.read();
+    await started.promise;
+    try {
+      const fenced = runWithSessionTranscriptReadFence(
+        { ...f.receipt.through, ...f.branch, logicalTurnId: "synthetic-fence", role: "user" },
+        () => f.read(),
+      );
+      await vi.waitFor(() => expect(boundary.progress).toHaveBeenCalledTimes(2));
+      expect((await fenced)?.retained).toEqual(bounded);
+      expect(f.cache.preparationProgress(f.versions.recipient)).toBeUndefined();
+    } finally {
+      release.resolve();
+    }
+    expect((await outside)?.retained).toEqual(f.progress);
+    expect((await f.read())?.retained?.has("fenced")).toBe(false);
+    expect(boundary.progress).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects cached progress consumed during its independent native rebind", async () => {
+    const f = inputs();
+    await f.read();
+    const prior = f.cache.preparationProgress(f.versions.recipient)!;
+    const rebind = boundary.rebind.getMockImplementation()!;
+    boundary.rebind.mockImplementation(async (request) => {
+      if (request.manifest === prior.manifest) {
+        f.cache.consume("not-staged", 0);
+      }
+      return rebind(request);
+    });
+    const current = new Map([["durable", { complete: true, nextOffset: 1 }]]);
+    boundary.progress.mockResolvedValueOnce(current);
+    expect((await f.read())?.retained).toEqual(current);
+    expect(boundary.progress).toHaveBeenCalledTimes(2);
   });
 
   it("invalidates root and progress independently, including same-sequence navigation edits", async () => {
