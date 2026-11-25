@@ -30,6 +30,10 @@ import type {
 import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import { projectSessionUsageSnapshot } from "./session-entry-usage.js";
+import {
+  TRANSCRIPT_PAYLOAD_SLICE_BYTES,
+  transcriptEventReadBytesSql,
+} from "./session-transcript-read-bytes.js";
 import { hasSettledTranscriptAssistant } from "./session-transcript-report-policy.js";
 import {
   readTranscriptReportNavigation,
@@ -53,11 +57,13 @@ export function readReportEvent(
   database: OpenClawAgentDatabase,
   sessionId: string,
   seqs: readonly number[],
+  ordered?: boolean,
 ): IterableIterator<ReportEventRow>;
 export function readReportEvent(
   database: OpenClawAgentDatabase,
   sessionId: string,
   selection: number | readonly number[],
+  ordered = false,
 ): ReportEventRow["event"] | IterableIterator<ReportEventRow> {
   const selected = typeof selection === "number" ? [selection] : selection;
   if (selected.some((seq) => !Number.isSafeInteger(seq))) {
@@ -66,19 +72,23 @@ export function readReportEvent(
   const sequences = sqliteStringSetEntries(encodeSqliteStringSet(selected.map(String))).as(
     "requested",
   );
+  const query = getSessionKysely(database.db)
+    .selectFrom("transcript_events")
+    .select(["seq", transcriptEventJsonSql(database.db).as("event_json")])
+    .where("session_id", "=", sessionId);
+  const requestedRows = ordered
+    ? query
+        .innerJoin(sequences, (join) =>
+          join.on((eb) => eb("seq", "=", eb.cast<number>("requested.value", "integer"))),
+        )
+        .orderBy("requested.key", "asc")
+    : query.where("seq", "in", (eb) =>
+        eb
+          .selectFrom(sequences)
+          .select((requested) => requested.cast<number>("requested.value", "integer").as("seq")),
+      );
   const rows = (function* () {
-    for (const row of iterateSqliteQuerySync(
-      database.db,
-      getSessionKysely(database.db)
-        .selectFrom("transcript_events")
-        .select(["seq", transcriptEventJsonSql(database.db).as("event_json")])
-        .where("session_id", "=", sessionId)
-        .where("seq", "in", (eb) =>
-          eb
-            .selectFrom(sequences)
-            .select((requested) => requested.cast<number>("requested.value", "integer").as("seq")),
-        ),
-    )) {
+    for (const row of iterateSqliteQuerySync(database.db, requestedRows)) {
       yield { seq: row.seq, event: asOptionalRecord(JSON.parse(row.event_json)) };
     }
   })();
@@ -89,6 +99,49 @@ export function readReportEvent(
     return row.event;
   }
   return undefined;
+}
+
+/** Preserve requested path order while bounding SQL sorter/driver payload memory. */
+export function* readBoundedReportEvents(
+  database: OpenClawAgentDatabase,
+  sessionId: string,
+  seqs: readonly number[],
+): IterableIterator<ReportEventRow> {
+  if (!seqs.length) {
+    return;
+  }
+  if (seqs.length === 1) {
+    yield* readReportEvent(database, sessionId, seqs);
+    return;
+  }
+  const sizes = new Map(
+    Array.from(
+      iterateSqliteQuerySync(
+        database.db,
+        getSessionKysely(database.db)
+          .selectFrom("transcript_events")
+          .select(["seq", transcriptEventReadBytesSql().as("serialized_bytes")])
+          .where("session_id", "=", sessionId)
+          .where("seq", "in", [...seqs]),
+      ),
+      (row) => [row.seq, row.serialized_bytes] as const,
+    ),
+  );
+  let page: number[] = [];
+  let bytes = 0;
+  for (const seq of seqs) {
+    const next = sizes.get(seq) ?? Infinity;
+    if (page.length > 0 && bytes + next > TRANSCRIPT_PAYLOAD_SLICE_BYTES) {
+      yield* readReportEvent(database, sessionId, page, page.length > 1);
+      page = [];
+      bytes = 0;
+    }
+    page.push(seq);
+    bytes += next;
+  }
+  if (page.length) {
+    yield* readReportEvent(database, sessionId, page, page.length > 1);
+  }
 }
 
 function latestCustomReport(

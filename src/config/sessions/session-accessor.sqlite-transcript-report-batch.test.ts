@@ -22,6 +22,7 @@ import {
 import {
   prepareCustomTranscriptReport,
   prepareTranscriptReportBatchSelection,
+  readBoundedReportEvents,
   readReportBranch,
   readReportEvent,
   transcriptReportBatchReceiptKey,
@@ -199,7 +200,12 @@ it("observes a full receipt batch with one reverse scan and one body read per re
               content: `Canonical body ${index}. ${"synthetic payload ".repeat(index % 2 === 0 ? 10 : 400)}`,
               display: false,
               details: {
-                packetId: index === 0 || index === count - 1 ? "packet-zero" : `packet-${index}`,
+                packetId:
+                  index === 0 || index === count - 1
+                    ? "packet-zero"
+                    : index === count - 2 || index === count - 4
+                      ? "within-group"
+                      : `packet-${index}`,
                 ...(index === count - 1 ? { contributionId: "latest-contribution" } : {}),
               },
             },
@@ -227,18 +233,24 @@ it("observes a full receipt batch with one reverse scan and one body read per re
         ];
         const counter = trackSqliteStatementExecutions(
           requireNativeSqliteDatabase(database.db),
-          ["branch", "payload", "membership"],
+          ["branch", "payload", "membership", "sizes"],
           (sql) =>
             sql.includes('as "report_json"') && sql.includes('from "transcript_events"')
               ? "branch"
               : sql.includes('as "event_json"') &&
                   sql.includes('from "transcript_events"') &&
-                  (sql.includes('"seq" =') || sql.includes('"seq" in'))
+                  (sql.includes('"seq" =') ||
+                    sql.includes('"seq" in') ||
+                    sql.includes('"requested"."key"'))
                 ? "payload"
                 : sql.includes('select "active_position", "context_eligible"') &&
                     sql.includes('from "session_transcript_active_events"')
                   ? "membership"
-                  : null,
+                  : sql.includes('as "serialized_bytes"') &&
+                      sql.includes('from "transcript_events"') &&
+                      sql.includes('"seq" in')
+                    ? "sizes"
+                    : null,
         );
         const started = performance.now();
         try {
@@ -256,7 +268,8 @@ it("observes a full receipt batch with one reverse scan and one body read per re
           );
           expect(observed.slice(3).every((entry) => entry.status === "missing")).toBe(true);
           expect(counter.counts.branch).toBeLessThanOrEqual(2);
-          expect(counter.counts.payload).toBe(count);
+          expect(counter.counts.payload).toBe(2 + Math.ceil((count - 9) / 32));
+          expect(counter.counts.sizes).toBe(counter.counts.payload - 1);
           expect(counter.counts.membership).toBe(1);
           console.info(
             JSON.stringify({
@@ -269,9 +282,69 @@ it("observes a full receipt batch with one reverse scan and one body read per re
               rss: process.memoryUsage().rss,
             }),
           );
+          const alreadyRead = counter.rowCounts.payload;
+          const within = { customType, receipt: { field: "packetId", value: "within-group" } };
+          expect(
+            observeTranscriptReportReceipts(database, { ...scope, path: database.path }, [
+              within,
+              within,
+            ]),
+          ).toMatchObject([
+            { status: "active-model", eventId: `known-${count - 2}` },
+            { status: "active-model", eventId: `known-${count - 2}` },
+          ]);
+          expect(counter.rowCounts.payload - alreadyRead).toBe(2);
         } finally {
           counter.restore();
         }
+      }
+    },
+  );
+});
+
+it("splits large receipt bodies at the native byte budget in requested order", async () => {
+  await withOpenClawTestState(
+    { scenario: "minimal", label: "report-body-bytes" },
+    async (state) => {
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+      const scope = {
+        agentId: "main",
+        sessionKey: "agent:main:observation-bytes",
+        sessionId: "observation-bytes",
+        storePath: database.path,
+        env: state.env,
+      };
+      await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+      await replaceTranscriptEvents(scope, [
+        { type: "session", id: scope.sessionId, version: CURRENT_SESSION_VERSION },
+        ...Array.from({ length: 3 }, (_, index) => ({
+          type: "custom_message",
+          id: `large-${index + 1}`,
+          parentId: index === 0 ? null : `large-${index}`,
+          customType,
+          content: "x".repeat(index === 1 ? 2_200_000 : 730_000),
+          display: false,
+        })),
+      ]);
+      const counter = trackSqliteStatementExecutions(
+        requireNativeSqliteDatabase(database.db),
+        ["payload"],
+        (sql) =>
+          sql.includes('as "event_json"') && sql.includes('from "transcript_events"')
+            ? "payload"
+            : null,
+      );
+      try {
+        expect(
+          Array.from(
+            readBoundedReportEvents(database, scope.sessionId, [3, 1, 2]),
+            (row) => row.event?.id,
+          ),
+        ).toEqual(["large-3", "large-1", "large-2"]);
+        expect(counter.counts.payload).toBe(2);
+        expect(counter.rowCounts.payload).toBe(3);
+      } finally {
+        counter.restore();
       }
     },
   );

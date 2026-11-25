@@ -1,0 +1,2 @@
+# Report observation bounded by ordinal, payload bytes and early latest-match termination.
+73
