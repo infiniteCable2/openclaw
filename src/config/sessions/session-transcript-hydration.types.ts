@@ -36,7 +36,13 @@ export type SessionTranscriptMaintenanceRead =
     }
   | { operation: "previous"; beforeSeq: number }
   | { operation: "identity"; eventId: string }
-  | { operation: "version"; contextOnly?: boolean }
+  | { operation: "version"; contextOnly?: boolean; activeLeaf?: boolean }
+  | {
+      operation: "active-report-suffix";
+      after: SessionTranscriptMaintenanceCheckpoint;
+      expectedVersion: SessionTranscriptContextVersion;
+      customTypes: readonly string[];
+    }
   | { operation: "custom-branch"; leafEntryId: string | null; customType: string }
   | {
       operation: "nested-activity";
@@ -58,6 +64,7 @@ export type SessionTranscriptMaintenanceFacts = {
   seq?: number;
   version?: SessionTranscriptContextVersion;
   appendParentId?: string | null;
+  activeLeafEntryId?: string | null;
   lifecycleRevision?: SessionTranscriptWriteScope["expectedLifecycleRevision"];
   events?: TranscriptEvent[];
   store?: { writes: CodeModeStoreWrites; incremental: boolean };

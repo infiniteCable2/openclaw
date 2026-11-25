@@ -22,6 +22,7 @@ import type {
 } from "./session-transcript-hydration.types.js";
 import { readSessionTranscriptMaintenance } from "./session-transcript-maintenance-read.js";
 import { runWithSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
+import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
 
 const customType = "openclaw.code-mode-store";
 const storeWrite = (value: unknown) => ({
@@ -220,4 +221,100 @@ it("reads the same context version without requiring the writable append parent"
       kind: "transcript-maintenance",
       version: full.version,
     });
+  }));
+
+it("projects details from only a proven active report suffix", () =>
+  withSessionState("maintenance-report-suffix", async ({ scope }) => {
+    const manager = await SessionManager.openAsync(scope);
+    const receiverType = "test.durable-packet";
+    const first = await manager.appendMessageAsync(makeUserMessage("Initial turn", 1));
+    const oldReport = await manager.appendCustomMessageEntryAsync(
+      receiverType,
+      "Historical body",
+      false,
+      { packetId: "old" },
+    );
+    assert(first && oldReport);
+    const database = openOpenClawAgentDatabase({ agentId: scope.agentId, path: scope.storePath });
+    const read = (request: Parameters<typeof readSessionTranscriptMaintenance>[2]) =>
+      readSessionTranscriptMaintenance(database, scope, request);
+    const facts = async () => {
+      await waitForSessionTranscriptProjection(scope);
+      const current = read({ operation: "version", contextOnly: true, activeLeaf: true });
+      assert(current.version && current.activeLeafEntryId !== undefined);
+      return {
+        version: current.version,
+        leaf: current.activeLeafEntryId,
+        after: checkpoint(current, current.activeLeafEntryId),
+      };
+    };
+    const base = await facts();
+    expect(base.leaf).toBe(oldReport);
+    const turn = await manager.appendMessageAsync(makeUserMessage("Fresh turn", 2));
+    assert(turn);
+    const noNewReports = await facts();
+    const suffix = (after: typeof base.after, expectedVersion: typeof base.version) =>
+      read({
+        operation: "active-report-suffix",
+        after,
+        expectedVersion,
+        customTypes: [receiverType],
+      });
+    expect(suffix(base.after, noNewReports.version).events).toEqual([]);
+    const report = await manager.appendCustomMessageEntryAsync(
+      receiverType,
+      "Omitted new body",
+      false,
+      { packetId: "next" },
+    );
+    const afterReport = await facts();
+    expect(suffix(base.after, afterReport.version)).toEqual({
+      kind: "transcript-maintenance",
+      activeLeafEntryId: report,
+      version: afterReport.version,
+      events: [
+        {
+          id: report,
+          type: "custom_message",
+          customType: receiverType,
+          details: { packetId: "next" },
+        },
+      ],
+    });
+    expect(
+      suffix({ ...base.after, leafEntryId: first }, afterReport.version).events,
+    ).toBeUndefined();
+    expect(suffix(base.after, { ...afterReport.version, updatedAt: -1 }).events).toBeUndefined();
+    expect(suffix(base.after, noNewReports.version).events).toBeUndefined();
+    const turnAnchor = readActiveTranscriptEntryAnchor({ ...scope, entryId: turn });
+    assert(turnAnchor);
+    expect(
+      runWithSessionTranscriptReadFence(
+        { ...turnAnchor, role: "user", logicalTurnId: "report-suffix" },
+        () => suffix(base.after, afterReport.version),
+      ).events,
+    ).toBeUndefined();
+
+    assert(report);
+    await manager.appendLeafControlAsync({
+      targetId: report,
+      appendParentId: first,
+      appendMode: "side",
+    });
+    await waitForSessionTranscriptProjection(scope);
+    const moved = read({ operation: "version", contextOnly: true, activeLeaf: true });
+    assert(moved.version);
+    // The projected append cursor may point to an older entry even though the
+    // old report remains on the selected path. Such a cursor cannot seed reuse.
+    expect(moved.activeLeafEntryId).toBeUndefined();
+    expect(read({ operation: "version" }).appendParentId).toBe(first);
+    expect(suffix(afterReport.after, moved.version).events).toBeUndefined();
+    await manager.appendMessageAsync(makeUserMessage("New path", 3));
+    await waitForSessionTranscriptProjection(scope);
+    const current = read({ operation: "version", contextOnly: true, activeLeaf: true });
+    assert(current.version);
+    expect(suffix(afterReport.after, current.version).events).toBeUndefined();
+    // Even if an internal caller confused the previous control's append parent
+    // with a reusable point, it has no matching active ordinary identity.
+    expect(suffix(checkpoint(moved, first), current.version).events).toBeUndefined();
   }));

@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import { snapshotConversationKnowledgeProgress } from "../../config/sessions/conversation-knowledge-checkpoint-context.js";
 import type { PreparedConversationKnowledgeCheckpointCoverage } from "../../config/sessions/conversation-knowledge-checkpoint.js";
 import type { ConversationKnowledgePacketProgress } from "../../config/sessions/conversation-knowledge-packets.js";
 import type { PreparedKnowledgeRootCandidates } from "../../config/sessions/conversation-knowledge-store.js";
@@ -12,6 +11,10 @@ import type {
   PreparedPersonalConversationContributionGroup,
 } from "../../gateway/session-transcript-personal-read.js";
 import type { PreparedRecipientConversationCheckpoint } from "./conversation-knowledge-checkpoint-recipient.js";
+import {
+  prepareConversationKnowledgeProgressInput,
+  type ConversationKnowledgeProgressBase,
+} from "./conversation-knowledge-progress-input.js";
 import type {
   PreparedConversationKnowledgePacket,
   ConversationKnowledgeSourceSelection,
@@ -147,6 +150,8 @@ export function createConversationKnowledgeSourceCache<
         version: SessionTranscriptContextVersion;
         manifest: PreparedKnowledgeRootCandidates;
         progress: ReadonlyMap<string, ConversationKnowledgePacketProgress>;
+        epoch: number;
+        base?: ConversationKnowledgeProgressBase;
         bytes: number;
       }
     | undefined;
@@ -438,11 +443,18 @@ export function createConversationKnowledgeSourceCache<
       }
     },
     preparationProgress(version: SessionTranscriptContextVersion) {
-      if (inputProgress && !isDeepStrictEqual(inputProgress.version, version)) {
-        inputProgress = undefined;
+      if (
+        inputProgress?.epoch !== consumptionRevision ||
+        !isDeepStrictEqual(inputProgress.version, version)
+      ) {
+        return undefined;
       }
+      return { manifest: inputProgress.manifest, progress: inputProgress.progress };
+    },
+    preparationProgressBase() {
       return (
-        inputProgress && {
+        inputProgress?.base && {
+          ...inputProgress.base,
           manifest: inputProgress.manifest,
           progress: inputProgress.progress,
         }
@@ -453,22 +465,20 @@ export function createConversationKnowledgeSourceCache<
       manifest: PreparedKnowledgeRootCandidates,
       progress: ReadonlyMap<string, ConversationKnowledgePacketProgress>,
       expectedConsumptionRevision: number,
+      base?: ConversationKnowledgeProgressBase,
     ) {
       if (consumptionRevision !== expectedConsumptionRevision) {
         return;
       }
       inputProgress = undefined;
-      const snapshot = snapshotConversationKnowledgeProgress(progress);
-      const size =
-        manifest.byteLength + Buffer.byteLength(JSON.stringify(version)) + snapshot.byteLength;
-      if (reserveInputBytes(size)) {
-        inputProgress = {
-          version: structuredClone(version),
-          manifest,
-          progress: snapshot.progress,
-          bytes: size,
-        };
-      }
+      inputProgress = prepareConversationKnowledgeProgressInput({
+        version,
+        manifest,
+        progress,
+        epoch: expectedConsumptionRevision,
+        base,
+        reserve: reserveInputBytes,
+      });
     },
     setPreparedRoot,
     prepareRootSelection(
@@ -560,8 +570,11 @@ export function createConversationKnowledgeSourceCache<
     consume(id: string, offset: number) {
       // A native commit can advance a packet that was never staged here. Any
       // in-flight preparation must reread durable progress before staging more.
+      // Keep only the option to extend an older immutable, natively proven prefix.
       consumptionRevision++;
-      inputProgress = undefined;
+      if (!inputProgress?.base) {
+        inputProgress = undefined;
+      }
       const key = stagedKey(id, offset);
       const old = staged.get(key);
       if (old) {

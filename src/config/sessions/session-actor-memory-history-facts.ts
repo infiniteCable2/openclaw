@@ -245,6 +245,9 @@ function maintenance(
     };
   }
 
+  if (request.operation === "active-report-suffix") {
+    return { kind };
+  }
   if (request.operation === "version" && request.contextOnly) {
     return { kind, version: window.hot.transcript.version };
   }

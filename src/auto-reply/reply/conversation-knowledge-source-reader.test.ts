@@ -62,7 +62,7 @@ vi.mock("../../config/sessions/conversation-knowledge-packets.js", () => ({
 // mock-isolation: Exercise full native version decisions without running hydration workers.
 vi.mock("../../config/sessions/session-transcript-hydration.js", () => ({
   prepareSessionTranscriptHydration: (target: { sessionId: string }) => ({
-    readMaintenance: () => boundary.version(target),
+    readMaintenance: (request: unknown) => boundary.version(target, request),
   }),
 }));
 // mock-isolation: Observe that denied or failed grants never reach source metadata preparation.
@@ -462,6 +462,78 @@ describe("versioned background input snapshots", () => {
     expect((await f.read())?.retained).toEqual(current);
     expect(boundary.progress).toHaveBeenCalledTimes(2);
     expect(boundary.progress.mock.calls[1]?.[0]?.initial).toBeUndefined();
+    expect(f.cache.preparationProgress(f.versions.recipient)).toBeUndefined();
+  });
+
+  it("extends old durable receipts across a native append even after a packet was consumed", async () => {
+    const f = inputs();
+    const oldLeaf = "receiver-leaf";
+    const nativeReport = { type: "custom_message", details: { contributionId: "new" } };
+    let suffixEvents = [nativeReport];
+    let changeDuringSuffix = false;
+    boundary.version.mockImplementation(
+      async (
+        target: { sessionId: "root" | "recipient" },
+        request: { operation: string; activeLeaf?: boolean },
+      ) => {
+        const version = structuredClone(f.versions[target.sessionId]);
+        if (request.operation === "active-report-suffix" && changeDuringSuffix) {
+          f.versions.recipient.updatedAt++;
+        }
+        return {
+          kind: "transcript-maintenance",
+          version,
+          ...(request.activeLeaf ? { activeLeafEntryId: oldLeaf } : {}),
+          ...(request.operation === "active-report-suffix" ? { events: suffixEvents } : {}),
+        };
+      },
+    );
+    boundary.progress.mockImplementationOnce(async ({ onImports }) => {
+      onImports({ packets: f.progress, checkpoints: [] });
+      return f.progress;
+    });
+    await f.read();
+    expect(f.cache.preparationProgressBase()?.point.leafEntryId).toBe(oldLeaf);
+    f.cache.consume("not-staged", 0);
+    expect(f.cache.preparationProgress(f.versions.recipient)).toBeUndefined();
+    f.versions.recipient.rawSeq++;
+    f.versions.recipient.updatedAt++;
+    const updated = new Map([...f.progress, ["new", { complete: true, nextOffset: 2 }]]);
+    boundary.progress.mockImplementationOnce(async ({ extension, onImports }) => {
+      expect(extension?.base.packets).toEqual(f.progress);
+      expect(extension?.reports).toEqual([nativeReport]);
+      onImports({ packets: updated, checkpoints: [] });
+      return updated;
+    });
+    expect((await f.read())?.retained).toEqual(updated);
+    expect(f.cache.preparationProgress(f.versions.recipient)?.progress.get("new")).toEqual({
+      complete: true,
+      nextOffset: 2,
+    });
+    expect(boundary.version).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        operation: "active-report-suffix",
+        after: { generation: "recipient-generation", rawSeq: 8, leafEntryId: oldLeaf },
+      }),
+    );
+
+    // An ordinary turn without a new receipt keeps the existing immutable map.
+    suffixEvents = [];
+    f.versions.recipient.rawSeq++;
+    f.versions.recipient.updatedAt++;
+    expect((await f.read())?.retained?.get("new")).toEqual(updated.get("new"));
+    expect(boundary.progress).toHaveBeenCalledTimes(2);
+
+    // A later change after successful suffix validation requires the canonical read.
+    changeDuringSuffix = true;
+    f.versions.recipient.rawSeq++;
+    f.versions.recipient.updatedAt++;
+    const replacement = new Map([["canonical", { complete: true, nextOffset: 1 }]]);
+    boundary.progress.mockResolvedValueOnce(replacement);
+    expect((await f.read())?.retained).toEqual(replacement);
+    expect(boundary.progress).toHaveBeenCalledTimes(3);
+    expect(boundary.progress.mock.calls[2]?.[0]?.extension).toBeUndefined();
     expect(f.cache.preparationProgress(f.versions.recipient)).toBeUndefined();
   });
 

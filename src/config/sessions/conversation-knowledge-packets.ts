@@ -89,8 +89,8 @@ export function createConversationKnowledgePacketReport(
 }
 
 export type ConversationKnowledgeImportProgress = {
-  packets: Map<string, ConversationKnowledgePacketProgress>;
-  checkpoints: ConversationKnowledgeCheckpointContext[];
+  packets: ReadonlyMap<string, ConversationKnowledgePacketProgress>;
+  checkpoints: readonly ConversationKnowledgeCheckpointContext[];
 };
 
 /** Receipt scan only; never follows root chains or silently treats summarized coverage as absent. */
@@ -112,9 +112,15 @@ export async function readConversationKnowledgeImportProgress(params: {
 function summarizeConversationKnowledgeImportReports(
   branch: ConversationKnowledgeBranch,
   events: readonly TranscriptEvent[],
+  base?: ConversationKnowledgeImportProgress,
 ): ConversationKnowledgeImportProgress {
-  const progress = new Map<string, ConversationKnowledgePacketProgress>();
-  const checkpoints = new Map<string, ConversationKnowledgeCheckpointContext>();
+  if (base && events.length === 0) {
+    return base;
+  }
+  const progress = new Map(base?.packets);
+  const checkpoints = new Map(
+    base?.checkpoints.map((checkpoint) => [checkpoint.checkpointId, checkpoint]),
+  );
   for (const event of events) {
     const record = asOptionalRecord(event);
     if (record?.customType === CONVERSATION_KNOWLEDGE_CHECKPOINT_CONTEXT) {
@@ -161,6 +167,11 @@ export async function readConversationKnowledgePacketProgress(params: {
     version: SessionTranscriptContextVersion;
     onUsed(): void;
   };
+  extension?: {
+    base: ConversationKnowledgeImportProgress;
+    reports: readonly TranscriptEvent[];
+  };
+  onImports?(imports: ConversationKnowledgeImportProgress): void;
   /** Background preparation only; model boundaries supply already prepared progress. */
   prepareCheckpointCoverage?: (
     checkpoints: readonly ConversationKnowledgeCheckpointContext[],
@@ -178,9 +189,16 @@ export async function readConversationKnowledgePacketProgress(params: {
   if (reports) {
     params.initial?.onUsed();
   }
-  const imports = reports
-    ? summarizeConversationKnowledgeImportReports(params.branch, reports)
-    : await readConversationKnowledgeImportProgress(params);
+  const imports = params.extension
+    ? summarizeConversationKnowledgeImportReports(
+        params.branch,
+        params.extension.reports,
+        params.extension.base,
+      )
+    : reports
+      ? summarizeConversationKnowledgeImportReports(params.branch, reports)
+      : await readConversationKnowledgeImportProgress(params);
+  params.onImports?.(imports);
   const checkpointCoverage =
     imports.checkpoints.length && params.prepareCheckpointCoverage
       ? await params.prepareCheckpointCoverage(imports.checkpoints)

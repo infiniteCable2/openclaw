@@ -3,12 +3,17 @@ import {
   CODE_MODE_STORE_CUSTOM_TYPE,
   collectCodeModeStoreWrites,
 } from "../../agents/code-mode-session-store-replay.js";
-import { iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
+import {
+  executeSqliteQueryTakeFirstSync,
+  iterateSqliteQuerySync,
+} from "../../infra/kysely-sync.js";
 import { runSqliteReadSnapshotSync } from "../../infra/sqlite-transaction.js";
 import { NESTED_TOOL_ACTIVITY_CUSTOM_TYPE } from "../../sessions/nested-tool-activity.js";
 import type { OpenClawAgentReadOnlyDatabase } from "../../state/openclaw-agent-db-readonly.js";
+import { readActiveTranscriptReportSuffix } from "./session-accessor.sqlite-active-report-suffix.js";
 import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import { readSessionEntryIdentity } from "./session-accessor.sqlite-entry-read.js";
+import { selectActiveTranscriptIdentityRows } from "./session-accessor.sqlite-projection-read.js";
 import { readTranscriptIdentityByEventId } from "./session-accessor.sqlite-read.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import {
@@ -24,6 +29,7 @@ import type {
   SessionTranscriptMaintenanceRead,
   SessionTranscriptMaintenanceFacts,
 } from "./session-transcript-hydration.types.js";
+import { selectSessionTranscriptProjectionState } from "./session-transcript-index.js";
 import { selectTranscriptMaintenanceSuffix } from "./session-transcript-maintenance-suffix.js";
 import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 import {
@@ -37,6 +43,11 @@ export function readSessionTranscriptMaintenance(
   target: SessionTranscriptRuntimeTarget,
   request: SessionTranscriptMaintenanceRead,
 ): SessionTranscriptMaintenanceFacts {
+  if (request.operation === "active-report-suffix") {
+    return readWithCanonicalSessionAdmission(database, () =>
+      readActiveTranscriptReportSuffix(database, target, request),
+    );
+  }
   if (request.operation === "custom-branch" || request.operation === "code-mode-store") {
     return readWithCanonicalSessionAdmission(database, () =>
       runSqliteReadSnapshotSync(database.db, () => {
@@ -182,7 +193,14 @@ export function readSessionTranscriptMaintenance(
         }
         const version = readTranscriptContextVersionInTransaction(database, target.sessionId);
         return request.contextOnly
-          ? { kind, version }
+          ? {
+              kind,
+              version,
+              ...(request.activeLeaf &&
+              !resolveSqliteSessionTranscriptReadFence({ database, ...target })
+                ? { activeLeafEntryId: readIndexedLeaf(database, target.sessionId, version.rawSeq) }
+                : {}),
+            }
           : {
               kind,
               version,
@@ -194,4 +212,35 @@ export function readSessionTranscriptMaintenance(
       { databaseLabel: database.path, operationLabel: "session transcript maintenance read" },
     ),
   );
+}
+
+function readIndexedLeaf(
+  database: OpenClawAgentReadOnlyDatabase,
+  sessionId: string,
+  rawSeq: number | null,
+): string | null | undefined {
+  if (rawSeq === null) {
+    return null;
+  }
+  const state = executeSqliteQueryTakeFirstSync(
+    database.db,
+    selectSessionTranscriptProjectionState(database.db, sessionId),
+  );
+  if (!state || state.needs_rebuild || state.has_unclassified || state.indexed_seq !== rawSeq) {
+    return undefined;
+  }
+  // The projected cursor alone can be a write parent on a different branch.
+  // A reusable base must end in an ordinary active node at the exact raw tip.
+  const active = executeSqliteQueryTakeFirstSync(
+    database.db,
+    selectActiveTranscriptIdentityRows(database)
+      .select(["identity.event_id", "identity.event_type"])
+      .where("active.session_id", "=", sessionId)
+      .where("active.event_seq", "=", rawSeq),
+  );
+  return active &&
+    active.event_id === state.leaf_event_id &&
+    (active.event_type === "message" || active.event_type === "custom_message")
+    ? active.event_id
+    : undefined;
 }
