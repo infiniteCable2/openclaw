@@ -38,7 +38,11 @@ vi.mock("./conversation-knowledge-store.js", async (importOriginal) => ({
 // mock-isolation: Supply opaque root receipts without opening a history worker.
 vi.mock("./conversation-knowledge-history.js", () => ({
   readConversationKnowledgeReports: mocks.reports,
-  readConversationKnowledgeRootReports: mocks.reports,
+  readConversationKnowledgeRootReports: async (params: { revalidate(): Promise<void> }) => {
+    const reports = await mocks.reports(params);
+    await params.revalidate();
+    return reports;
+  },
 }));
 // mock-isolation: Drive finite native page outcomes without retaining database resources.
 vi.mock("./session-transcript-delta-read.js", () => ({
@@ -520,7 +524,7 @@ describe("explicit native conversation history seed", () => {
     expect(mocks.voice).toHaveBeenCalledTimes(1);
     expect(mocks.context).not.toHaveBeenCalled();
     expect(mocks.metadata).toHaveBeenCalledTimes(2);
-    expect(mocks.metadata).toHaveBeenCalledWith({ operation: "version" });
+    expect(mocks.metadata).toHaveBeenCalledWith({ operation: "version", contextOnly: true });
   });
 
   it("skips a copied prefix across pages and its compaction ancestor before publishing the child tail", async () => {

@@ -6,7 +6,7 @@ import {
   resolveTerminalAssistantTranscriptRunId,
 } from "../../sessions/transcript-events.js";
 import { CONVERSATION_KNOWLEDGE_SEED } from "./conversation-knowledge-context-kinds.js";
-import { readConversationKnowledgeReports } from "./conversation-knowledge-history.js";
+import { readConversationKnowledgeRootReports } from "./conversation-knowledge-history.js";
 import {
   ConversationKnowledgeSourceCapacityError,
   readConversationKnowledgeBranch,
@@ -133,17 +133,26 @@ export async function ensureConversationKnowledgeSeed(params: {
   }
   const expected = await captureSeedSources(params.reader, branch, params.assertCurrent);
   check();
-  const root = { ...branch, sessionKey: branch.root.sessionKey, sessionId: branch.root.sessionId };
+  const root = { ...branch, ...branch.root };
   const seedId = sha256Hex(
     JSON.stringify([branch.sessionKey, branch.sessionId, branch.lifecycleRevision]),
   );
-  // Completed enrollment is the steady-state path. Filter in the native reader
-  // so checking its marker does not hydrate every contribution in the root.
-  const markers = await readConversationKnowledgeReports({
+  // Marker snapshots are independent of contribution snapshots. A repeated
+  // connection can share the same native root prefix under its fresh authority.
+  const markers = await readConversationKnowledgeRootReports({
     target: root,
+    source: expected[0]!.source,
+    lifecycleRevision: root.lifecycleRevision,
     customTypes: [CONVERSATION_KNOWLEDGE_SEED],
     assertCurrent: check,
     signal: params.signal,
+    async revalidate() {
+      const current = await captureSeedSources(params.reader, branch, params.assertCurrent);
+      check();
+      if (!isDeepStrictEqual(current, expected)) {
+        throw new Error("Conversation knowledge seed authority changed");
+      }
+    },
   });
   check();
   if (
@@ -158,17 +167,12 @@ export async function ensureConversationKnowledgeSeed(params: {
       );
     })
   ) {
-    const current = await captureSeedSources(params.reader, branch, params.assertCurrent);
-    check();
-    if (!isDeepStrictEqual(current, expected)) {
-      throw new Error("Conversation knowledge seed authority changed");
-    }
     return { status: "already-seeded", recorded: 0, skipped: 0 };
   }
   // Pin the complete native version before paging, including opaque navigation
   // changes that preserve generation and sequence but advance updatedAt.
   const metadata = prepareSessionTranscriptHydration(branch, undefined, params.signal);
-  const initial = await metadata.readMaintenance({ operation: "version" });
+  const initial = await metadata.readMaintenance({ operation: "version", contextOnly: true });
   metadata.assertCurrent();
   check();
   if (!initial.version) {
@@ -336,7 +340,7 @@ export async function ensureConversationKnowledgeSeed(params: {
   check();
   // Traversal, not a second bounded model-context view, proves the prefix was
   // visited. The metadata version fences that traversal through marker COMMIT.
-  const { version } = await metadata.readMaintenance({ operation: "version" });
+  const { version } = await metadata.readMaintenance({ operation: "version", contextOnly: true });
   metadata.assertCurrent();
   check();
   if (!version || !isDeepStrictEqual(version, sourceVersion)) {
