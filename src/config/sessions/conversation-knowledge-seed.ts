@@ -194,7 +194,14 @@ export async function ensureConversationKnowledgeSeed(params: {
         let maxBytes = 1_000_000;
         for (;;) {
           check();
-          const limits = { cursor, maxEvents: 96, maxBytes, activePathOnly: true };
+          const limits = {
+            cursor,
+            maxEvents: 96,
+            maxBytes,
+            activePathOnly: true,
+            // A native fork's exact copy boundary may itself be a non-message event.
+            messagesOnly: inheritedEndpointPending === undefined,
+          };
           const page = await reader.raw(limits).catch(async (error: unknown) => {
             if (!isSessionTranscriptProjectionUnavailableError(error)) {
               throw error;

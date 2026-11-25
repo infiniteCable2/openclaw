@@ -98,7 +98,10 @@ export function readSessionActorMemoryRawDelta(
   let hasMore = false;
   let lastSeq = cursor.lastSeq;
   for (const row of window.events) {
-    if (row.rawSeq <= cursor.lastSeq) {
+    if (
+      row.rawSeq <= cursor.lastSeq ||
+      (limits.messagesOnly && (!isRecord(row.event) || row.event.type !== "message"))
+    ) {
       continue;
     }
     const bytes = Buffer.byteLength(row.eventJson) + 1;

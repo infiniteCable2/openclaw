@@ -513,6 +513,7 @@ describe("explicit native conversation history seed", () => {
         maxEvents: 96,
         maxBytes: 1_000_000,
         activePathOnly: true,
+        messagesOnly: true,
       }),
     );
     expect(mocks.record).toHaveBeenCalledTimes(1);
@@ -540,7 +541,7 @@ describe("explicit native conversation history seed", () => {
         // The native active path includes compacted ancestors; a model-window
         // read alone would not establish the original copy boundary.
         events: [
-          { ...terminal, event: { ...terminal.event, id: "copied-end" } },
+          { seq: 3, event: { type: "custom_message", id: "copied-end" } },
           { seq: 4, event: { type: "compaction", id: "summary", summary: "Copied context." } },
           voice,
           { ...terminal, seq: 6 },
@@ -556,7 +557,11 @@ describe("explicit native conversation history seed", () => {
     expect(mocks.raw).toHaveBeenCalledTimes(2);
     expect(mocks.raw).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ cursor: "copy-continuation", activePathOnly: true }),
+      expect.objectContaining({
+        cursor: "copy-continuation",
+        activePathOnly: true,
+        messagesOnly: false,
+      }),
     );
     expect(mocks.record).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ assistantTranscriptEntryId: "answer", runId: "saved-run" }),

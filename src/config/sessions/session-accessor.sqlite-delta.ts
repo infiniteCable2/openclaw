@@ -69,6 +69,7 @@ export function readTranscriptRawDeltaInDatabase(
       false,
       undefined,
       limits.customMessageDetailsOnly,
+      limits.messagesOnly,
     );
   };
   return database.db.isTransaction

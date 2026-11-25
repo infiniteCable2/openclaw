@@ -65,6 +65,7 @@ export function readTranscriptRawDeltaFromProjection(
         }
       : undefined,
     limits.customMessageDetailsOnly,
+    limits.messagesOnly,
   );
 }
 
@@ -85,6 +86,7 @@ export function readRawDeltaInTransaction(
   activePathOnly = false,
   modelWindow?: { keptActivePositions: readonly number[]; boundaryActivePosition?: number },
   customMessageDetailsOnly = false,
+  messagesOnly = false,
 ): SessionTranscriptRawDeltaResult {
   const watermark = snapshot
     ? undefined
@@ -175,6 +177,13 @@ export function readRawDeltaInTransaction(
                   ]),
             ),
         ),
+      ),
+    )
+    .$if(messagesOnly, (query) =>
+      query.where(
+        /* kysely-allow-raw: Fixed navigation field; message selection never loads unrelated bodies. */ sql<string>`json_extract(${transcriptEventNavigationSql(database)}, '$.type')`,
+        "=",
+        "message",
       ),
     )
     .$if(customTypes !== undefined, (query) =>

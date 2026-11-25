@@ -6,7 +6,7 @@ import {
   readConversationKnowledgeReports,
   readConversationKnowledgeRootReports,
 } from "./conversation-knowledge-history.js";
-import { upsertSessionEntryCore } from "./session-accessor.js";
+import { appendTranscriptMessageSync, upsertSessionEntryCore } from "./session-accessor.js";
 import { appendTranscriptEventSync } from "./session-accessor.sqlite-transcript-write.test-support.js";
 import { captureSessionEntryReadSource } from "./session-entry-read-source.js";
 import { withSessionTranscriptDeltaReader } from "./session-transcript-delta-read.js";
@@ -15,6 +15,92 @@ import { waitForSessionTranscriptProjection } from "./session-transcript-reconci
 import { readSessionTranscriptWatermarkAsync } from "./session-transcript-watermark.js";
 
 describe("native conversation knowledge history catch-up", () => {
+  it("pages active messages without loading a copied report body or an abandoned message", async () => {
+    await withOpenClawTestState(
+      { scenario: "minimal", label: "knowledge-message-pages" },
+      async (state) => {
+        const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+        const target = {
+          agentId: "main",
+          storePath: database.path,
+          env: state.env,
+          sessionKey: "agent:main:message-pages",
+          sessionId: "message-pages",
+        };
+        await upsertSessionEntryCore(target, {
+          sessionId: target.sessionId,
+          updatedAt: 1,
+          lifecycleRevision: "message-pages-life",
+        });
+        const appendMessage = (content: string) => {
+          const saved = appendTranscriptMessageSync(target, {
+            message: { role: "user", content, timestamp: 1 },
+          });
+          if (!saved.ok) {
+            throw new Error("Synthetic message was not admitted", { cause: saved.error });
+          }
+          if (!saved.value?.messageId) {
+            throw new Error("Synthetic message ID is missing");
+          }
+          return saved.value.messageId;
+        };
+        const firstId = appendMessage("First synthetic message.");
+        expect(
+          appendTranscriptEventSync(target, {
+            type: "custom_message",
+            id: "large-copy",
+            parentId: firstId,
+            customType: "synthetic-copied-context",
+            content: "x".repeat(1_100_000),
+            display: false,
+          }).ok,
+        ).toBe(true);
+        const abandonedId = appendMessage("Abandoned synthetic message.");
+        expect(
+          appendTranscriptEventSync(target, {
+            type: "leaf",
+            id: "select-copy",
+            parentId: abandonedId,
+            targetId: "large-copy",
+          }).ok,
+        ).toBe(true);
+        await waitForSessionTranscriptProjection(target);
+        const lastId = appendMessage("Last synthetic message.");
+        await waitForSessionTranscriptProjection(target);
+        await withSessionTranscriptDeltaReader(target, async (reader) => {
+          const limits = { activePathOnly: true, maxEvents: 1, maxBytes: 2_048 };
+          const first = await reader.raw({ ...limits, messagesOnly: true });
+          if (first.kind !== "page") {
+            throw new Error("Message projection was unavailable");
+          }
+          expect(first.events.map((row) => asOptionalRecord(row.event)?.id)).toEqual([firstId]);
+          expect(first.hasMore).toBe(true);
+          const second = await reader.raw({ ...limits, messagesOnly: true, cursor: first.cursor });
+          if (second.kind !== "page") {
+            throw new Error("Message continuation was unavailable");
+          }
+          expect(second.events.map((row) => asOptionalRecord(row.event)?.id)).toEqual([lastId]);
+          expect(second.hasMore).toBe(false);
+          expect(second.requiredBytes).toBeUndefined();
+          const allMessages = await reader.raw({ messagesOnly: true, maxBytes: 4096 });
+          if (allMessages.kind !== "page") {
+            throw new Error("Raw message page was unavailable");
+          }
+          expect(allMessages.events.map((row) => asOptionalRecord(row.event)?.id)).toEqual([
+            firstId,
+            abandonedId,
+            lastId,
+          ]);
+          expect(await reader.raw({ ...limits, cursor: first.cursor })).toMatchObject({
+            kind: "page",
+            events: [],
+            requiredBytes: expect.any(Number),
+          });
+        });
+      },
+    );
+  });
+
   it("incrementally reads native roots while leaf and reset controls force exact active-path rebuilds", async () => {
     await withOpenClawTestState(
       { scenario: "minimal", label: "knowledge-root-cache" },
@@ -34,19 +120,20 @@ describe("native conversation knowledge history catch-up", () => {
         });
         const source = captureSessionEntryReadSource(database, undefined);
         const customTypes = ["synthetic-root-receipt"];
-        const append = (id: string) =>
+        const append = (id: string, parentId: string | null) =>
           expect(
             appendTranscriptEventSync(target, {
               type: "custom_message",
               id,
+              parentId,
               customType: customTypes[0],
               content: "Synthetic root receipt",
               display: false,
               details: { id },
             }).ok,
           ).toBe(true);
-        append("first");
-        append("second");
+        append("first", null);
+        append("second", "first");
         const revalidate = vi.fn(async () => {});
         const params = {
           target,
@@ -86,7 +173,7 @@ describe("native conversation knowledge history catch-up", () => {
           calls.length = 0;
           expect(await readConversationKnowledgeRootReports(params)).toHaveLength(2);
           expect(calls).toHaveLength(0);
-          append("third");
+          append("third", "second");
           expect(await readConversationKnowledgeRootReports(params)).toHaveLength(3);
           expect(calls).toHaveLength(1);
           expect(calls[0]).not.toHaveProperty("customTypes");
@@ -99,7 +186,7 @@ describe("native conversation knowledge history catch-up", () => {
               targetId: "first",
             }).ok,
           ).toBe(true);
-          append("new-path");
+          append("new-path", "first");
           const after = await readSessionTranscriptWatermarkAsync(target);
           expect(after.generation).toBe(before.generation);
           const expected = await readConversationKnowledgeReports(params);
@@ -115,7 +202,7 @@ describe("native conversation knowledge history catch-up", () => {
               firstKeptEntryId: "new-path",
             }).ok,
           ).toBe(true);
-          append("after-reset");
+          append("after-reset", "new-path");
           expect(await readConversationKnowledgeRootReports(params)).toEqual(
             await readConversationKnowledgeReports(params),
           );

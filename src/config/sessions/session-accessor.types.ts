@@ -242,6 +242,8 @@ export type SessionTranscriptEventRow = {
 export type SessionTranscriptRawDeltaLimits = {
   /** Narrow native report reads before sizing/decoding unrelated transcript bodies. */
   customTypes?: readonly string[];
+  /** Select normal message events before loading their or any other event bodies. */
+  messagesOnly?: boolean;
   /** Require the current native transcript path, including its compacted ancestors. */
   activePathOnly?: boolean;
   /** Select the native model window, excluding ancestors already compacted or reset away. */

@@ -69,6 +69,9 @@ export function bootstrapRawTranscriptCursor(
 
 /** Host adapters validate limits before acquiring a database handle. */
 export function normalizeRawDeltaLimits(limits: SessionTranscriptRawDeltaLimits) {
+  if (limits.messagesOnly && limits.customTypes !== undefined) {
+    throw new RangeError("Message and custom report filters are mutually exclusive");
+  }
   if (limits.customMessageDetailsOnly && limits.customTypes === undefined) {
     throw new RangeError("Report details reads require explicit custom message types");
   }
