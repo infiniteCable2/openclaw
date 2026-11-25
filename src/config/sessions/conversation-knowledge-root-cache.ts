@@ -1,4 +1,5 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { LruCache } from "../../infra/lru-cache.js";
 import type {
   SessionTranscriptRawDeltaLimits,
@@ -8,6 +9,7 @@ import type {
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import type { SessionTranscriptWatermark } from "./session-history-read.types.js";
 import { createTranscriptRawDeltaCursor } from "./session-transcript-raw-cursor.js";
+import { resolveSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 
 type Boundary = { generation: string; maxSeq: number; tailId?: string };
 type Snapshot = Boundary & {
@@ -55,6 +57,7 @@ type RootCacheRead = {
   raw(limits: SessionTranscriptRawDeltaLimits): Promise<SessionTranscriptRawDeltaResult>;
   full(through: SessionTranscriptWatermark): Promise<TranscriptEvent[]>;
   assertCurrent(): void;
+  signal?: AbortSignal;
   revalidate(): Promise<void>;
   continuation?: ConversationKnowledgeRootContinuation;
 };
@@ -72,6 +75,10 @@ function freezeJson(value: unknown): void {
 /** Disposable receipt metadata only. Current caller authority remains mandatory on every read. */
 export class ConversationKnowledgeRootCache {
   readonly #cache: LruCache<Snapshot>;
+  readonly #pending = new Map<
+    string,
+    { through: SessionTranscriptWatermark; result: Promise<TranscriptEvent[]> }
+  >();
   readonly #live = new Map<string, WeakRef<ContinuationState>>();
 
   constructor(maxBytes = 8 * 1024 * 1024) {
@@ -81,8 +88,11 @@ export class ConversationKnowledgeRootCache {
   async read(params: RootCacheRead): Promise<TranscriptEvent[]> {
     params.assertCurrent();
     params.continuation?.assertCurrent();
-    // In-memory owners have no stable cross-reader physical identity; use the native path.
-    if (typeof params.source.databaseIdentity !== "string") {
+    // Scoped fences and in-memory owners do not share an infrastructure snapshot.
+    if (
+      typeof params.source.databaseIdentity !== "string" ||
+      resolveSessionTranscriptReadFence(params)
+    ) {
       const events = await params.full(await params.watermark());
       await params.revalidate();
       params.assertCurrent();
@@ -111,6 +121,39 @@ export class ConversationKnowledgeRootCache {
       params.assertCurrent();
       return [];
     }
+    const boundary = { generation: through.generation, maxSeq: through.maxSeq };
+    const cached = this.#live.get(key)?.deref()?.snapshot ?? this.#cache.peek(key);
+    if (cached?.generation === boundary.generation && cached.maxSeq === boundary.maxSeq) {
+      return this.#readAt(params, key, boundary);
+    }
+    const pending = this.#pending.get(key);
+    if (
+      pending?.through.generation === boundary.generation &&
+      pending.through.maxSeq === boundary.maxSeq
+    ) {
+      // Wait for a validated publication, then read under this call's own authority.
+      await racePromiseWithAbortSignal(pending.result, params.signal).catch(() => undefined);
+      params.signal?.throwIfAborted();
+      params.assertCurrent();
+      return this.#readAt(params, key, boundary);
+    }
+    const read = this.#readAt(params, key, boundary);
+    if (pending || this.#pending.size >= 16) {
+      return read;
+    }
+    this.#pending.set(key, { through: boundary, result: read });
+    try {
+      return await read;
+    } finally {
+      this.#pending.delete(key);
+    }
+  }
+
+  async #readAt(
+    params: RootCacheRead,
+    key: string,
+    through: SessionTranscriptWatermark & { generation: string; maxSeq: number },
+  ): Promise<TranscriptEvent[]> {
     params.continuation?.assertCurrent();
     const owned = params.continuation && continuationStates.get(params.continuation);
     let state = (owned?.key === key ? owned.state : undefined) ?? this.#live.get(key)?.deref();

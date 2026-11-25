@@ -1,5 +1,6 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferredCore } from "../../shared/deferred.js";
 import {
   ConversationKnowledgeRootCache,
   ConversationKnowledgeRootContinuation,
@@ -14,6 +15,7 @@ import {
   createTranscriptRawDeltaCursor,
   parseRawTranscriptCursor,
 } from "./session-transcript-raw-cursor.js";
+import { runWithSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 
 function fixture(maxBytes?: number) {
   const cache = new ConversationKnowledgeRootCache(maxBytes);
@@ -168,6 +170,92 @@ describe("incremental infrastructure root receipts", () => {
       return captured;
     });
     await expect(f.read()).rejects.toThrow("root changed during catch-up");
+  });
+
+  it("shares an in-flight root snapshot while revalidating every caller", async () => {
+    const f = fixture();
+    const entered = createDeferredCore();
+    const release = createDeferredCore<TranscriptEvent[]>();
+    f.params.full.mockImplementationOnce(() => {
+      entered.resolve();
+      return release.promise;
+    });
+    const leader = f.read();
+    await entered.promise;
+    const revalidate = vi.fn(async () => {});
+    const denied = vi.fn(async () => {
+      throw new Error("authority changed");
+    });
+    const waiter = f.cache.read({ ...f.params, revalidate });
+    const rejected = expect(f.cache.read({ ...f.params, revalidate: denied })).rejects.toThrow(
+      "authority changed",
+    );
+    await vi.waitFor(() => expect(f.params.watermark).toHaveBeenCalledTimes(3));
+    release.resolve([f.rows[1]!.event]);
+    const original = await leader;
+    const repeated = await waiter;
+    await rejected;
+    expect(f.params.full).toHaveBeenCalledOnce();
+    expect(f.params.raw).toHaveBeenCalledOnce();
+    expect(revalidate).toHaveBeenCalledOnce();
+    expect(denied).toHaveBeenCalledOnce();
+    expect(readConversationKnowledgeRootSnapshot(repeated)).toBe(
+      readConversationKnowledgeRootSnapshot(original),
+    );
+  });
+
+  it("abandons an aborted waiter and reads independently after an unpublished result", async () => {
+    const f = fixture();
+    const entered = createDeferredCore();
+    const release = createDeferredCore<TranscriptEvent[]>();
+    f.params.full.mockImplementationOnce(() => {
+      entered.resolve();
+      return release.promise;
+    });
+    const leader = expect(f.read()).rejects.toThrow("leader failed");
+    await entered.promise;
+    const controller = new AbortController();
+    const cancelled = expect(
+      f.cache.read({
+        ...f.params,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("stopped waiting");
+    const waiter = f.read();
+    await vi.waitFor(() => expect(f.params.watermark).toHaveBeenCalledTimes(3));
+    controller.abort(new Error("stopped waiting"));
+    await cancelled;
+    expect(f.params.full).toHaveBeenCalledOnce();
+    release.reject(new Error("leader failed"));
+    await leader;
+    expect(await waiter).toHaveLength(1);
+    expect(f.params.full).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reuse or replace a shared root snapshot inside its own transcript fence", async () => {
+    const f = fixture();
+    expect(await f.read()).toHaveLength(1);
+    f.params.full.mockResolvedValueOnce([]);
+    expect(
+      await runWithSessionTranscriptReadFence(
+        {
+          agentId: f.params.agentId,
+          sessionId: f.params.sessionId,
+          sessionKey: f.params.sessionKey,
+          storePath: f.params.source.path,
+          generation: "original",
+          entryId: "clipped",
+          rawSeq: 1,
+          activeMessagePosition: 0,
+          effectiveParentId: null,
+          logicalTurnId: "turn",
+          role: "user",
+        },
+        f.read,
+      ),
+    ).toEqual([]);
+    expect(await f.read()).toHaveLength(1);
+    expect(f.params.full).toHaveBeenCalledTimes(2);
   });
 
   it("falls back when its bounded cache cannot retain the root", async () => {
