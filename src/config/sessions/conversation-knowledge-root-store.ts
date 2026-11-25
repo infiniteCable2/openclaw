@@ -7,6 +7,7 @@ import {
   type PreparedConversationBranchCreation,
 } from "./conversation-branch-creation.js";
 import { readConversationKnowledgeRootReports } from "./conversation-knowledge-history.js";
+import { takeCommittedConversationInitialProgress } from "./conversation-knowledge-initial-progress.js";
 import {
   readConversationKnowledgeRootSnapshot,
   type ConversationKnowledgeRootContinuation,
@@ -24,6 +25,7 @@ import { assertSessionConversationRootEntry } from "./session-conversation-admis
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import type { SessionSourceAssertion } from "./session-source-authority.js";
+import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 
 /** A held native root read attests saved provenance, never source-history permission.
  * Root report deletion is not a separate permission store: source/recipient,
@@ -160,6 +162,23 @@ class NativeKnowledgeRootEvidence {
 
   #key(reference: ConversationKnowledgeReference) {
     return referenceKey(reference);
+  }
+
+  static takeInitialReports(
+    evidence: unknown,
+    target: ConversationKnowledgeBranch,
+    version: SessionTranscriptContextVersion,
+  ) {
+    if (
+      typeof evidence !== "object" ||
+      evidence === null ||
+      !(#branch in evidence) ||
+      !isDeepStrictEqual(evidence.#branch, target)
+    ) {
+      return undefined;
+    }
+    evidence.#assertCurrent();
+    return takeCommittedConversationInitialProgress(target, evidence.#source, version);
   }
 
   static assertContribution(
@@ -310,6 +329,8 @@ Object.freeze(NativeKnowledgeRootEvidence);
 Object.freeze(NativeKnowledgeRootEvidence.prototype);
 
 export type { NativeKnowledgeRootEvidence };
+export const readCommittedConversationInitialReports =
+  NativeKnowledgeRootEvidence.takeInitialReports;
 
 /** Immutable native provenance only. No reader, execution lease or disclosure grant is retained. */
 class PreparedKnowledgeRootCandidates {

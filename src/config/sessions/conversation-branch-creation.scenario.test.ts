@@ -21,11 +21,16 @@ import {
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
+import { CONVERSATION_KNOWLEDGE_CHECKPOINT_CONTEXT } from "./conversation-knowledge-context-kinds.js";
 import {
   CONVERSATION_KNOWLEDGE_CONTEXT,
   readConversationKnowledgeImportProgress,
 } from "./conversation-knowledge-packets.js";
-import { recordConversationKnowledgeTurn } from "./conversation-knowledge-store.js";
+import { readCommittedConversationInitialReports } from "./conversation-knowledge-root-store.js";
+import {
+  readConversationKnowledgeRoot,
+  recordConversationKnowledgeTurn,
+} from "./conversation-knowledge-store.js";
 import {
   appendTranscriptEvent,
   loadSessionEntry,
@@ -40,6 +45,7 @@ import type { SessionEntryCreationOperation } from "./session-accessor.sqlite-en
 import { prepareSessionGenerationFacts } from "./session-delivery-generation.js";
 import * as frameBorrow from "./session-initial-context-frame.js";
 import * as sourceContexts from "./session-transcript-context-read.js";
+import { prepareSessionTranscriptHydration } from "./session-transcript-hydration.js";
 import { readSessionTranscriptWatermarkAsync } from "./session-transcript-watermark.js";
 
 // Real native generation custody, personal source grants and lifecycle/transcript workers.
@@ -619,14 +625,49 @@ it("warms an existing startup root before input and reuses its frame across fres
           expect(content).toContain("sealed-own-0 answer");
           expect(content).toContain("sealed-own-1 answer");
           expect(content).not.toContain("First request after frame copy.");
+          const createdBranch = {
+            ...initialized,
+            lifecycleRevision: result.sessionEntry.lifecycleRevision!,
+            root: branch.root,
+          };
           const progress = await readConversationKnowledgeImportProgress({
-            branch: {
-              ...initialized,
-              lifecycleRevision: result.sessionEntry.lifecycleRevision!,
-              root: branch.root,
-            },
+            branch: createdBranch,
             assertCurrent: brokerOwner.assertCurrent,
           });
+          const owner = await fixture.claim(createdBranch);
+          const root = await readConversationKnowledgeRoot({ ...owner, branch: createdBranch });
+          const { version } = await prepareSessionTranscriptHydration(
+            initialized,
+            undefined,
+            signal,
+          ).readMaintenance({ operation: "version" });
+          expect(version).toBeDefined();
+          expect(
+            readCommittedConversationInitialReports({}, createdBranch, version!),
+          ).toBeUndefined();
+          if (suffix === "second") {
+            expect(
+              readCommittedConversationInitialReports(root.evidence, createdBranch, {
+                ...version!,
+                updatedAt: (version!.updatedAt ?? 0) + 1,
+              }),
+            ).toBeUndefined();
+          } else {
+            expect(
+              readCommittedConversationInitialReports(root.evidence, createdBranch, version!),
+            ).toEqual(
+              events.flatMap((event) => {
+                const row = asOptionalRecord(event);
+                return row?.customType === CONVERSATION_KNOWLEDGE_CONTEXT ||
+                  row?.customType === CONVERSATION_KNOWLEDGE_CHECKPOINT_CONTEXT
+                  ? [{ type: "custom_message", customType: row.customType, details: row.details }]
+                  : [];
+              }),
+            );
+            expect(
+              readCommittedConversationInitialReports(root.evidence, createdBranch, version!),
+            ).toBeUndefined();
+          }
           expect(progress.packets.size).toBe(count);
           expect([...progress.packets.values()].every((packet) => packet.complete)).toBe(true);
           const packetIds = events.flatMap((event) => {

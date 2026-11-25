@@ -7,6 +7,7 @@ import {
   captureOpenClawAgentDatabaseExecution,
   supportsOpenClawAgentDatabaseExecution,
 } from "../../state/openclaw-agent-execution.js";
+import { retainCommittedConversationInitialProgress } from "./conversation-knowledge-initial-progress.js";
 import { applyMemorySessionEntryCleanup } from "./session-accessor.memory-cleanup.js";
 import { publishSessionStateArchives } from "./session-accessor.sqlite-archive-store.js";
 import type { MaterializedSessionStateDeletePlan } from "./session-accessor.sqlite-archive-types.js";
@@ -364,6 +365,9 @@ export async function applySessionEntryLifecycleMutation(
       useWorker && upserts.length === 0 ? "worker" : "foreground",
     );
     const committed = preparedWrite.result;
+    if (committed.initialProgress) {
+      retainCommittedConversationInitialProgress(committed.initialProgress);
+    }
 
     function commitProjectedLifecycleMutation(
       removalPlans: MaterializedSessionStateDeletePlan[],

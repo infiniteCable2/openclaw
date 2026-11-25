@@ -127,6 +127,7 @@ export function commitProjectedSessionEntryLifecycleMutationInDatabase(
     string,
     { canonicalKey: string; rehomeMembers: boolean }
   >();
+  let initialProgress: ProjectedLifecycleCommitResult["initialProgress"];
   for (const {
     sessionKey,
     entry,
@@ -183,7 +184,7 @@ export function commitProjectedSessionEntryLifecycleMutationInDatabase(
       ) {
         throw new Error("Initial conversation context is only valid for one new session.");
       }
-      appendInitialSessionContextInTransaction(database, {
+      initialProgress = appendInitialSessionContextInTransaction(database, {
         sessionKey,
         entry,
         context: initialContext,
@@ -312,6 +313,7 @@ export function commitProjectedSessionEntryLifecycleMutationInDatabase(
     }
   }
   return {
+    ...(initialProgress ? { initialProgress } : {}),
     archivedTranscripts,
     beforeCount,
     afterCount:

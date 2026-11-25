@@ -4,6 +4,7 @@ import type {
   OpenClawAgentDatabase,
   OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
+import type { CommittedConversationInitialProgress } from "./conversation-knowledge-initial-progress.js";
 import type { ConversationRouteContext } from "./conversation-route-context.js";
 import type {
   SessionLifecycleArchivedTranscript,
@@ -119,6 +120,7 @@ export type LifecycleRemovalProjectionInput = {
 };
 
 export type ProjectedLifecycleCommitResult = {
+  initialProgress?: CommittedConversationInitialProgress;
   archivedTranscripts: SessionLifecycleArchivedTranscript[];
   beforeCount: number;
   afterCount: number;

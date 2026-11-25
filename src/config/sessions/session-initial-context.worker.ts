@@ -9,9 +9,17 @@ import {
   readConversationKnowledgeCheckpoint,
 } from "./conversation-knowledge-checkpoint.js";
 import {
+  CONVERSATION_KNOWLEDGE_CHECKPOINT_CONTEXT,
+  CONVERSATION_KNOWLEDGE_CONTEXT,
+} from "./conversation-knowledge-context-kinds.js";
+import {
   conversationKnowledgeContributionId,
   conversationKnowledgePacketId,
 } from "./conversation-knowledge-identity.js";
+import {
+  MAX_COMMITTED_INITIAL_PROGRESS_BYTES,
+  type CommittedConversationInitialProgress,
+} from "./conversation-knowledge-initial-progress.js";
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import { validateSessionTranscriptContextInDatabase } from "./session-accessor.sqlite-model-context.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
@@ -193,7 +201,7 @@ export function appendInitialSessionContextInTransaction(
     entry: SessionEntry;
     context: PreparedInitialSessionContext;
   },
-): void {
+): CommittedConversationInitialProgress | undefined {
   if (isMainThread) {
     throw new Error("Initial conversation context requires the native lifecycle worker.");
   }
@@ -265,7 +273,7 @@ export function appendInitialSessionContextInTransaction(
   if (window || target.generation !== null || target.rawSeq !== null) {
     throw new Error("Initial conversation context requires an unused target transcript.");
   }
-  appendTranscriptEventsInTransaction(
+  const appended = appendTranscriptEventsInTransaction(
     database,
     {
       agentId: database.agentId,
@@ -275,4 +283,45 @@ export function appendInitialSessionContextInTransaction(
     },
     context.events,
   );
+  if (
+    (context.kind !== "root-projection" && context.kind !== "prepared-root-projection") ||
+    appended !== context.events.length ||
+    context.events.length > 4096 ||
+    !entry.lifecycleRevision ||
+    !context.sourceEntry.lifecycleRevision
+  ) {
+    return undefined;
+  }
+  const reports = context.events.flatMap((event) => {
+    const record = asOptionalRecord(event);
+    if (
+      record?.type !== "custom_message" ||
+      (record.customType !== CONVERSATION_KNOWLEDGE_CONTEXT &&
+        record.customType !== CONVERSATION_KNOWLEDGE_CHECKPOINT_CONTEXT)
+    ) {
+      return [];
+    }
+    return [{ type: record.type, customType: record.customType, details: record.details }];
+  });
+  const receipt = {
+    branch: {
+      agentId: database.agentId,
+      storePath: database.path,
+      sessionKey: params.sessionKey,
+      sessionId: entry.sessionId,
+      lifecycleRevision: entry.lifecycleRevision,
+      root: {
+        sessionKey: sourceKey,
+        sessionId: context.sourceEntry.sessionId,
+        lifecycleRevision: context.sourceEntry.lifecycleRevision,
+      },
+    },
+    source: context.source,
+    version: readTranscriptContextVersionInTransaction(database, entry.sessionId),
+    reports,
+  };
+  const byteLength = Buffer.byteLength(JSON.stringify(receipt));
+  return byteLength <= MAX_COMMITTED_INITIAL_PROGRESS_BYTES
+    ? { ...receipt, byteLength }
+    : undefined;
 }

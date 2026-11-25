@@ -288,9 +288,12 @@ export async function readConversationKnowledgeInputs(params: {
   };
   const events = await readRoot();
   check();
-  const readDurableProgress = () =>
+  const readDurableProgress = (
+    initial?: Parameters<typeof readConversationKnowledgePacketProgress>[0]["initial"],
+  ) =>
     readConversationKnowledgePacketProgress({
       ...params,
+      ...(initial ? { initial } : {}),
       async prepareCheckpointCoverage(checkpoints) {
         // An already admitted summary is recipient history. Resolve its immutable
         // coverage off-turn, without granting access to any original donor.
@@ -341,9 +344,20 @@ export async function readConversationKnowledgeInputs(params: {
       cache.preparationProgress(current);
       version = current;
     }
-    const progress = await readDurableProgress();
+    let usedInitial = false;
+    const progress = await readDurableProgress({
+      rootEvidence: events.evidence,
+      version,
+      onUsed: () => {
+        usedInitial = true;
+      },
+    });
     const current = await readVersion(params.branch);
-    if (isDeepStrictEqual(version, current)) {
+    const stable = isDeepStrictEqual(version, current);
+    if (!stable && usedInitial) {
+      return readDurableProgress();
+    }
+    if (stable) {
       try {
         cache.retainPreparationProgress(
           current,

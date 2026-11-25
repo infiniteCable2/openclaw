@@ -448,6 +448,23 @@ describe("versioned background input snapshots", () => {
     expect(boundary.progress).toHaveBeenCalledOnce();
   });
 
+  it("rereads durable progress if the target changes during use of its creation receipt", async () => {
+    const f = inputs();
+    const current = new Map([["new-native-progress", { complete: false, nextOffset: 1 }]]);
+    boundary.progress
+      .mockImplementationOnce(async ({ initial }) => {
+        initial.onUsed();
+        f.versions.recipient.updatedAt++;
+        return f.progress;
+      })
+      .mockResolvedValueOnce(current);
+
+    expect((await f.read())?.retained).toEqual(current);
+    expect(boundary.progress).toHaveBeenCalledTimes(2);
+    expect(boundary.progress.mock.calls[1]?.[0]?.initial).toBeUndefined();
+    expect(f.cache.preparationProgress(f.versions.recipient)).toBeUndefined();
+  });
+
   it("refuses cached data when native physical or lifecycle rebind fails", async () => {
     const f = inputs();
     await f.read();

@@ -12,6 +12,7 @@ import {
   conversationKnowledgeContributionId,
   conversationKnowledgePacketId,
 } from "./conversation-knowledge-identity.js";
+import { readCommittedConversationInitialReports } from "./conversation-knowledge-root-store.js";
 import {
   readPersonalConversationContributionCustody,
   type PersonalConversationContributionRange,
@@ -27,6 +28,7 @@ import type { CustomMessageReportAppend } from "./session-accessor.sqlite-transc
 import type {
   SessionTranscriptRuntimeTarget,
   SessionTranscriptWriteScope,
+  TranscriptEvent,
 } from "./session-accessor.types.js";
 import { assertSessionEntryCohortScope } from "./session-entry-cohort-scope.js";
 import type { SessionEntryCohortReader } from "./session-entry-read-runtime.types.js";
@@ -104,6 +106,13 @@ export async function readConversationKnowledgeImportProgress(params: {
     assertCurrent: params.assertCurrent,
     signal: params.signal,
   });
+  return summarizeConversationKnowledgeImportReports(params.branch, events);
+}
+
+function summarizeConversationKnowledgeImportReports(
+  branch: ConversationKnowledgeBranch,
+  events: readonly TranscriptEvent[],
+): ConversationKnowledgeImportProgress {
   const progress = new Map<string, ConversationKnowledgePacketProgress>();
   const checkpoints = new Map<string, ConversationKnowledgeCheckpointContext>();
   for (const event of events) {
@@ -111,8 +120,8 @@ export async function readConversationKnowledgeImportProgress(params: {
     if (record?.customType === CONVERSATION_KNOWLEDGE_CHECKPOINT_CONTEXT) {
       const checkpoint = readConversationKnowledgeCheckpointContext(record.details);
       if (
-        checkpoint?.rootSessionId === params.branch.root.sessionId &&
-        checkpoint.rootLifecycleRevision === params.branch.root.lifecycleRevision
+        checkpoint?.rootSessionId === branch.root.sessionId &&
+        checkpoint.rootLifecycleRevision === branch.root.lifecycleRevision
       ) {
         checkpoints.set(checkpoint.checkpointId, checkpoint);
       }
@@ -121,8 +130,8 @@ export async function readConversationKnowledgeImportProgress(params: {
     const packet = asOptionalRecord(record?.details);
     if (
       packet?.version !== 1 ||
-      packet.rootSessionId !== params.branch.root.sessionId ||
-      packet.rootLifecycleRevision !== params.branch.root.lifecycleRevision ||
+      packet.rootSessionId !== branch.root.sessionId ||
+      packet.rootLifecycleRevision !== branch.root.lifecycleRevision ||
       typeof packet.contributionId !== "string" ||
       typeof packet.complete !== "boolean" ||
       !Number.isSafeInteger(packet.nextOffset) ||
@@ -147,12 +156,31 @@ export async function readConversationKnowledgePacketProgress(params: {
   assertCurrent: SessionSourceAssertion;
   signal?: AbortSignal;
   checkpointCoverage?: ReadonlyMap<string, PreparedConversationKnowledgeCheckpointCoverage>;
+  initial?: {
+    rootEvidence: unknown;
+    version: SessionTranscriptContextVersion;
+    onUsed(): void;
+  };
   /** Background preparation only; model boundaries supply already prepared progress. */
   prepareCheckpointCoverage?: (
     checkpoints: readonly ConversationKnowledgeCheckpointContext[],
   ) => Promise<ReadonlyMap<string, PreparedConversationKnowledgeCheckpointCoverage>>;
 }): Promise<ReadonlyMap<string, ConversationKnowledgePacketProgress>> {
-  const imports = await readConversationKnowledgeImportProgress(params);
+  params.signal?.throwIfAborted();
+  params.assertCurrent();
+  const reports =
+    params.initial &&
+    readCommittedConversationInitialReports(
+      params.initial.rootEvidence,
+      params.branch,
+      params.initial.version,
+    );
+  if (reports) {
+    params.initial?.onUsed();
+  }
+  const imports = reports
+    ? summarizeConversationKnowledgeImportReports(params.branch, reports)
+    : await readConversationKnowledgeImportProgress(params);
   const checkpointCoverage =
     imports.checkpoints.length && params.prepareCheckpointCoverage
       ? await params.prepareCheckpointCoverage(imports.checkpoints)
