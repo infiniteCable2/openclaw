@@ -416,6 +416,8 @@ describe("runMessageAction core send routing", () => {
         asVoice: true,
       },
       sessionKey: "agent:main:testchat:channel:abc",
+      actionOrigin: "message-tool",
+      inboundAudio: true,
     });
 
     expect(ttsMocks.maybeApplyTtsToPayload).toHaveBeenCalledWith(
@@ -496,35 +498,55 @@ describe("runMessageAction core send routing", () => {
     },
   );
 
-  it("forwards inbound audio context to message-tool TTS", async () => {
-    const sendText = vi.fn().mockResolvedValue(receipt("testchat", "text-1", "c1"));
-    registerTestChatPlugin({
-      deliveryMode: "direct",
-      sendText,
-    });
+  it.each([
+    [undefined, false, "channel:abc", true],
+    ["message-tool", false, "channel:abc", undefined],
+    ["message-tool", true, "channel:abc", true],
+    ["message-tool", true, "channel:other", undefined],
+  ] as const)(
+    "uses the inbound reply policy for origin %s, tool-only %s and target %s",
+    async (actionOrigin, toolOnly, target, expectedInboundAudio) => {
+      const sendText = vi.fn().mockResolvedValue(receipt("testchat", "text-1", "c1"));
+      registerTestChatPlugin({
+        deliveryMode: "direct",
+        sendText,
+      });
 
-    await runMessageAction({
-      cfg: {
-        channels: { testchat: { enabled: true } },
-        tts: { auto: "inbound" },
-      } as OpenClawConfig,
-      params: { message: "voice reply" },
-      sessionKey: "agent:main:testchat:channel:abc",
-      inboundAudio: true,
-    });
-
-    expect(ttsMocks.maybeApplyTtsToPayload).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "final",
-        channel: "testchat",
-        inboundAudio: true,
-        payload: expect.objectContaining({
-          text: "voice reply",
+      await runMessageAction({
+        cfg: {
+          channels: { testchat: { enabled: true } },
+          tts: { auto: "inbound" },
+          tools: { message: { crossContext: { allowWithinProvider: true } } },
+        } as OpenClawConfig,
+        params: { message: "voice reply", target },
+        sessionKey: "agent:main:testchat:channel:abc",
+        actionOrigin,
+        ...(toolOnly && {
+          sourceReplyDeliveryMode: "message_tool_only",
+          messageActionAuthorization: {
+            requesterAccountId: "default",
+            toolContext: {
+              currentChannelProvider: "testchat",
+              currentChannelId: "channel:abc",
+            },
+          },
         }),
-      }),
-    );
-    expect(sendText).toHaveBeenCalledOnce();
-  });
+        inboundAudio: true,
+      });
+
+      expect(ttsMocks.maybeApplyTtsToPayload).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "final",
+          channel: "testchat",
+          inboundAudio: expectedInboundAudio,
+          payload: expect.objectContaining({
+            text: "voice reply",
+          }),
+        }),
+      );
+      expect(sendText).toHaveBeenCalledOnce();
+    },
+  );
 
   it("passes the native task signal to buffered speech and never sends its cancelled result", async () => {
     const sendText = vi.fn();

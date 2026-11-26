@@ -1,9 +1,13 @@
 import path from "node:path";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { jsonResult } from "../../agents/tools/common.js";
+import { saveInspectedVideoFrames } from "../../agents/tools/video-inspect-save.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { buildOutboundMediaLoadOptions } from "../../media/load-options.js";
+import { loadWebMediaRaw } from "../../media/web-media.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import {
   createChannelTestPluginBase,
@@ -44,6 +48,7 @@ function runAction(
 }
 
 beforeEach(resetMessageActionRunnerMocks);
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
   setActivePluginRegistry(createTestRegistry([]));
   vi.clearAllMocks();
@@ -317,6 +322,69 @@ function runHostMediaAction(
 }
 
 describe("runMessageAction host-media authority", () => {
+  it.each([false, true])(
+    "routes explicitly addressed Talk sends to the external adapter with media=%s",
+    async (media) => {
+      const channel = "policydest";
+      const handleAction = registerPolicyPlugin(channel);
+      const deliverSpeech = vi.fn(async () => {});
+      const workspace = tempDirs.make("openclaw-talk-outbound-");
+      const image = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5m8gAAAABJRU5ErkJggg==",
+        "base64",
+      );
+      const [frame] = media
+        ? await saveInspectedVideoFrames({
+            frames: [{ buffer: image, mimeType: "image/png", width: 1, height: 1 }],
+            workspaceDir: workspace,
+            assertCurrent() {},
+          })
+        : [];
+      const result = await runAction(
+        channel,
+        "send",
+        {
+          action: "send",
+          channel,
+          target: "oc_123",
+          message: "Test",
+          ...(frame ? { media: frame.path } : {}),
+        },
+        {
+          cfg: {
+            agents: { entries: { example: { workspace } } },
+            channels: { [channel]: { enabled: true } },
+            tools: { fs: { workspaceOnly: true } },
+          } as OpenClawConfig,
+          agentId: "example",
+          currentSourceReplyTarget: {
+            runId: "test-run",
+            sessionId: "test-session",
+            assertCurrent() {},
+            speechUtteranceOnly: true,
+            deliver: deliverSpeech,
+          },
+        },
+      );
+      expect(result.handledBy).toBe("plugin");
+      expect(deliverSpeech).not.toHaveBeenCalled();
+      expect(handleAction).toHaveBeenCalledOnce();
+      const call = handleAction.mock.calls[0]![0];
+      expect(call).toMatchObject({
+        channel,
+        params: { message: "Test", ...(frame ? { media: frame.path } : {}) },
+      });
+      if (frame) {
+        expect(call.mediaAccess?.localRoots).toContain(workspace);
+        const uploaded = await loadWebMediaRaw(
+          frame.path,
+          buildOutboundMediaLoadOptions({ mediaAccess: call.mediaAccess }),
+        );
+        expect(uploaded.buffer).toEqual(image);
+      }
+    },
+  );
+
   it.each([
     ["session channel", "id:trusted-user", "requesterSenderId", "trusted-user"],
     ["username", "username:alice_u", "requesterSenderUsername", "alice_u"],

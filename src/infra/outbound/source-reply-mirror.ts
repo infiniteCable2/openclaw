@@ -256,7 +256,7 @@ function matchesDeliveredSourceTargets(
   );
 }
 
-function isCurrentSourceConversation(
+export function isCurrentSourceConversation(
   params: SourceReplyTranscriptMirrorParams,
   requireExactThread = false,
 ): params is MirrorableSourceReplyTranscriptParams {

@@ -70,6 +70,7 @@ import {
   materializeMessagePresentationFallback,
 } from "./outbound-send-service.js";
 import { ensureOutboundSessionEntry, resolveOutboundSessionRoute } from "./outbound-session.js";
+import { isCurrentSourceConversation } from "./source-reply-mirror.js";
 
 function resolveReplyMediaAttachmentType(value: unknown): ReplyMediaAttachment["type"] {
   return value === "image" || value === "audio" || value === "video" || value === "file"
@@ -483,6 +484,28 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
   };
   throwIfAborted(abortSignal);
 
+  const authorization = input.messageActionAuthorization;
+  // Keep the reply policy when the host uses this tool to deliver the source answer.
+  // A separate tool send does not inherit the input's audio format.
+  const applyInboundReplyPolicy =
+    input.actionOrigin !== "message-tool" ||
+    (input.inboundAudio === true &&
+      input.sourceReplyDeliveryMode === "message_tool_only" &&
+      authorization?.toolContext &&
+      isCurrentSourceConversation(
+        {
+          action,
+          channel,
+          actionParams: { ...params, target: to },
+          cfg,
+          accountId,
+          currentAccountId: authorization.requesterAccountId ?? input.defaultAccountId,
+          sessionKey: input.sessionKey,
+          toolContext: authorization.toolContext,
+          replyToIsExplicit: reply?.source === "explicit",
+        },
+        true,
+      ));
   const ttsPayload = await maybeApplyTtsToMessageActionSendPayload({
     payload: sendPayload.payload,
     cfg,
@@ -490,7 +513,7 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
     accountId,
     agentId,
     sessionKey: input.sessionKey,
-    inboundAudio: input.inboundAudio,
+    inboundAudio: applyInboundReplyPolicy ? input.inboundAudio : undefined,
     dryRun,
     runId: input.runId,
     sessionId: input.sessionId,

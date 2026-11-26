@@ -7,6 +7,14 @@ import type { MessageActionInput, MessageActionResult } from "./message-action-c
 import { captureMessageDeliveryAuthority } from "./message-action-execution.js";
 import { buildMessagePayload } from "./message-action-send.js";
 
+const SPEECH_FIELDS = new Set([
+  "message",
+  "voiceText",
+  "voiceExpression",
+  "idempotencyKey",
+  "dryRun",
+]);
+
 /** An explicit destination always retains the native external routing path. */
 export function isImplicitCurrentSourceSend(
   action: string,
@@ -35,15 +43,15 @@ export async function deliverToCurrentSourceReplyTarget(
   };
   assertCurrent();
   const params = { ...input.params };
+  // The message tool uses this field to select the action. It is not part of the reply.
+  delete params.action;
+  // The outbound sanitizer can leave omitted optional fields set to undefined.
   if (
     target.speechUtteranceOnly &&
-    Object.keys(params).some(
-      (key) =>
-        !["message", "voiceText", "voiceExpression", "idempotencyKey", "dryRun"].includes(key),
-    )
+    Object.keys(params).some((key) => params[key] !== undefined && !SPEECH_FIELDS.has(key))
   ) {
     throw new Error(
-      "Current-source speech accepts only plain message and structured speech fields",
+      "Current-source speech accepts only plain message and structured speech fields. For authorized chat delivery, specify the destination channel and exact chat target in a separate send.",
     );
   }
   const parts = await buildMessagePayload({ actionParams: params, input, agentId: input.agentId });

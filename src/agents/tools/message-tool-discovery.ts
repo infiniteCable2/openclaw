@@ -589,7 +589,8 @@ export function resolveAgentAccountId(value?: string): string | undefined {
 }
 
 export function buildMessageToolDescription(actions: string[] | undefined): string {
-  const baseDescription = "Send/manage channel messages.";
+  const baseDescription =
+    "Send/manage channel messages. For a specific chat, set channel and target. Use media to attach a file.";
   if (actions && actions.length > 0) {
     const sortedActions = sortUniqueStrings(actions);
     const description = `${baseDescription} Supports actions: ${sortedActions.join(", ")}.`;

@@ -32,6 +32,9 @@ describe("admitted speech expression guidance", () => {
       "same presentation contract for native commentary and the final answer",
     );
     expect(guidance).toContain("does not send to another destination or grant tool permissions");
+    expect(guidance).toContain("A message send without a destination speaks in this call");
+    expect(guidance).toContain("destination channel and exact chat target");
+    expect(guidance).toContain("that send's media or attachments field");
     expect(guidance).toContain("omitted emotion keeps the active value");
     expect(guidance).toContain("repeats the active emotion for each sentence");
     expect(guidance).not.toContain("Send successive utterances to change emotion");
@@ -64,6 +67,7 @@ describe("admitted speech expression guidance", () => {
     );
     expect(guidance).toContain("no message tool");
     expect(guidance).toContain("Use message only when it is actually available");
+    expect(guidance).not.toContain("speaks in this call");
     expect(guidance).toContain('with type first: {"type":"speech","text"');
   });
 });

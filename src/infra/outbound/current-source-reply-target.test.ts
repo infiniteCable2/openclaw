@@ -14,6 +14,7 @@ function input(): MessageActionInput {
     runId: "test-run",
     sessionId: "test-session",
     params: {
+      action: "send",
       message: "A sentence.",
       voiceText: "A sentence.",
       voiceExpression: { emotion: "joyful", parts: [{ text: "A sentence." }] },
@@ -46,6 +47,9 @@ describe("native current-source reply custody", () => {
   it("hands exact canonical facts to the target without claiming playback", async () => {
     const call = input();
     call.sourceReplyFinal = false;
+    // Message-tool sanitization leaves omitted optional presentation fields undefined.
+    call.params.presentation = undefined;
+    call.params.interactive = undefined;
     const result = await deliverToCurrentSourceReplyTarget(call);
     expect(result.handledBy).toBe("current-source");
     const deliver = vi.mocked(call.currentSourceReplyTarget!.deliver);
@@ -85,6 +89,12 @@ describe("native current-source reply custody", () => {
       },
       (call: MessageActionInput) => {
         call.params.voiceProvider = "another-provider";
+      },
+      (call: MessageActionInput) => {
+        call.params.media = "media://inbound/example.png";
+      },
+      (call: MessageActionInput) => {
+        call.params.presentation = { text: "Do not speak or redirect this." };
       },
     ]) {
       const call = input();
