@@ -174,7 +174,7 @@ async function openConversationKnowledge(
     if (seed.status === "pending") {
       return undefined;
     }
-    prepareConversationKnowledgeRecipient(enrollment);
+    prepareConversationKnowledgeRecipient({ ...enrollment, openingOnly: true });
     return undefined;
   } finally {
     await held.databaseClaim.release();

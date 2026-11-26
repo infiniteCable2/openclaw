@@ -539,8 +539,13 @@ describe("native branch prefetch and model-boundary composition", () => {
               },
             };
             expect(
-              prepareConversationKnowledgeRecipient({ ...request, audience: secondAudience }),
+              prepareConversationKnowledgeRecipient({
+                ...request,
+                audience: secondAudience,
+                openingOnly: true,
+              }),
             ).toBe(prefetch);
+            expect(prefetch.owner.currentPreparation()).toBeUndefined();
             firstOpeningLive = false;
             await prefetch.owner.wait();
             const later = await publish(

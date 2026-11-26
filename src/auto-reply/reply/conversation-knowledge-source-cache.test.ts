@@ -235,6 +235,8 @@ describe("disposable conversation source preparation", () => {
     expect(cache.stageCheckpoint(checkpoint)).toBe(true);
     cache.consumeCheckpoint(checkpoint);
     expect(cache.preparedPackets(2)).toHaveLength(0);
+    expect(cache.firstPreparedOffset("first")).toBeUndefined();
+    expect(cache.firstPreparedOffset("second")).toBeUndefined();
     expect(secondRelease).toHaveBeenCalledOnce();
     expect(cache.preparedContributionGroup(source, manifest)).toBeUndefined();
     cache.clear();
@@ -594,6 +596,26 @@ describe("disposable conversation source preparation", () => {
     expect(cache.consumptionRevision).toBe(3);
     cache.clear();
     expect(cache.consumptionRevision).toBe(4);
+  });
+
+  it("updates the first pending offset without changing delivery order across contributions", () => {
+    const cache = createConversationKnowledgeSourceCache();
+    cache.stage("first", 32, packet());
+    cache.stage("other", 0, packet());
+    cache.stage("first", 16, packet());
+    expect(cache.firstPreparedOffset("first")).toBe(16);
+    expect(cache.preparedPackets(3)).toEqual([
+      { contributionId: "first", offset: 32 },
+      { contributionId: "other", offset: 0 },
+      { contributionId: "first", offset: 16 },
+    ]);
+    cache.consume("first", 16);
+    expect(cache.firstPreparedOffset("first")).toBe(32);
+    cache.retainContributions(new Set(["other"]));
+    expect(cache.firstPreparedOffset("first")).toBeUndefined();
+    expect(cache.firstPreparedOffset("other")).toBe(0);
+    cache.clear();
+    expect(cache.firstPreparedOffset("other")).toBeUndefined();
   });
 
   it("invalidates every raw range and staged offset of exactly one contribution", async () => {

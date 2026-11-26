@@ -25,7 +25,13 @@ vi.mock("../../state/openclaw-agent-execution.js", () => ({
 }));
 // mock-isolation: Keep synthetic queue scenarios from creating application log files.
 vi.mock("../../logging/subsystem.js", () => ({
-  createSubsystemLogger: () => ({ debug() {}, warn: boundary.warn, error() {}, info() {} }),
+  createSubsystemLogger: () => ({
+    isEnabled: () => false,
+    debug() {},
+    warn: boundary.warn,
+    error() {},
+    info() {},
+  }),
 }));
 // mock-isolation: Retain the actual queue while suppressing its external diagnostics.
 vi.mock("../../logging/diagnostic-runtime.js", () => ({

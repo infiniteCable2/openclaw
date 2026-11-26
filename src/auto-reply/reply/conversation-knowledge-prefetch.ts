@@ -34,7 +34,7 @@ type Recipient = {
   cache: ConversationKnowledgeSourceCache;
   checkpoint: ReturnType<typeof registerConversationKnowledgeCheckpointOwner>;
   wakeAfterConfigChange(previous: ReadonlySet<OpenClawConfig>): void;
-  retainAudience(audience: ConversationPrivateAudience): void;
+  retainAudience(audience: ConversationPrivateAudience, openingOnly?: boolean): boolean;
   retainContextBudget(
     capacity: (message: CustomMessage) => boolean,
     model?: { provider: string; model: string; config: OpenClawConfig },
@@ -59,6 +59,8 @@ export function prepareConversationKnowledgeRecipient(params: {
   branch: ConversationKnowledgeBranch;
   participant?: SessionParticipantIdentity;
   audience?: ConversationPrivateAudience;
+  /** A connection without input can attach to an already prepared recipient. */
+  openingOnly?: boolean;
   env: NodeJS.ProcessEnv;
   getRuntimeConfig(): OpenClawConfig;
 }): Recipient | undefined {
@@ -91,9 +93,9 @@ export function prepareConversationKnowledgeRecipient(params: {
         .catch(() => log.debug("Related-history retired owner cleanup deferred"));
     }
     if (current) {
-      old.retainAudience(incomingAudience);
-      // A new admitted input is also a retry opportunity after a transient read failure.
-      old.owner.request("source", "opening");
+      if (old.retainAudience(incomingAudience, params.openingOnly)) {
+        old.owner.request("source", "opening");
+      }
       return old;
     }
   }
@@ -174,7 +176,8 @@ export function prepareConversationKnowledgeRecipient(params: {
     }
     return selected;
   };
-  const retainAudience = (proof: ConversationPrivateAudience) => {
+  const retainAudience = (proof: ConversationPrivateAudience, openingOnly?: boolean) => {
+    const previousAudience = openingOnly ? selectAudience() : undefined;
     assertAudienceProof(proof);
     const held = retainConversationPrivateAudience(proof);
     try {
@@ -213,7 +216,15 @@ export function prepareConversationKnowledgeRecipient(params: {
         retireAudience(previous);
       }
     }
-    selectAudience();
+    const current = selectAudience();
+    // Native changes and the owner's retry timer already preserve pending work.
+    // A new input or a changed route still gets a fresh source check.
+    return (
+      !previousAudience ||
+      previousAudience.channelId !== current.channelId ||
+      previousAudience.accountId !== current.accountId ||
+      previousAudience.nativeChannelId !== current.nativeChannelId
+    );
   };
   let checkpoint: ReturnType<typeof registerConversationKnowledgeCheckpointOwner> | undefined;
   let unsubscribeAvailability = () => {};

@@ -1,0 +1,2 @@
+56
+# Cover native silent reopening, later source commits, and staged packet index lifecycle.

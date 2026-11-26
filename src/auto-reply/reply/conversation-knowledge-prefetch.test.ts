@@ -128,13 +128,16 @@ describe("recipient preparation scheduling", () => {
     let config = captureRuntimeConfigWithSource(base, base);
     let originalCurrent = true;
     const releases: ReturnType<typeof vi.fn>[] = [];
-    const open = (endpoint?: { source: object; sourceClosed: AbortSignal }) => {
+    const open = (
+      endpoint?: { source: object; sourceClosed: AbortSignal },
+      accountId = "default",
+    ) => {
       let retained = true;
       const fields = {
         agentId: branch.agentId,
         sessionKey: branch.sessionKey,
         channelId: "webchat",
-        accountId: "default",
+        accountId,
         nativeChannelId: "original-endpoint",
         participant,
       };
@@ -169,13 +172,14 @@ describe("recipient preparation scheduling", () => {
         retain,
       };
     };
-    const register = (audience = open()) =>
+    const register = (audience = open(), openingOnly?: boolean) =>
       prepareConversationKnowledgeRecipient({
         branch,
         participant,
         audience,
         env: {},
         getRuntimeConfig: () => config,
+        openingOnly,
       });
     return {
       branch,
@@ -406,16 +410,34 @@ describe("recipient preparation scheduling", () => {
         expect(() => scheduled.assertCurrent()).not.toThrow();
         expect(f.releases[index]).not.toHaveBeenCalled();
         closed = new AbortController();
-        expect(f.register(f.open({ source: Object.freeze({}), sourceClosed: closed.signal }))).toBe(
-          recipient,
-        );
+        const audience = f.open({ source: Object.freeze({}), sourceClosed: closed.signal });
+        expect(f.register(audience, true)).toBe(recipient);
         expect(f.releases[index]).toHaveBeenCalledOnce();
         expect(f.releases[index + 1]).not.toHaveBeenCalled();
       }
+      expect(preparation.owner.request).not.toHaveBeenCalled();
     } finally {
       scheduled.clear();
     }
     expect(f.releases.every((release) => release.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("requests sources when an opening changes audience routing or when input arrives", () => {
+    const f = retainedOpening();
+    const recipient = f.register();
+    const scheduled = preparation.create.mock.calls[0]![0];
+    const otherRoute = () => f.open(undefined, "second-account");
+    try {
+      expect(f.register(otherRoute(), true)).toBe(recipient);
+      expect(preparation.owner.request).toHaveBeenCalledExactlyOnceWith("source", "opening");
+      preparation.owner.request.mockClear();
+      expect(f.register(otherRoute(), true)).toBe(recipient);
+      expect(preparation.owner.request).not.toHaveBeenCalled();
+      expect(f.register(otherRoute())).toBe(recipient);
+      expect(preparation.owner.request).toHaveBeenCalledExactlyOnceWith("source", "opening");
+    } finally {
+      scheduled.clear();
+    }
   });
 
   it.each(["reset", "deleted", "archived"])(

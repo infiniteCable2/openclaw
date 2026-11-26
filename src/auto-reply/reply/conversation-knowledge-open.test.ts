@@ -258,6 +258,7 @@ describe("opening a private conversation recipient", () => {
       branch,
       participant: params.participant,
       audience: params.audience,
+      openingOnly: true,
       env: reader.database.env,
       getRuntimeConfig: expect.any(Function),
     });

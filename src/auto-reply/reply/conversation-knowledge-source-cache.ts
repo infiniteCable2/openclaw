@@ -41,15 +41,15 @@ export function createConversationKnowledgeSourceCache<
     string,
     { value: SessionTranscriptModelContext; bytes: number; contributionId: string }
   >();
-  const staged = new Map<
-    string,
-    {
-      value: PreparedConversationKnowledgePacket;
-      bytes: number;
-      contributionId: string;
-      offset: number;
-    }
-  >();
+  type StagedPacket = {
+    value: PreparedConversationKnowledgePacket;
+    bytes: number;
+    contributionId: string;
+    offset: number;
+  };
+  const staged = new Map<string, StagedPacket>();
+  // Keep insertion order for delivery and use an index for per-contribution lookups.
+  const stagedKeys = new Map<string, Set<string>>();
   let bytes = 0;
   let admissionBytes = 0;
   type ReleasableAdmission =
@@ -164,9 +164,8 @@ export function createConversationKnowledgeSourceCache<
       entries.delete(key);
       revision++;
       if (
-        ![...entries.values(), ...staged.values()].some(
-          (entry) => entry.contributionId === old.contributionId,
-        )
+        !stagedKeys.has(old.contributionId) &&
+        ![...entries.values()].some((entry) => entry.contributionId === old.contributionId)
       ) {
         admissionSources.delete(old.contributionId);
         releaseUnusedAdmissions();
@@ -174,14 +173,20 @@ export function createConversationKnowledgeSourceCache<
     }
   };
   const stagedKey = (id: string, offset: number) => JSON.stringify([id, offset]);
+  const deleteStaged = (key: string, entry: StagedPacket) => {
+    staged.delete(key);
+    stagedBytes -= entry.bytes;
+    const keys = stagedKeys.get(entry.contributionId)!;
+    keys.delete(key);
+    if (!keys.size) {
+      stagedKeys.delete(entry.contributionId);
+    }
+  };
   const invalidateStaged = (id: string) => {
-    for (const [key, entry] of staged) {
-      if (entry.contributionId === id) {
-        staged.delete(key);
-        invalidationRevision++;
-        stagedBytes -= entry.bytes;
-        revision++;
-      }
+    for (const key of stagedKeys.get(id) ?? []) {
+      deleteStaged(key, staged.get(key)!);
+      invalidationRevision++;
+      revision++;
     }
   };
   const reserveInputBytes = (additional: number) => {
@@ -273,8 +278,7 @@ export function createConversationKnowledgeSourceCache<
       // Visit bounded prepared packets once, not the potentially year-long coverage set.
       for (const [key, entry] of staged) {
         if (value.coverage.has(entry.contributionId)) {
-          staged.delete(key);
-          stagedBytes -= entry.bytes;
+          deleteStaged(key, entry);
           admissionSources.delete(entry.contributionId);
         }
       }
@@ -515,9 +519,10 @@ export function createConversationKnowledgeSourceCache<
     },
     firstPreparedOffset(id: string) {
       let first: number | undefined;
-      for (const entry of staged.values()) {
-        if (entry.contributionId === id && (first === undefined || entry.offset < first)) {
-          first = entry.offset;
+      for (const key of stagedKeys.get(id) ?? []) {
+        const offset = staged.get(key)!.offset;
+        if (first === undefined || offset < first) {
+          first = offset;
         }
       }
       return first;
@@ -534,16 +539,16 @@ export function createConversationKnowledgeSourceCache<
     },
     hasContribution(id: string) {
       return (
-        [...entries.values()].some((entry) => entry.contributionId === id) ||
-        [...staged.values()].some((entry) => entry.contributionId === id)
+        stagedKeys.has(id) || [...entries.values()].some((entry) => entry.contributionId === id)
       );
     },
     /** Pending packets have their own bounded budget and never evict earlier unsent packets. */
     stage(id: string, offset: number, value: PreparedConversationKnowledgePacket): boolean {
       const key = stagedKey(id, offset);
       const existing = staged.get(key);
+      const first = stagedKeys.get(id)?.values().next().value;
       const previous =
-        existing?.value ?? [...staged.values()].find((entry) => entry.contributionId === id)?.value;
+        existing?.value ?? (first === undefined ? undefined : staged.get(first)!.value);
       if (previous) {
         if (
           !isDeepStrictEqual(previous.through, value.through) ||
@@ -561,6 +566,9 @@ export function createConversationKnowledgeSourceCache<
         return false;
       }
       staged.set(key, { value: structuredClone(value), bytes: size, contributionId: id, offset });
+      const keys = stagedKeys.get(id) ?? new Set<string>();
+      keys.add(key);
+      stagedKeys.set(id, keys);
       stagedBytes += size;
       revision++;
       return true;
@@ -580,8 +588,7 @@ export function createConversationKnowledgeSourceCache<
       const key = stagedKey(id, offset);
       const old = staged.get(key);
       if (old) {
-        staged.delete(key);
-        stagedBytes -= old.bytes;
+        deleteStaged(key, old);
         revision++;
         if (old.value.part.complete) {
           admissionSources.delete(id);
@@ -605,7 +612,7 @@ export function createConversationKnowledgeSourceCache<
           remove(key);
         }
       }
-      for (const id of new Set([...staged.values()].map((entry) => entry.contributionId))) {
+      for (const id of stagedKeys.keys()) {
         if (!current.has(id)) {
           invalidateStaged(id);
         }
@@ -627,6 +634,7 @@ export function createConversationKnowledgeSourceCache<
       admissionBytes = 0;
       entries.clear();
       staged.clear();
+      stagedKeys.clear();
       bytes = 0;
       stagedBytes = 0;
       preparedRoot = undefined;
